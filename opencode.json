@@ -1,0 +1,20 @@
+{
+  "mcp": {
+    "civitai": {
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer {env:CIVITAI_TOKEN}"
+      },
+      "type": "remote",
+      "url": "https://mcp.civitai.com/mcp"
+    },
+    "civitai-orchestration": {
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer {env:CIVITAI_TOKEN}"
+      },
+      "type": "remote",
+      "url": "https://orchestration.civitai.com/mcp"
+    }
+  }
+}
