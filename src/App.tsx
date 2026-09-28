@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
+  useAppStorage,
   useBlockBreakpoint,
   useBlockContext,
   useBlockResize,
@@ -11,6 +12,7 @@ import {
   useRequestConsent,
   useRequestSignIn,
   useResourcePicker,
+  useSharedStorage,
 } from '@civitai/blocks-react';
 import {
   Alert,
@@ -32,23 +34,54 @@ import {
   PROMPT_MAX,
   QUANTITY_MAX,
   QUANTITY_MIN,
-  THUMB_PROMPT_STYLES,
   accountLabel,
+  aggregateEstimate,
+  aggregateSpend,
   buildWorkflowBody,
   clampQuantity,
+  composePrompt,
+  failedRuns,
   formatCost,
   hasBudgetedScope,
   imageUrlsFrom,
+  initRuns,
   isBusyPhase,
+  isPartialFailure,
+  overallPhase,
+  patchRun,
   phaseForError,
   phaseForSnapshot,
+  pickDefaultAccount,
+  runCandidates,
   spentAccountLabel,
   submitErrorReason,
   isTerminalStatus,
   type AccountChoice,
+  type FormatRun,
   type GenPhase,
   type SourceImage,
 } from './generation.js';
+import {
+  CUSTOM_FORMATS_KEY,
+  DEFAULT_FORMAT_ID,
+  allFormats,
+  customFormatId,
+  customFormatsFull,
+  deleteCustomFormat,
+  formatsFromSharedItems,
+  parseCustomFormats,
+  reconcileSelection,
+  resolveFormats,
+  serializeCustomFormats,
+  sharedValueForFormat,
+  toggleFormat,
+  upsertCustomFormat,
+  validateCustomFormat,
+  type CustomFormat,
+  type Format,
+  type PublishedFormat,
+} from './formats.js';
+import { FormatEditor, FormatPicker, PublishedBoard } from './FormatPicker.js';
 import {
   DEFAULT_CHECKPOINT,
   LORA_STRENGTH_MAX,
@@ -162,6 +195,15 @@ export function App() {
   // "Spend from" picker below. It NEVER blocks generation (a missing/errored
   // balance still lets the user generate; the server is the real gate).
   const { balance, refetch: refetchBalance } = useBuzzBalance();
+  // Per-(block, viewer) private KV. Holds ONLY this viewer's own formats.
+  // 🔴 There is no localStorage fallback and there cannot be one: the block's
+  // iframe sandbox is `allow-scripts allow-forms` with no `allow-same-origin`
+  // (the platform forces that for an unverified block), so the document has an
+  // OPAQUE origin and `localStorage` throws on access. Host-mediated storage is
+  // the only persistence available here.
+  const storage = useAppStorage();
+  // The app-wide, votable, MODERATED board of published formats.
+  const shared = useSharedStorage();
 
   const anon = ready && !viewer;
   const granted = hasBudgetedScope(token.scopes);
@@ -207,12 +249,45 @@ export function App() {
   const [quantity, setQuantity] = useState(1);
   const [sourceImage, setSourceImage] = useState<SourceImage | null>(null);
   const [uploadBusy, setUploadBusy] = useState(false);
-  const [phase, setPhase] = useState<GenPhase>('idle');
-  const [estimatedCost, setEstimatedCost] = useState<number | null>(null);
-  const [actualCost, setActualCost] = useState<number | null>(null);
-  const [spentAccount, setSpentAccount] = useState<BuzzAccountType | null>(null);
-  const [imageUrls, setImageUrls] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+
+  // --- Formats ---
+  // The viewer's own formats, hydrated from `useAppStorage` on mount. Empty for
+  // an anonymous viewer (storage resolves null for them) — see `storageState`.
+  const [customFormats, setCustomFormats] = useState<CustomFormat[]>([]);
+  // Published formats the viewer has pulled in from the shared board.
+  const [addedPublished, setAddedPublished] = useState<PublishedFormat[]>([]);
+  const [selectedFormatIds, setSelectedFormatIds] = useState<string[]>([DEFAULT_FORMAT_ID]);
+  const [formatDraft, setFormatDraft] = useState<{
+    id: string | null;
+    label: string;
+    suffix: string;
+  } | null>(null);
+  const [formatError, setFormatError] = useState<string | null>(null);
+  const [formatBusyId, setFormatBusyId] = useState<string | null>(null);
+  const [storageState, setStorageState] = useState<'loading' | 'ready' | 'anon' | 'error'>(
+    'loading',
+  );
+  const [storageNote, setStorageNote] = useState<string | null>(null);
+
+  // --- The published board ---
+  const [boardOpen, setBoardOpen] = useState(false);
+  const [boardItems, setBoardItems] = useState<PublishedFormat[]>([]);
+  const [boardLoading, setBoardLoading] = useState(false);
+  const [boardError, setBoardError] = useState<string | null>(null);
+  const [boardBusyKey, setBoardBusyKey] = useState<string | null>(null);
+
+  // --- The money path ---
+  // ONE RUN PER SELECTED FORMAT. This replaces the old single set of scalars
+  // (phase / estimatedCost / actualCost / imageUrls): N formats mean N
+  // independent workflows, each with its own price, its own poll loop and its
+  // own way to fail. The page chrome is derived from the array, never stored
+  // alongside it, so a partial failure cannot leave the two disagreeing.
+  const [runs, setRuns] = useState<FormatRun[]>([]);
+  // True once the viewer has picked a Buzz account themselves. Until then the
+  // app is free to apply the blue -> green -> yellow default on their behalf;
+  // after it, their choice is never silently overwritten.
+  const accountTouchedRef = useRef(false);
 
   // The selected checkpoint. Starts on the curated DEFAULT (works at first paint,
   // before the user opens the picker); the host picker replaces it. A pick is
@@ -257,10 +332,69 @@ export function App() {
     };
   }, []);
 
+  // --- DERIVED money-path state ---
+  // All of it is computed from `runs`, never stored beside it, so the button
+  // price, the spend line and the gallery can never disagree with each other
+  // after a partial failure.
+  const phase = overallPhase(runs);
+  const { total: estimatedCost, partial: estimatePartial } = aggregateEstimate(runs);
+  const actualCost = aggregateSpend(runs);
+  const candidates = runCandidates(runs);
+  const failed = failedRuns(runs);
+  const partialFailure = isPartialFailure(runs);
+
+  // The full selectable catalogue, and the formats this click will actually run.
+  const availableFormats = allFormats(customFormats, addedPublished);
+  const selectedFormats = resolveFormats(selectedFormatIds, availableFormats);
+
   // Refetch the balance after a successful generation debits it.
   useEffect(() => {
     if (phase === 'succeeded') refetchBalance();
   }, [phase, refetchBalance]);
+
+  // --- Load the viewer's own formats ---
+  // 🔴 ANONYMOUS VIEWERS GET NO PERSISTENCE. `useAppStorage().get()` resolves
+  // `null` for them and `set()` REJECTS, so there is nothing to load and nothing
+  // we could save. That is surfaced explicitly (a sign-in line under the picker)
+  // rather than left to look like a bug: silently showing an empty, unsaveable
+  // editor is how a viewer loses work they thought they had.
+  useEffect(() => {
+    if (!ready) return;
+    if (!viewer) {
+      setStorageState('anon');
+      return;
+    }
+    let alive = true;
+    setStorageState('loading');
+    storage
+      .get(CUSTOM_FORMATS_KEY)
+      .then((raw) => {
+        if (!alive) return;
+        setCustomFormats(parseCustomFormats(raw));
+        setStorageState('ready');
+      })
+      .catch(() => {
+        if (!alive) return;
+        // A read failure is NOT fatal: the built-ins still work, so degrade to
+        // "your saved formats couldn't be loaded" rather than blocking the app.
+        setStorageState('error');
+      });
+    return () => {
+      alive = false;
+    };
+  }, [ready, viewer, storage]);
+
+  // Keep the selection pointing only at formats that still exist, and keep the
+  // at-least-one invariant, after a delete / withdraw / failed load.
+  useEffect(() => {
+    setSelectedFormatIds((cur) => {
+      const next = reconcileSelection(cur, availableFormats);
+      // Preserve identity when nothing changed so this never loops.
+      return next.length === cur.length && next.every((id, i) => id === cur[i]) ? cur : next;
+    });
+    // `availableFormats` is rebuilt every render; its CONTENT is what matters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [customFormats, addedPublished]);
 
   // --- Editor load + draw ---
   // Load the edited image ONCE per edit target. crossOrigin='anonymous' keeps
@@ -313,25 +447,35 @@ export function App() {
     );
   }, []);
 
-  // Apply a (submit- or poll-returned) snapshot to UI state.
-  const applySnapshot = useCallback(
-    (snap: BlockWorkflowSnapshot) => {
-      setActualCost(snap.cost?.total ?? null);
-      const urls = imageUrlsFrom(snap);
-      if (urls.length > 0) setImageUrls(urls);
+  // Apply a (submit- or poll-returned) snapshot to ONE run's row.
+  //
+  // Always a FUNCTIONAL setState keyed on formatId: N workflows reply
+  // independently and out of order, so writing a whole precomputed array here
+  // would let a slow run's reply revert a fast run's result.
+  const applySnapshotToRun = useCallback(
+    (formatId: string, snap: BlockWorkflowSnapshot) => {
       const next = phaseForSnapshot(snap);
-      setPhase(next);
-      if (next === 'succeeded') {
-        // The pool that PRIMARILY funded the gen (largest debit) — can be blue
-        // (free/earned), not necessarily the paid account. Informational only.
-        setSpentAccount(snap.spentAccountType ?? null);
-      }
-      if (next === 'failed' || next === 'insufficient') {
-        setError(snap.error ?? 'Generation failed.');
-      }
-      if (next === 'account-rejected') {
-        handleAccountRejected();
-      }
+      const urls = imageUrlsFrom(snap);
+      setRuns((cur) =>
+        patchRun(cur, formatId, {
+          phase: next,
+          workflowId: snap.workflowId ?? null,
+          // Only WRITE a cost the server actually sent. A mid-flight `pending`
+          // snapshot usually carries none, and blanket-assigning `?? null`
+          // would erase a price we had already been told.
+          ...(snap.cost?.total != null ? { actualCost: snap.cost.total } : {}),
+          ...(urls.length > 0 ? { imageUrls: urls } : {}),
+          ...(next === 'succeeded'
+            ? // The pool that PRIMARILY funded this run (largest debit) — can be
+              // blue (free/earned), not necessarily the paid account.
+              { spentAccount: snap.spentAccountType ?? null }
+            : {}),
+          ...(next === 'failed' || next === 'insufficient'
+            ? { error: snap.error ?? 'Generation failed.' }
+            : {}),
+        }),
+      );
+      if (next === 'account-rejected') handleAccountRejected();
     },
     [handleAccountRejected],
   );
@@ -352,10 +496,11 @@ export function App() {
    * hits the occasional blip never accumulates toward the cap.
    */
   const runPollLoop = useCallback(
-    (workflowId: string) => {
-      if (pollCancelRef.current) pollCancelRef.current.cancelled = true;
-      const tok = { cancelled: false };
-      pollCancelRef.current = tok;
+    (formatId: string, workflowId: string, tok: { cancelled: boolean }) => {
+      // 🔴 The cancel token is PASSED IN, one per BATCH, not minted here. The
+      // single-workflow version replaced `pollCancelRef.current` on every call,
+      // which with N concurrent runs would mean each new poll loop cancelled its
+      // own siblings and only the last format ever finished.
 
       // Backoff between normal (snapshot-returning) polls.
       const SCHEDULE_MS = [2000, 2000, 3000, 5000, 8000];
@@ -380,11 +525,16 @@ export function App() {
           consecutiveErrors += 1;
           if (consecutiveErrors > MAX_TRANSIENT_ERRORS) {
             // Backend unreachable after repeated retries — surface a transport
-            // error (distinct from a workflow failure) and stop.
-            setPhase('failed');
-            setError(
-              "Couldn't reach the generation service after several retries. " +
-                'Your generation may still be running — refresh to check.',
+            // error (distinct from a workflow failure) and stop. Scoped to THIS
+            // run: the other formats' workflows are unaffected and may well
+            // still be delivering.
+            setRuns((cur) =>
+              patchRun(cur, formatId, {
+                phase: 'failed',
+                error:
+                  "Couldn't reach the generation service after several retries. " +
+                  'This one may still be running — refresh to check.',
+              }),
             );
             return;
           }
@@ -395,7 +545,7 @@ export function App() {
         if (tok.cancelled) return;
         // A successful poll clears the transient-error streak.
         consecutiveErrors = 0;
-        applySnapshot(snap);
+        applySnapshotToRun(formatId, snap);
         if (isTerminalStatus(snap.status)) return;
         const delay = SCHEDULE_MS[Math.min(attempt, SCHEDULE_MS.length - 1)];
         attempt += 1;
@@ -404,85 +554,145 @@ export function App() {
 
       setTimeout(tick, 0);
     },
-    [applySnapshot],
+    [applySnapshotToRun],
   );
 
-  // The estimate->submit->poll sequence, factored out so both the direct click
-  // and the post-consent auto-resume can call it.
+  /**
+   * ONE Generate click -> N workflows, one per selected format.
+   *
+   * The shape is deliberately TWO PASSES rather than N independent pipelines:
+   *
+   *   pass 1  estimate every format
+   *   ------  then, and only then, choose the Buzz account, because the
+   *           blue -> green -> yellow ladder needs the TOTAL of all N estimates
+   *           to know which pool can actually cover the click. Deciding per-run
+   *           would let three formats each individually "fit" in blue while
+   *           together they do not.
+   *   pass 2  submit every still-viable format, then poll each to terminal.
+   *
+   * 🔴 PARTIAL FAILURE IS THE NORMAL CASE, NOT THE EDGE. Each run owns its own
+   * phase/cost/images, every post-estimate write is a functional `patchRun`
+   * keyed on formatId, and nothing here aborts the batch on a single run's
+   * failure. A format that fails costs its siblings nothing — not their
+   * submission, not their results, and not their reported spend.
+   */
   const runGeneration = useCallback(async () => {
     setError(null);
-    setActualCost(null);
-    setSpentAccount(null);
+    const formats = resolveFormats(selectedFormatIds, availableFormats);
+    // `reconcileSelection` guarantees at least one, so this is a belt-and-braces
+    // guard against a zero-workflow click that would "succeed" having spent 0.
+    if (formats.length === 0) return;
+
+    // One cancel token for the WHOLE batch. Starting a new batch (or switching
+    // mode / unmounting) cancels every run's poll loop at once.
+    if (pollCancelRef.current) pollCancelRef.current.cancelled = true;
+    const tok = { cancelled: false };
+    pollCancelRef.current = tok;
+
     // The ONLY difference between the two modes is the body: a remix threads the
-    // uploaded sourceImage (img2img); generate does not. Everything downstream —
-    // estimate/consent/submit/poll — is shared. Auto ('auto') threads NO
-    // accountType — the default host funding order.
-    const body = buildWorkflowBody(prompt, checkpoint, loras, account, {
-      quantity,
-      sourceImage: mode === 'remix' ? sourceImage : null,
-    });
-    const classifyError = phaseForError;
+    // uploaded sourceImage (img2img); generate does not. The FORMAT's difference
+    // is the composed prompt — that is what makes these N requests rather than
+    // one with a bigger quantity.
+    const bodyFor = (fmt: Format, acct: AccountChoice) =>
+      buildWorkflowBody(composePrompt(prompt, fmt.suffix), checkpoint, loras, acct, {
+        quantity,
+        sourceImage: mode === 'remix' ? sourceImage : null,
+      });
 
-    // 1) Estimate (best-effort — a failed estimate doesn't block submit; the
-    //    host re-prices at submit anyway). A disallowed-account / insufficient
-    //    estimate DOES short-circuit (submitting would fail-closed).
-    setPhase('estimating');
-    try {
-      const est = await estimate(body);
-      if (est.status === 'failed' || est.error) {
-        const estPhase = classifyError(est.error);
-        if (estPhase === 'account-rejected') {
-          setPhase('account-rejected');
-          handleAccountRejected();
-          return;
+    setRuns(initRuns(formats).map((r) => ({ ...r, phase: 'estimating' as GenPhase })));
+
+    // ---- Pass 1: estimate every format, in parallel ----
+    // A THROWN estimate is not fatal (the server re-prices at submit anyway), so
+    // it leaves the run priceless but still viable. A RETURNED failure is
+    // classified: it terminates that one run.
+    const estimates = await Promise.all(
+      formats.map(async (fmt) => {
+        try {
+          const est = await estimate(bodyFor(fmt, account));
+          if (est.status === 'failed' || est.error) {
+            return { fmt, cost: null, phase: phaseForError(est.error), error: est.error ?? null };
+          }
+          return { fmt, cost: est.cost?.total ?? null, phase: null, error: null };
+        } catch {
+          return { fmt, cost: null, phase: null, error: null };
         }
-        if (estPhase === 'insufficient') {
-          setPhase('insufficient');
-          setError(est.error ?? 'Not enough Buzz.');
-          return;
-        }
-        setEstimatedCost(null);
-      } else {
-        setEstimatedCost(est.cost?.total ?? null);
-      }
-    } catch {
-      setEstimatedCost(null);
+      }),
+    );
+    if (tok.cancelled) return;
+
+    let priced = initRuns(formats).map((r) => ({ ...r, phase: 'estimating' as GenPhase }));
+    for (const e of estimates) {
+      priced = patchRun(priced, e.fmt.id, {
+        estimatedCost: e.cost,
+        ...(e.phase ? { phase: e.phase, error: e.error } : {}),
+      });
     }
+    setRuns(priced);
 
-    // 2) Submit (the real spend).
-    setPhase('submitting');
-    let snap: BlockWorkflowSnapshot;
-    try {
-      snap = await submit(body);
-    } catch (err) {
-      // NOT `err.message` — under blocks-react ^0.44 that is a generic template
-      // and the server's reason rides on `.snapshot.error`. See submitErrorReason.
-      const msg = submitErrorReason(err);
-      const failPhase = classifyError(msg);
-      setPhase(failPhase);
-      if (failPhase === 'account-rejected') handleAccountRejected();
-      else setError(msg);
+    // A disallowed POOL is a property of the click, not of one format: every run
+    // would reject the same way. Reset to Auto and stop rather than burn N
+    // identical rejections.
+    if (priced.some((r) => r.phase === 'account-rejected')) {
+      handleAccountRejected();
       return;
     }
 
-    // A host can return an instant terminal snapshot (cached / instant-fail).
-    applySnapshot(snap);
-    if (isTerminalStatus(snap.status)) return;
+    // ---- The blue -> green -> yellow default ----
+    // Applied only while the viewer has not picked a pool themselves. Setting
+    // the state (rather than quietly submitting under a different account than
+    // the picker shows) keeps the control honest about what is being spent.
+    const { total } = aggregateEstimate(priced);
+    let acct = account;
+    if (!accountTouchedRef.current) {
+      acct = pickDefaultAccount(balance, total);
+      if (acct !== account) setAccount(acct);
+    }
 
-    // 3) Poll to terminal.
-    setPhase('polling');
-    if (snap.workflowId) runPollLoop(snap.workflowId);
+    // ---- Pass 2: submit + poll every run that survived the estimate ----
+    const viable = priced.filter((r) => r.phase === 'estimating');
+    setRuns((cur) =>
+      cur.map((r) => (r.phase === 'estimating' ? { ...r, phase: 'submitting' as GenPhase } : r)),
+    );
+
+    await Promise.all(
+      viable.map(async (r) => {
+        const fmt = formats.find((f) => f.id === r.formatId);
+        if (!fmt) return;
+        let snap: BlockWorkflowSnapshot;
+        try {
+          snap = await submit(bodyFor(fmt, acct));
+        } catch (err) {
+          // NOT `err.message` — under blocks-react ^0.44 that is a generic
+          // template and the server's reason rides on `.snapshot.error`.
+          const msg = submitErrorReason(err);
+          const failPhase = phaseForError(msg);
+          if (tok.cancelled) return;
+          setRuns((cur) => patchRun(cur, fmt.id, { phase: failPhase, error: msg }));
+          if (failPhase === 'account-rejected') handleAccountRejected();
+          return;
+        }
+        if (tok.cancelled) return;
+        // A host can return an instant terminal snapshot (cached / instant-fail).
+        applySnapshotToRun(fmt.id, snap);
+        if (!isTerminalStatus(snap.status) && snap.workflowId) {
+          runPollLoop(fmt.id, snap.workflowId, tok);
+        }
+      }),
+    );
   }, [
     mode,
     prompt,
     checkpoint,
     loras,
     account,
+    balance,
     quantity,
     sourceImage,
+    selectedFormatIds,
+    availableFormats,
     estimate,
     submit,
-    applySnapshot,
+    applySnapshotToRun,
     runPollLoop,
     handleAccountRejected,
   ]);
@@ -497,17 +707,30 @@ export function App() {
       requestSignIn();
       return;
     }
-    // Lazy consent: if the budgeted scope isn't granted yet, ask the host to
-    // open its consent UI and remember the intent. The grant arrives as a
-    // TOKEN_REFRESH (granted flips true) -> the effect below auto-resumes.
+    // LAZY CONSENT, and it is not merely a preference: `estimate()` itself 403s
+    // with "block lacks ai:write:budgeted scope" on an unconsented token
+    // (measured against the live backend 2026-09-28 — a scoped control token
+    // returned 200 on the same request shape). So there is no way to price the
+    // button before consent, and no reason to prompt on page load. Ask on the
+    // first Generate; the grant arrives as a TOKEN_REFRESH (granted flips true)
+    // and the effect below auto-resumes.
     if (!granted) {
       consentPendingRef.current = true;
-      setPhase('needs-consent');
+      const formats = resolveFormats(selectedFormatIds, availableFormats);
+      setRuns(initRuns(formats).map((r) => ({ ...r, phase: 'needs-consent' as GenPhase })));
       requestConsent({ scopes: ['ai:write:budgeted'] });
       return;
     }
     void runGeneration();
-  }, [viewer, granted, requestSignIn, requestConsent, runGeneration]);
+  }, [
+    viewer,
+    granted,
+    requestSignIn,
+    requestConsent,
+    runGeneration,
+    selectedFormatIds,
+    availableFormats,
+  ]);
 
   // Auto-resume after a consent grant.
   useEffect(() => {
@@ -517,21 +740,207 @@ export function App() {
     }
   }, [granted, runGeneration]);
 
-  // Switch the generation path. Cancels any in-flight poll and clears the
-  // transient error/phase state so a stale failure never shows under the new
-  // mode. Results and the remix source are intentionally kept: results belong
-  // to the user's session, and a chosen source image is harmless in the other
-  // mode (generate never threads it).
+  // Switch the generation path. Cancels every in-flight poll and clears the
+  // run table so a stale failure never shows under the new mode. The remix
+  // source is intentionally kept: it is harmless in the other mode (generate
+  // never threads it).
   const switchMode = useCallback((next: GenMode) => {
     if (pollCancelRef.current) pollCancelRef.current.cancelled = true;
     consentPendingRef.current = false;
     setMode(next);
-    setPhase('idle');
+    setRuns([]);
     setError(null);
-    setEstimatedCost(null);
-    setActualCost(null);
-    setSpentAccount(null);
   }, []);
+
+  // --- Formats: the viewer's own, persisted per-viewer ---
+
+  /**
+   * Write the whole custom-format list, then reflect it.
+   *
+   * OPTIMISTIC WITH A REAL ROLLBACK. The list is shown immediately so editing
+   * feels instant, but a rejected write REVERTS to the previous list rather than
+   * leaving the screen showing formats the store does not have. The host rejects
+   * a value over 64KB, a write that would cross the per-app quota, and EVERY
+   * write from an anonymous viewer — none of which the mock host enforces, so
+   * this path is tested at the hook boundary, not through the harness.
+   */
+  const persistFormats = useCallback(
+    async (next: CustomFormat[], previous: CustomFormat[]) => {
+      setCustomFormats(next);
+      setStorageNote(null);
+      try {
+        await storage.set(CUSTOM_FORMATS_KEY, serializeCustomFormats(next));
+        return true;
+      } catch (err) {
+        setCustomFormats(previous);
+        setStorageNote(
+          err instanceof Error && err.message
+            ? `Couldn't save: ${err.message}`
+            : "Couldn't save your formats. They're unchanged.",
+        );
+        return false;
+      }
+    },
+    [storage],
+  );
+
+  const onToggleFormat = useCallback((id: string) => {
+    setSelectedFormatIds((cur) => toggleFormat(cur, id));
+  }, []);
+
+  const onNewFormat = useCallback(() => {
+    setFormatError(null);
+    setFormatDraft({ id: null, label: '', suffix: '' });
+  }, []);
+
+  const onEditFormat = useCallback((fmt: Format) => {
+    setFormatError(null);
+    setFormatDraft({ id: fmt.id, label: fmt.label, suffix: fmt.suffix });
+  }, []);
+
+  const onSaveFormat = useCallback(async () => {
+    if (!formatDraft) return;
+    const why = validateCustomFormat(formatDraft);
+    if (why) {
+      setFormatError(why);
+      return;
+    }
+    const id = formatDraft.id ?? customFormatId(Date.now());
+    const previous = customFormats;
+    const next = upsertCustomFormat(previous, {
+      id,
+      label: formatDraft.label.trim(),
+      suffix: formatDraft.suffix.trim(),
+    });
+    // `upsertCustomFormat` silently refuses an append past the cap; say so
+    // rather than closing the editor as if it had saved.
+    if (next.length === previous.length && !previous.some((f) => f.id === id)) {
+      setFormatError('You have reached the maximum number of saved formats.');
+      return;
+    }
+    setFormatBusyId(id);
+    const ok = await persistFormats(next, previous);
+    setFormatBusyId(null);
+    if (ok) {
+      setFormatDraft(null);
+      // A newly created format is selected straight away — the viewer made it
+      // in order to use it.
+      if (!formatDraft.id) setSelectedFormatIds((cur) => (cur.includes(id) ? cur : [...cur, id]));
+    }
+  }, [formatDraft, customFormats, persistFormats]);
+
+  const onDeleteFormat = useCallback(
+    async (id: string) => {
+      const previous = customFormats;
+      await persistFormats(deleteCustomFormat(previous, id), previous);
+      // The selection reconciler drops the now-missing id and restores the
+      // at-least-one invariant.
+    },
+    [customFormats, persistFormats],
+  );
+
+  /**
+   * Publish one of the viewer's formats to the app-wide board.
+   *
+   * 🔴 The value comes from `sharedValueForFormat`, which is the ONE place that
+   * decides the suffix travels in the MODERATED `body` field. Do not inline a
+   * literal object here — that decision must stay in one tested function.
+   */
+  const onPublishFormat = useCallback(
+    async (fmt: Format) => {
+      setFormatBusyId(fmt.id);
+      setStorageNote(null);
+      try {
+        await shared.append(sharedValueForFormat(fmt));
+        setStorageNote(`Published “${fmt.label}”. It is reviewed before others see it.`);
+      } catch (err) {
+        setStorageNote(
+          err instanceof Error && err.message
+            ? `Couldn't publish: ${err.message}`
+            : "Couldn't publish that format.",
+        );
+      } finally {
+        setFormatBusyId(null);
+      }
+    },
+    [shared],
+  );
+
+  // --- The published board ---
+
+  const loadBoard = useCallback(async () => {
+    setBoardLoading(true);
+    setBoardError(null);
+    try {
+      const res = await shared.list({ limit: 25 });
+      setBoardItems(formatsFromSharedItems(res.items));
+    } catch (err) {
+      setBoardError(
+        err instanceof Error && err.message
+          ? `Couldn't load published formats: ${err.message}`
+          : "Couldn't load published formats.",
+      );
+    } finally {
+      setBoardLoading(false);
+    }
+  }, [shared]);
+
+  const onOpenBoard = useCallback(() => {
+    setBoardOpen((open) => {
+      if (!open) void loadBoard();
+      return !open;
+    });
+  }, [loadBoard]);
+
+  // Pull a published format into this session's picker and select it. It is NOT
+  // copied into the viewer's own storage: it stays someone else's format, so it
+  // keeps its votes, its report affordance, and its author.
+  const onAddPublished = useCallback((fmt: PublishedFormat) => {
+    setAddedPublished((cur) => (cur.some((f) => f.id === fmt.id) ? cur : [...cur, fmt]));
+    setSelectedFormatIds((cur) => (cur.includes(fmt.id) ? cur : [...cur, fmt.id]));
+  }, []);
+
+  const onVotePublished = useCallback(
+    async (fmt: PublishedFormat) => {
+      setBoardBusyKey(fmt.sharedKey);
+      try {
+        // `viewerVoted` is HYDRATED from the host, never guessed, so this
+        // toggles correctly on the first click after a reload.
+        const count = fmt.viewerVoted
+          ? await shared.unvote(fmt.sharedKey)
+          : await shared.vote(fmt.sharedKey);
+        setBoardItems((cur) =>
+          cur.map((f) =>
+            f.sharedKey === fmt.sharedKey ? { ...f, votes: count, viewerVoted: !f.viewerVoted } : f,
+          ),
+        );
+      } catch {
+        setBoardError("Couldn't record that vote.");
+      } finally {
+        setBoardBusyKey(null);
+      }
+    },
+    [shared],
+  );
+
+  // The abuse seam. A published format's text is injected into OTHER viewers'
+  // PAID generations, so reporting has to be one click from where it is seen.
+  // Filing does not hide the row — a moderator decides.
+  const onReportPublished = useCallback(
+    async (fmt: PublishedFormat) => {
+      setBoardBusyKey(fmt.sharedKey);
+      try {
+        await shared.report(fmt.sharedKey, 'Reported from the YT Thumbnail format board.');
+        setBoardError(null);
+        setStorageNote(`Reported “${fmt.label}” for review.`);
+      } catch {
+        setBoardError("Couldn't file that report.");
+      } finally {
+        setBoardBusyKey(null);
+      }
+    },
+    [shared],
+  );
 
   // --- Host pickers (checkpoint + LoRA + source upload) ---
   //
@@ -604,16 +1013,6 @@ export function App() {
   // Whether the LoRA list can still take another. (The picker can return a dup;
   // addLora drops it, but we also disable Add at the cap.)
   const loraCapReached = loras.length >= MAX_LORAS;
-
-  // Append a preset style suffix to the prompt (comma-joined, never duplicated
-  // blindly — a click re-appends, the user can edit the text freely after).
-  const applyPreset = (suffix: string) => {
-    setPrompt((cur) => {
-      const base = cur.trim();
-      return base ? `${base}, ${suffix}` : suffix;
-    });
-    setTouched(false);
-  };
 
   const promptError =
     touched && prompt.trim().length === 0 ? 'Enter a prompt to generate.' : undefined;
@@ -836,7 +1235,14 @@ export function App() {
     <div ref={rootRef} data-theme={theme} data-block-tier={bp.tier} style={shell}>
       <Card padding="lg" style={cardStyle}>
         <Stack gap={16}>
-          <strong style={titleStyle}>YT Thumbnail</strong>
+          {/* The in-app hero. Pure CSS — a gradient wash plus the app name — so
+              it costs no bytes, scales to any block width, and reads correctly
+              in both host themes because every colour in it is a pack token.
+              (The STORE cover art is a different asset and ships in assets/.) */}
+          <div style={heroStyle} data-testid="yt-hero">
+            <strong style={heroTitleStyle}>YT Thumbnail</strong>
+            <span style={heroSubStyle}>Exports at 1280×720, ready to upload.</span>
+          </div>
 
           {/* Mode toggle: Generate (txt2img) ⇄ Remix (img2img). Switching swaps
               the source control + the body-builder while REUSING the one
@@ -857,10 +1263,6 @@ export function App() {
           {isRemix && (
             <div style={fieldStyle}>
               <span style={fieldLabelStyle}>Source image</span>
-              <span style={fieldDescStyle}>
-                The generation is seeded from this image (img2img). Uploaded through Civitai&apos;s
-                private upload bridge — it is scanned server-side at generation time.
-              </span>
               {sourceImage ? (
                 <Group gap={8} align="center" data-testid="pm-remix-preview">
                   <img src={sourceImage.url} alt="Remix source" style={sourceThumbStyle} />
@@ -892,9 +1294,15 @@ export function App() {
             </div>
           )}
 
+          {/* 🔴 The description deliberately does NOT claim a generation size.
+              Measured 2026-09-28: the platform IGNORES params.width/height —
+              1280x720 and 1344x768 requests, on SD XL 1.0 and on FLUX.1 [dev],
+              all came back 1216x832. The old string "It is generated at 1280×720
+              (16:9)" was therefore FALSE. What IS true is the export: the canvas
+              editor cover-crops to exactly 1280x720 on download. */}
           <Textarea
             label="Prompt"
-            description="Describe the thumbnail scene. It is generated at 1280×720 (16:9)."
+            description="Describe the thumbnail. The download is cropped to 1280×720."
             placeholder="a serene mountain lake at golden hour, highly detailed"
             value={prompt}
             minRows={4}
@@ -905,22 +1313,103 @@ export function App() {
             onBlur={() => setTouched(true)}
           />
 
-          {/* Prompt presets — thumbnail-tuned style suffixes, one click to append. */}
+          {/* FORMATS. Multi-select, and the selection count IS the workflow
+              count: each format runs its own generation with its own prompt
+              suffix, so picking a second format is picking a second bill. That
+              is stated once, here, and again as the summed price on Generate. */}
           <div style={fieldStyle}>
-            <span style={fieldLabelStyle}>Style presets</span>
-            <div style={pickerRowStyle}>
-              {THUMB_PROMPT_STYLES.map((p, i) => (
-                <button
-                  key={p.label}
-                  type="button"
-                  onClick={() => applyPreset(p.suffix)}
-                  data-testid={`pm-preset-${i}`}
-                  style={presetBtnStyle}
+            <Group justify="space-between" align="center" gap={8}>
+              <span style={fieldLabelStyle}>
+                Formats{' '}
+                <Badge color="info" variant="light">
+                  {selectedFormats.length}
+                </Badge>
+              </span>
+              <Group gap={6}>
+                <Button
+                  variant="subtle"
+                  size="sm"
+                  disabled={busy || storageState === 'anon' || customFormatsFull(customFormats)}
+                  onClick={onNewFormat}
+                  data-testid="yt-format-new"
                 >
-                  {p.label}
-                </button>
-              ))}
-            </div>
+                  + New
+                </Button>
+                <Button
+                  variant="subtle"
+                  size="sm"
+                  disabled={busy}
+                  onClick={onOpenBoard}
+                  data-testid="yt-board-toggle"
+                >
+                  {boardOpen ? 'Hide published' : 'Browse published'}
+                </Button>
+              </Group>
+            </Group>
+            <span style={fieldDescStyle} data-testid="yt-format-cost-note">
+              {selectedFormats.length === 1
+                ? 'One generation. Costs Buzz.'
+                : `${selectedFormats.length} separate generations — each one costs Buzz.`}
+            </span>
+
+            <FormatPicker
+              formats={availableFormats}
+              selectedIds={selectedFormatIds}
+              onToggle={onToggleFormat}
+              onEdit={onEditFormat}
+              onDelete={(id) => void onDeleteFormat(id)}
+              onPublish={(fmt) => void onPublishFormat(fmt)}
+              busyId={formatBusyId}
+              disabled={busy}
+            />
+
+            {/* 🔴 The anonymous path, said out loud. `useAppStorage` resolves
+                null on read and REJECTS every write for an anonymous viewer, so
+                a "New format" button that looked enabled would simply eat their
+                work. */}
+            {storageState === 'anon' && (
+              <span style={fieldDescStyle} data-testid="yt-storage-anon">
+                Sign in to make and save your own formats.
+              </span>
+            )}
+            {storageState === 'error' && (
+              <span style={fieldDescStyle} data-testid="yt-storage-error">
+                Couldn&apos;t load your saved formats. The built-in ones still work.
+              </span>
+            )}
+            {storageNote && (
+              <span style={fieldDescStyle} data-testid="yt-storage-note">
+                {storageNote}
+              </span>
+            )}
+
+            {formatDraft && (
+              <FormatEditor
+                draft={formatDraft}
+                error={formatError}
+                busy={formatBusyId != null}
+                onChange={setFormatDraft}
+                onSave={() => void onSaveFormat()}
+                onCancel={() => {
+                  setFormatDraft(null);
+                  setFormatError(null);
+                }}
+              />
+            )}
+
+            {boardOpen && (
+              <PublishedBoard
+                items={boardItems}
+                loading={boardLoading}
+                error={boardError}
+                addedIds={new Set(addedPublished.map((f) => f.id))}
+                busyKey={boardBusyKey}
+                onAdd={onAddPublished}
+                onVote={(f) => void onVotePublished(f)}
+                onReport={(f) => void onReportPublished(f)}
+                onRefresh={() => void loadBoard()}
+              />
+            )}
           </div>
 
           {/* Model control. A page carries no host model context, so the app
@@ -931,9 +1420,6 @@ export function App() {
               re-validates + re-prices it at estimate/submit. */}
           <div style={fieldStyle}>
             <span style={fieldLabelStyle}>Model</span>
-            <span style={fieldDescStyle}>
-              The checkpoint to generate with. The server validates + prices every generation.
-            </span>
             {/* THE RESPONSIVE EXAMPLE. Side by side when the block has room;
                 stacked, with a full-width button, when it doesn't. This is a
                 STRUCTURAL swap (a different element), which is the kind of
@@ -975,9 +1461,12 @@ export function App() {
           {/* Quantity — how many candidates per generation (server cap 4).
               Multiple candidates cost proportionally; the estimate reflects it. */}
           <div style={fieldStyle}>
-            <span style={fieldLabelStyle}>Candidates</span>
+            <span style={fieldLabelStyle}>Images per format</span>
+            {/* 🔴 COST DISCLOSURE — kept deliberately while other copy was cut.
+                Quantity and format count MULTIPLY: this is images per format,
+                per run, and each one is charged. */}
             <span style={fieldDescStyle}>
-              How many images to generate per run (1–{QUANTITY_MAX}). Each one costs Buzz.
+              1–{QUANTITY_MAX} per format. Each image costs Buzz.
             </span>
             <div role="radiogroup" aria-label="Number of images" style={pickerRowStyle}>
               {[1, 2, 3, 4].slice(0, QUANTITY_MAX - QUANTITY_MIN + 1).map((n) => (
@@ -998,7 +1487,17 @@ export function App() {
           </div>
 
           {!anon && (
-            <AccountPicker value={account} onChange={setAccount} balance={balance} disabled={busy} />
+            <AccountPicker
+              value={account}
+              onChange={(v) => {
+                // A manual pick freezes the blue -> green -> yellow default:
+                // from here on the app never silently reassigns their pool.
+                accountTouchedRef.current = true;
+                setAccount(v);
+              }}
+              balance={balance}
+              disabled={busy}
+            />
           )}
 
           {anon ? (
@@ -1013,10 +1512,16 @@ export function App() {
               onClick={onGenerateClick}
               data-testid="pm-generate"
             >
+              {/* The price on the button is the SUM across every selected
+                  format. `estimatePartial` means some formats could not be
+                  priced, so the figure is a floor, not the bill — say "from"
+                  rather than quote a total we know is incomplete.
+                  Unpriced at all -> no figure: `estimate()` 403s until the
+                  viewer consents, so a fresh viewer legitimately sees none. */}
               {busy
                 ? phaseLabel(phase)
                 : estimatedCost != null
-                  ? `Generate · ${formatCost(estimatedCost)} Buzz`
+                  ? `Generate · ${estimatePartial ? 'from ' : ''}${formatCost(estimatedCost)} Buzz`
                   : 'Generate'}
             </Button>
           )}
@@ -1051,34 +1556,74 @@ export function App() {
             </Alert>
           )}
 
-          {phase === 'failed' && error && (
-            <Alert
-              color="error"
-              title="Generation failed"
-              withCloseButton
-              onClose={() => setError(null)}
-            >
-              {error}
+          {/* A WHOLE-BATCH failure: nothing succeeded. Named per format, because
+              with N runs "Generation failed" alone does not say which. */}
+          {phase === 'failed' && failed.length > 0 && (
+            <Alert color="error" title="Generation failed" data-testid="pm-failed">
+              <Stack gap={4}>
+                {failed.map((r) => (
+                  <span key={r.formatId}>
+                    <strong>{r.label}</strong>: {r.error ?? 'failed'}
+                  </span>
+                ))}
+              </Stack>
             </Alert>
           )}
 
-          {phase === 'succeeded' && imageUrls.length > 0 && (
+          {/* 🔴 PARTIAL FAILURE. Some formats came back, some did not. The
+              successes are rendered below exactly as usual — the failures are
+              reported ALONGSIDE them, never instead of them. */}
+          {partialFailure && (
+            <Alert
+              color="warning"
+              title={`${failed.length} of ${runs.length} formats didn't finish`}
+              data-testid="pm-partial"
+            >
+              <Stack gap={4}>
+                {failed.map((r) => (
+                  <span key={r.formatId}>
+                    <strong>{r.label}</strong>: {r.error ?? 'failed'}
+                  </span>
+                ))}
+                <span>You were only charged for the ones that ran.</span>
+              </Stack>
+            </Alert>
+          )}
+
+          {candidates.length > 0 && (
             <Stack gap={8}>
+              {/* 🔴 SPEND IS THE SERVER'S NUMBER, SUMMED OVER THE RUNS THAT
+                  REPORTED ONE. It never falls back to the estimate, so a partial
+                  failure cannot inflate it into a bill for work that never
+                  ran — `formatCost(null)` renders '—'. */}
               <Alert color="success" title="Done" data-testid="pm-spent">
                 Spent <strong>{formatCost(actualCost)}</strong> Buzz
-                <SpentAccountNote spentAccount={spentAccount} />.
+                <SpentAccountNote runs={runs} />.
               </Alert>
               <span style={fieldLabelStyle}>
-                {imageUrls.length} candidate{imageUrls.length === 1 ? '' : 's'} — pick one to edit
+                {candidates.length} candidate{candidates.length === 1 ? '' : 's'} — pick one to edit
               </span>
               <div style={galleryStyle}>
-                {imageUrls.map((url, i) => (
-                  <div key={url} style={galleryItemStyle}>
-                    <img src={url} alt="Generated result" style={imageStyle} data-testid="pm-result-img" />
+                {candidates.map((c, i) => (
+                  <div key={c.url} style={galleryItemStyle}>
+                    <div style={{ position: 'relative' }}>
+                      <img
+                        src={c.url}
+                        alt={`Generated result — ${c.formatLabel}`}
+                        style={imageStyle}
+                        data-testid="pm-result-img"
+                      />
+                      {/* Each candidate carries the format that made it — with
+                          N formats in one grid, an untagged image is unusable
+                          for deciding which format to keep paying for. */}
+                      <span style={candidateTagStyle} data-testid="pm-result-format">
+                        {c.formatLabel}
+                      </span>
+                    </div>
                     <Button
                       size="sm"
                       variant="light"
-                      onClick={() => setEditing(url)}
+                      onClick={() => setEditing(c.url)}
                       data-testid={`pm-edit-${i}`}
                     >
                       Edit &amp; download
@@ -1123,10 +1668,7 @@ function LoraSelector({
           {selected.length}/{MAX_LORAS}
         </Badge>
       </span>
-      <span style={fieldDescStyle}>
-        Optional. Layer up to {MAX_LORAS} LoRAs on the checkpoint, each with a weight. The server
-        validates compatibility + prices every generation.
-      </span>
+      <span style={fieldDescStyle}>Optional. Up to {MAX_LORAS}, each with a weight.</span>
 
       {/* Selected LoRAs, each with a weight control + remove. */}
       {selected.length > 0 && (
@@ -1202,10 +1744,9 @@ function AccountPicker({
   return (
     <div style={fieldStyle}>
       <span style={fieldLabelStyle}>Spend from</span>
-      <span style={fieldDescStyle}>
-        Which Buzz account to fund this generation. Auto lets the server choose; a pick is a
-        preference the server clamps to what you hold + this app's rating.
-      </span>
+      {/* Kept short, but the "preference, not a guarantee" half stays: this is
+          the control that decides whose Buzz is debited. */}
+      <span style={fieldDescStyle}>A preference — the server picks the final pool.</span>
       <div role="radiogroup" aria-label="Buzz account" style={pickerRowStyle}>
         {ACCOUNT_CHOICES.map((choice) => {
           const selected = value === choice;
@@ -1232,9 +1773,23 @@ function AccountPicker({
   );
 }
 
-/** " from your Yellow account" — reads the succeeded snapshot's spentAccountType. */
-function SpentAccountNote({ spentAccount }: { spentAccount: BuzzAccountType | null }) {
-  const label = spentAccountLabel(spentAccount ?? undefined);
+/**
+ * " from your Yellow account" — reads the succeeded runs' `spentAccountType`.
+ *
+ * With N workflows the pools CAN differ (the server clamps each submit
+ * independently), so the note is only made when every run that reported a pool
+ * agrees. Naming one pool while another was also debited would be a false
+ * statement about where the viewer's money came from, and the honest fallback
+ * is simply to say nothing.
+ */
+function SpentAccountNote({ runs }: { runs: readonly FormatRun[] }) {
+  const pools = new Set(
+    runs
+      .filter((r) => r.phase === 'succeeded' && r.spentAccount != null)
+      .map((r) => r.spentAccount as BuzzAccountType),
+  );
+  if (pools.size !== 1) return null;
+  const label = spentAccountLabel([...pools][0]);
   if (!label) return null;
   return (
     <>
@@ -1267,6 +1822,40 @@ const shell: React.CSSProperties = {
 
 const cardStyle: React.CSSProperties = { width: '100%', maxWidth: 640 };
 const titleStyle: React.CSSProperties = { fontSize: 20 };
+
+// The in-app hero. Every colour is a pack token, so it follows the host between
+// light and dark without a second palette to keep in sync — and it is CSS, not
+// an image, so it costs no bytes and stays sharp at any block width.
+const heroStyle: React.CSSProperties = {
+  display: 'grid',
+  gap: 2,
+  padding: '18px 20px',
+  borderRadius: 12,
+  background:
+    'linear-gradient(135deg, var(--civitai-color-primary) 0%, var(--civitai-color-primary-hover) 55%, var(--civitai-color-surface-2) 100%)',
+  color: 'var(--civitai-color-primary-fg, #fff)',
+};
+const heroTitleStyle: React.CSSProperties = {
+  fontSize: 22,
+  lineHeight: 1.15,
+  letterSpacing: '-0.01em',
+};
+const heroSubStyle: React.CSSProperties = { fontSize: 13, opacity: 0.85 };
+
+// The format tag overlaid on each candidate. With N formats in one grid, an
+// untagged image cannot be traced back to the format that produced it.
+const candidateTagStyle: React.CSSProperties = {
+  position: 'absolute',
+  left: 6,
+  bottom: 6,
+  padding: '2px 8px',
+  borderRadius: 999,
+  fontSize: 11,
+  fontWeight: 600,
+  background: 'rgba(0, 0, 0, 0.62)',
+  color: '#fff',
+  pointerEvents: 'none',
+};
 const imageStyle: React.CSSProperties = {
   width: '100%',
   aspectRatio: '16 / 9',
@@ -1332,15 +1921,6 @@ function pickerBtnStyle(selected: boolean, disabled: boolean): React.CSSProperti
     opacity: disabled ? 0.6 : 1,
   };
 }
-const presetBtnStyle: React.CSSProperties = {
-  padding: '4px 12px',
-  borderRadius: 999,
-  border: '1px solid var(--civitai-color-border)',
-  background: 'var(--civitai-color-surface)',
-  color: 'var(--civitai-color-text)',
-  fontSize: 12,
-  cursor: 'pointer',
-};
 
 // Results gallery: 2-up on any width (thumbnails are wide; 2 columns keep each
 // preview readable at the block's usual width).
