@@ -133,7 +133,21 @@ describe('App money path (e2e)', () => {
     expect(screen.getByTestId('pm-spent')).toHaveTextContent(/from your yellow account/i);
   });
 
-  it('Auto (default) omits accountType from the body — today’s behavior', async () => {
+  /**
+   * The Buzz-account DEFAULT changed in the formats/storage batch: the picker no
+   * longer stays on Auto when a sufficient pool is known. It now defaults to the
+   * FIRST SUFFICIENT pool in blue -> green -> yellow, falling back to Auto when
+   * none is sufficient (or the balance/cost is unknown).
+   *
+   * The test that used to sit here pinned the OLD default ("Auto omits
+   * accountType") and was REPLACED, not deleted — its substance survives as the
+   * second case below, still the only thing asserting that Auto threads no
+   * `accountType` at all. Both assert on the WIRE (the submitted body), which is
+   * the surface that decides whose Buzz is debited.
+   *
+   * BEHAVIOUR coverage, not regression: the ladder is new in this change.
+   */
+  it('defaults to the first sufficient pool (blue) and threads it on the body', async () => {
     const user = userEvent.setup();
     const submittedBodies: Array<Record<string, unknown>> = [];
     uninstall = installMockMoneyHost({
@@ -141,6 +155,8 @@ describe('App money path (e2e)', () => {
       consentGranted: true,
       cost: 8,
       pollsUntilDone: 2,
+      // DEFAULT_MOCK_BALANCE is { blue: 1500, green: 250, yellow: 6000 } — all
+      // three cover a cost of 8, so ONLY the ladder's ORDER decides the answer.
       onOutbound: (m) => {
         if (m.type === 'SUBMIT_WORKFLOW') {
           submittedBodies.push((m.payload as { body: Record<string, unknown> }).body);
@@ -150,13 +166,47 @@ describe('App money path (e2e)', () => {
 
     render(<App />);
     await screen.findByTestId('pm-generate');
-    // Leave the picker on Auto (the default).
+    // It starts on Auto — the cost is unknown until the estimate lands.
     expect(screen.getByTestId('pm-account-auto')).toHaveAttribute('aria-checked', 'true');
     await user.type(screen.getByLabelText(/prompt/i), 'a cat');
     await user.click(screen.getByTestId('pm-generate'));
 
     await screen.findByAltText(/generated result/i, {}, { timeout: 5000 });
+    // The wire carries the ladder's pick...
+    expect(submittedBodies.at(-1)).toHaveProperty('accountType', 'blue');
+    // ...and the control SHOWS it. Submitting under a pool the picker still
+    // displays as "Auto" would misstate where the money came from.
+    expect(screen.getByTestId('pm-account-blue')).toHaveAttribute('aria-checked', 'true');
+  });
+
+  it('falls back to Auto — and Auto omits accountType — when NO pool is sufficient', async () => {
+    const user = userEvent.setup();
+    const submittedBodies: Array<Record<string, unknown>> = [];
+    uninstall = installMockMoneyHost({
+      viewer: { id: 2, username: 'dev', status: 'active' },
+      consentGranted: true,
+      cost: 8,
+      pollsUntilDone: 2,
+      // Every pool is BELOW the cost of 8, so the ladder has no sufficient pool
+      // to pick and must leave the preference off entirely.
+      buzzBalance: { blue: 5, green: 3, yellow: 2 },
+      onOutbound: (m) => {
+        if (m.type === 'SUBMIT_WORKFLOW') {
+          submittedBodies.push((m.payload as { body: Record<string, unknown> }).body);
+        }
+      },
+    });
+
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+    await user.type(screen.getByLabelText(/prompt/i), 'a cat');
+    await user.click(screen.getByTestId('pm-generate'));
+
+    await screen.findByAltText(/generated result/i, {}, { timeout: 5000 });
+    // Auto threads NO accountType — the host drains its own order, which beats
+    // naming a pool that cannot cover the bill.
     expect(submittedBodies.at(-1)).not.toHaveProperty('accountType');
+    expect(screen.getByTestId('pm-account-auto')).toHaveAttribute('aria-checked', 'true');
   });
 
   it('a disallowed pool (server BAD_REQUEST) -> friendly note + reset to Auto', async () => {

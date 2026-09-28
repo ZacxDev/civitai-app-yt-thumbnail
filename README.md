@@ -157,15 +157,63 @@ The body is built by `buildWorkflowBody` in `src/generation.ts` — the single
 place the generate/remix difference lives, unit-tested for both shapes
 (`params.quantity` is emitted only when > 1, `sourceImage` only when set).
 
-**Style presets** under the prompt append a thumbnail-tuned suffix
-(`THUMB_PROMPT_STYLES` in `src/generation.ts`) — clickbait, cinematic, bold &
-simple. They are prompt text only; nothing else about them is special.
+### Formats (multi-select — and each one is a separate generation)
 
-### Candidates (quantity 1–4)
+**Formats** replace the old style-preset chips. A format is a named prompt
+suffix plus its preview art, and formats are **multi-selected** rather than
+clicked to paste text into the prompt box.
 
-The **Candidates** picker requests 1–4 images per generation. It threads
+🔴 **N selected formats ⇒ N workflows, hence N bills.** A workflow body carries
+exactly one `params.prompt`, so two formats mean two different prompts and
+cannot share a request. They compose with quantity: 3 formats × quantity 2 = 3
+workflows of 2 images = **6 images**. `page.buzzBudgetPerGen` is enforced *per
+workflow*, so N formats authorise N budgets, not one. The Generate button shows
+the **summed** estimate.
+
+Three tiers:
+
+- **Built-in** — six, defined canonically in `public/formats/formats.json`
+  (which also records each preview's `sourceWorkflowId`) and mirrored as
+  `BUILTIN_FORMATS` in `src/formats.ts`. A test pins the two in lockstep.
+- **Custom** — the viewer's own, **private by default**, persisted per-viewer
+  via `useAppStorage` under `formats:custom:v1`. Anonymous viewers get no
+  persistence at all (`get` resolves `null`, `set` rejects) and are told so
+  rather than handed an editor that silently eats their work.
+- **Published** — a custom format the viewer explicitly pushed to the app-wide
+  `useSharedStorage` board, where others can browse, use, up-vote and report it.
+
+🔴 **A published format's suffix travels in `body`, never in `data`.**
+`title`/`body` are the *moderated*, user-visible text; `data` is *unmoderated*
+app state. The suffix is prompt text that gets injected into other viewers'
+**paid** generations in a `contentRating: "g"` app, so it has to pass the content
+belt. `sharedValueForFormat` is the one place that decision lives, and reading a
+published format back deliberately has **no** `data` fallback — an entry whose
+text is only in `data` is dropped.
+
+Selection carries an invariant: **at least one format is always selected**, so
+Generate can never submit zero workflows and report success having spent
+nothing.
+
+### Images per format (quantity 1–4)
+
+The picker requests 1–4 images *per format*, per run. It threads
 `params.quantity` (clamped server-side to [1, 4]); the estimate reflects the
-multiplied cost before any spend, and every returned image lands in the gallery.
+multiplied cost before any spend, and every returned image lands in the gallery
+**tagged with the format that produced it**.
+
+### Partial failure
+
+With N workflows, some can fail while others succeed — the normal case, not an
+edge. A failed format does not discard its siblings' results, and the "Spent"
+line is summed **from what the server actually reported**, never from the
+estimate (which would cover workflows that never ran).
+
+### What the platform does with `params.width`/`height`
+
+🔴 **It ignores them.** Measured 2026-09-28: 1280×720 and 1344×768 requests, on
+SD XL 1.0 and on FLUX.1 [dev], all returned **1216×832**. The app therefore does
+not claim a generation size anywhere in its copy. What *is* true is the export —
+the canvas editor cover-crops to exactly 1280×720 on download.
 
 > **`page.buzzBudgetPerGen` is a CEILING — not an estimate.** It is the safety
 > ceiling on what a SINGLE generation may cost, so a bug or a compromised bundle

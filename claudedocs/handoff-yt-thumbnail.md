@@ -29,8 +29,28 @@ with a YouTube-capped export.
 - Still unverified against the real backend: no live generation has run, so 1280×720 pricing, CORS-on-image-URLs, and budget-vs-quantity remain open (see Open investigations). Now actually runnable — the app is live.
 - Known gaps: **no git remote** (the submitted bundle's source still exists only on this machine); branch `listing-media` is unmerged (no remote ⇒ no PR was possible); opencode MCP `CIVITAI_TOKEN` unwired (CLI credential ≠ MCP env var); `CIVITAI_HOST_KEY` unset (dev:live nav shows name only — harmless); subsystem-index entry DRAFTED but unwritten (see item 4); listing has 0 screenshots (optional, up to 8).
 
+## Version history (server-confirmed, never from a CLI exit code)
+| ver | pubreq | source | state |
+|---|---|---|---|
+| 0.1.0 | `pubreq_01M3JE62KDFVK17V8FWA95SEQF` | `17def4f` | approved, superseded |
+| 0.1.1 | `pubreq_01M3JZB7TRZ6TMD1MX7H4M33VZ` | `c5e175d` | **approved + live** (listing copy) |
+| 0.1.2 | `pubreq_01M3K1PRF8Y0KXCT5RA6ZHDJWW` | `cb6f661` | **pending** (checkpoint-picker fix) |
+
+Live 0.1.1 keeps serving while 0.1.2 is in review — confirmed HTTP 200 after the submit. Branch `fix-checkpoint-picker-family-lock` is the tip and CONTAINS `listing-media`; merging it into `main` brings everything. Still **no git remote** — every submit has warned that the source exists only on this machine.
+
+## RESOLVED — `description` is absent from the schema but DOES land
+0.1.1 shipped `tagline`/`description`/`category` with an explicit unknown: `description` is in NO version of the published manifest schema (`v1.json` is the only one served; `v2`/`v1.1`/`latest` all 404), and the schema permits unknown keys, so `civitai app validate` returned rc=0 either way and proved nothing. **After 0.1.1 approved, `civitai app doctor` reports none of `empty-tagline` / `empty-description` / `empty-category`.** All three landed. The published schema is incomplete; the CLI's insistence was correct. Only `no-screenshots` remains (optional).
+
+## Defect found + fixed this session — the checkpoint picker was SELF-TRAPPING
+- **Reported:** the "Change model" picker listed only SDXL — no Z Image, no OpenAI, no Flux — while `ab-img-poster` listed everything.
+- **Cause:** `App.tsx` passed `baseModelGroup: checkpoint.baseModel`, and `baseModelGroup` *"NARROWS the browse, never widens it"* (`blocks-react` `internal/catalog.d.ts`). `DEFAULT_CHECKPOINT` is SDXL 1.0, so the filter was derived from the very thing the control exists to change. 🔴 **Not merely restrictive — unreachable:** widening it required already holding a checkpoint from the family you were trying to reach, so no other ecosystem was reachable by ANY sequence of user actions. `ab-img-poster` passes no filter, hence unaffected.
+- **Fix (`ea40598`):** `useResourcePicker({ resourceType: 'Checkpoint' })` with `baseModelGroup` OMITTED — documented as "an unconstrained pick of the type". Deliberately NOT `useCheckpointPicker` with `baseModelGroup: ''`: that field is required there, and `''` is only documented in the dev shim's `filterCardsByFamily`, unverified against prod. Cost: the picker no longer pre-highlights the current model (that option belongs to the dropped hook).
+- **The LoRA picker KEEPS its family filter** on purpose — a LoRA really must match. Pinned by a test so an over-broad "drop every baseModelGroup" edit fails loudly.
+- **Deliberately NOT built:** a client-side warning for a cross-family LoRA left over after an ecosystem switch (newly reachable). The server validates compatibility and rejects before any spend, and `submitErrorReason` surfaces its wording verbatim; a fuzzy client check would duplicate a server rule and misfire where the server is right (`SDXL 1.0` vs `SDXL Turbo` — one ecosystem, two strings).
+
 ## Open investigations — live diagnosis state
 ### 🔴 The app's scope is UNCONSENTED on this account — a generation would 403
+**UPDATE 2026-09-27:** the operator consented and ran a generation, which is how the picker defect above surfaced. The banner finding below is retained as the *pre-consent* state; the open half is unchanged — whether a NEW user gets a clean consent prompt is still untested.
 - as-of: 2026-09-27 (first live browser observation of the deployed app)
 - **Symptom + exact repro:** at `https://civitai.com/apps/run/yt-thumbnail`, logged in as `zachlowdenzx` (8753561), the HOST renders a banner: *"YT Thumbnail is missing permissions it needs to work fully."* with a `Review permissions` **button** (a button, no href). This is AGENTS.md's consent gate: `ai:write:budgeted` is declared in the manifest, but a declared scope is dropped from the token until the user consents, so a submit 403s while manifest and runtime both look correct.
 - **Observed (with values):** app booted fine — `pm-generate` present, `pm-signin` absent, model `SD XL 1.0 (SDXL 1.0)`. Present: `pm-generate pm-model-label pm-model-row pm-change-model pm-lora-add pm-remix-upload pm-remix-hint`. Absent: every `pm-nav-*`/`pm-setup-*` (those are `src/main.tsx` harness-only, confirmed by the declaring file, not just by absence).

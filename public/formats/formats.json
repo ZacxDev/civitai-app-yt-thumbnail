@@ -1,0 +1,44 @@
+{
+  "clickbait": {
+    "label": "Clickbait",
+    "suffix": "youtube thumbnail, shocked expression, vibrant saturated colors, high contrast, dramatic rim lighting, centered subject, bold and punchy",
+    "preview": "/formats/clickbait.webp",
+    "sourceWorkflowId": "8753561-20260928202943082-ip18",
+    "costBuzz": 3
+  },
+  "cinematic": {
+    "label": "Cinematic",
+    "suffix": "cinematic film still, dramatic moody lighting, shallow depth of field, teal and orange color grade, ultra detailed, anamorphic",
+    "preview": "/formats/cinematic.webp",
+    "sourceWorkflowId": "8753561-20260928203004566-n9v5",
+    "costBuzz": 3
+  },
+  "bold-simple": {
+    "label": "Bold & Simple",
+    "suffix": "bold flat colors, minimal composition, strong single focal point, clean uncluttered background, graphic poster style",
+    "preview": "/formats/bold-simple.webp",
+    "sourceWorkflowId": "8753561-20260928203030474-pksr",
+    "costBuzz": 3
+  },
+  "tech-review": {
+    "label": "Tech Review",
+    "suffix": "clean product photography, crisp studio lighting, modern minimal desk setup, soft gradient background, sharp focus",
+    "preview": "/formats/tech-review.webp",
+    "sourceWorkflowId": "8753561-20260928203047884-ow86",
+    "costBuzz": 3
+  },
+  "tutorial": {
+    "label": "Tutorial",
+    "suffix": "bright even lighting, friendly approachable tone, clean organized workspace, soft natural colors, clear and legible",
+    "preview": "/formats/tutorial.webp",
+    "sourceWorkflowId": "8753561-20260928203117739-nto8",
+    "costBuzz": 3
+  },
+  "gaming": {
+    "label": "Gaming",
+    "suffix": "dynamic action, neon rim lighting, energetic composition, vivid magenta and cyan, high energy, stylized digital art",
+    "preview": "/formats/gaming.webp",
+    "sourceWorkflowId": "8753561-20260928203204570-0i44",
+    "costBuzz": 3
+  }
+}

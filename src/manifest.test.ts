@@ -71,3 +71,90 @@ describe('block.manifest.json', () => {
     ]).toContain(manifest.category);
   });
 });
+
+/**
+ * SCOPE guards, added with the formats/storage batch.
+ *
+ * 🔴 RED-AT-BASE MATRIX — measured against origin/main (e2c3108), where
+ * `block.manifest.json` declared `["ai:write:budgeted"]` and one justification.
+ * Unlike the new pure-logic suites in this change, these are NOT vacuous reds:
+ * the manifest file exists at base and parses fine, so each failure below is a
+ * real ASSERTION failure about the manifest's contents.
+ *
+ *   'declares exactly the scopes the code uses'   RED at base
+ *       AssertionError: expected [ 'ai:write:budgeted' ] to deeply equal
+ *       [ 'ai:write:budgeted', 'apps:storage:read', 'apps:storage:shared:read',
+ *         'apps:storage:shared:write', 'apps:storage:write' ]
+ *
+ *   'every declared scope carries a justification'  GREEN at base
+ *       <- an INVARIANT guard. At base there was one scope and one
+ *          justification, so it already held. It exists because
+ *          `civitai app validate` does NOT check the pairing: a scope added
+ *          without a justification passes validate at rc=0 and is questioned by
+ *          a human moderator instead, days later.
+ *
+ *   'declares no scope the SDK does not know'      GREEN at base
+ *       <- an INVARIANT guard, for the same reason: the canonical schema
+ *          validates `scopes` by MEMBERSHIP in a fixed enum, but a typo'd scope
+ *          is caught server-side at approve, not by local validate.
+ *
+ * These pin the MANIFEST only. That a scope is declared says nothing about
+ * whether the viewer GRANTED it — a newly declared scope is consent-gated and
+ * is dropped from the token until they consent. The runtime side of that is the
+ * App's problem, not this file's.
+ */
+describe('block.manifest.json scopes', () => {
+  const scopes = manifest.scopes as string[];
+  const justifications = manifest.scopeJustifications as Record<string, string>;
+
+  // The full block-scope enum from @civitai/app-sdk's BLOCK_SCOPES. Written out
+  // rather than imported so this test fails on a scope the INSTALLED SDK would
+  // accept but the published schema's enum does not — the two are meant to be
+  // in lockstep and this is the place that notices when they are not.
+  const KNOWN_BLOCK_SCOPES = [
+    'models:read:self',
+    'user:read:self',
+    'ai:write:budgeted',
+    'buzz:read:self',
+    'social:tip:self',
+    'apps:storage:read',
+    'apps:storage:write',
+    'apps:storage:shared:read',
+    'apps:storage:shared:write',
+    'collections:read:self',
+    'collections:write:self',
+    'collections:read:private',
+  ];
+
+  it('declares exactly the scopes the code uses — spend, private storage, shared storage', () => {
+    // Sorted so the assertion is about the SET, not about manifest key order.
+    expect([...scopes].sort()).toEqual([
+      'ai:write:budgeted',
+      'apps:storage:read',
+      'apps:storage:shared:read',
+      'apps:storage:shared:write',
+      'apps:storage:write',
+    ]);
+  });
+
+  it('every declared scope carries a justification, and there are no orphan justifications', () => {
+    // Both directions: a scope without a justification is what a moderator
+    // bounces the review on, and a justification for a scope that was removed
+    // is a stale claim about what the app does.
+    expect([...scopes].sort()).toEqual(Object.keys(justifications).sort());
+  });
+
+  it('every justification is substantive prose, not a placeholder', () => {
+    for (const scope of scopes) {
+      const why = justifications[scope];
+      expect(typeof why).toBe('string');
+      expect(why.trim().length).toBeGreaterThan(40);
+    }
+  });
+
+  it('declares no scope outside the SDK block-scope enum', () => {
+    for (const scope of scopes) {
+      expect(KNOWN_BLOCK_SCOPES).toContain(scope);
+    }
+  });
+});
