@@ -30,6 +30,13 @@ with a YouTube-capped export.
 - Known gaps: **no git remote** (the submitted bundle's source still exists only on this machine); branch `listing-media` is unmerged (no remote ⇒ no PR was possible); opencode MCP `CIVITAI_TOKEN` unwired (CLI credential ≠ MCP env var); `CIVITAI_HOST_KEY` unset (dev:live nav shows name only — harmless); subsystem-index entry DRAFTED but unwritten (see item 4); listing has 0 screenshots (optional, up to 8).
 
 ## Open investigations — live diagnosis state
+### 🔴 The app's scope is UNCONSENTED on this account — a generation would 403
+- as-of: 2026-09-27 (first live browser observation of the deployed app)
+- **Symptom + exact repro:** at `https://civitai.com/apps/run/yt-thumbnail`, logged in as `zachlowdenzx` (8753561), the HOST renders a banner: *"YT Thumbnail is missing permissions it needs to work fully."* with a `Review permissions` **button** (a button, no href). This is AGENTS.md's consent gate: `ai:write:budgeted` is declared in the manifest, but a declared scope is dropped from the token until the user consents, so a submit 403s while manifest and runtime both look correct.
+- **Observed (with values):** app booted fine — `pm-generate` present, `pm-signin` absent, model `SD XL 1.0 (SDXL 1.0)`. Present: `pm-generate pm-model-label pm-model-row pm-change-model pm-lora-add pm-remix-upload pm-remix-hint`. Absent: every `pm-nav-*`/`pm-setup-*` (those are `src/main.tsx` harness-only, confirmed by the declaring file, not just by absence).
+- **Ruled out:** a broken deploy, and a bad slug/suspension — the block booted and answered reads; `via: browser`.
+- 🔴 **NOT established:** whether a NEW user gets a clean consent prompt. This is one account's state, not a claim about the app being broken for everyone — do not report it as an outage. Consenting is an **account action** and was deliberately NOT clicked.
+- **Next probe:** click `Review permissions`, consent, then re-read the banner and run one generation; or check the host's consent record server-side.
 ### CORS on generated image URLs — canvas editor export unverified live
 - as-of: 2026-09-27
 - **Symptom + exact repro:** the editor loads a returned `imageUrls` entry via `loadImageElement` (`crossOrigin='anonymous'`, src/editor.ts) and exports via `canvas.toBlob`. If civitai's image CDN refuses CORS on the generated-image host, the load FAILS (by design — never silent taint) and the editor degrades to an alert + plain link. Question: does the live CDN send `Access-Control-Allow-Origin` for generated images?

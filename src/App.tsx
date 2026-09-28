@@ -7,7 +7,6 @@ import {
   useBlockToken,
   useBuzzBalance,
   useBuzzWorkflow,
-  useCheckpointPicker,
   useImageUpload,
   useRequestConsent,
   useRequestSignIn,
@@ -117,7 +116,7 @@ injectBlocksStyles();
  *  - budget comes from manifest `page.buzzBudgetPerGen`; a page is stateless.
  *  - a page has no HOST model context (entity=none), so the app ships a curated
  *    default checkpoint (DEFAULT_CHECKPOINT) and lets the user change it via the
- *    HOST's resource picker (`useCheckpointPicker` / `useResourcePicker`). The
+ *    HOST's resource picker (`useResourcePicker`). The
  *    block never browses a catalog itself — the host serves the picker (in
  *    dev:live AND on the real platform). A pick is DISCOVERY ONLY — the server
  *    re-validates + re-prices it at estimate/submit.
@@ -151,7 +150,6 @@ export function App() {
   // resource modal; the block never sees a catalog, only the chosen resource.
   // Identical protocol in dev:harness (mock pick), dev:live (host-served
   // overlay), and on the real platform. A pick is DISCOVERY ONLY.
-  const { open: openCheckpointPicker } = useCheckpointPicker();
   const { open: openResourcePicker } = useResourcePicker();
   // The host's image-upload bridge for img2img sources. `open()` resolves with
   // the UNSCANNED private `{ url, width, height }` (Civitai-hosted by contract)
@@ -542,21 +540,35 @@ export function App() {
   // DISCOVERY ONLY — the server re-validates + re-prices the id at
   // estimate/submit, so threading a pick into the body is money-safe.
 
-  // Open the host's Checkpoint picker, pre-filtered to the current base-model
-  // family + pre-highlighting the current pick. On a selection, map it into the
-  // checkpoint state. A dismissal (`selected` undefined) leaves the pick as-is.
+  // Open the host's Checkpoint picker UNCONSTRAINED. On a selection, map it into
+  // the checkpoint state. A dismissal (`null`) leaves the pick as-is.
+  //
+  // 🔴 Deliberately NO `baseModelGroup`. `baseModelGroup` "NARROWS the browse,
+  // never widens it" (blocks-react internal/catalog.d.ts), so deriving it from
+  // the CURRENT checkpoint made this control unable to do its job: the default
+  // pick is SDXL 1.0, so the picker only ever listed SDXL, and every other
+  // ecosystem — Z Image, OpenAI, Flux — was unreachable. Not "hard to find":
+  // unreachable, because the only way to widen the filter was to already hold a
+  // checkpoint from the family you were trying to reach. Changing the checkpoint
+  // IS choosing a family, so the pick must not be filtered by the family you are
+  // leaving.
+  //
+  // This uses `useResourcePicker` rather than `useCheckpointPicker` because
+  // there `baseModelGroup` is OPTIONAL and omitting it is documented as "an
+  // unconstrained pick of the type" — `useCheckpointPicker` REQUIRES the field,
+  // so the only way to disable its filter would be to pass a value ('') whose
+  // meaning is defined in the dev shim and unverified against the prod host.
+  // The LoRA picker below keeps its filter, and should: a LoRA really must match
+  // the checkpoint's family.
   const onChangeModel = useCallback(async () => {
     setPickerBusy(true);
     try {
-      const { selected } = await openCheckpointPicker({
-        baseModelGroup: checkpoint.baseModel,
-        currentVersionId: checkpoint.versionId,
-      });
-      if (selected) setCheckpoint(checkpointFromPick(selected));
+      const picked = await openResourcePicker({ resourceType: 'Checkpoint' });
+      if (picked) setCheckpoint(checkpointFromPick(picked));
     } finally {
       setPickerBusy(false);
     }
-  }, [openCheckpointPicker, checkpoint.baseModel, checkpoint.versionId]);
+  }, [openResourcePicker]);
 
   // Open the host's resource picker filtered to LoRAs, in the checkpoint's
   // base-model family. Append the pick (deduped + MAX_LORAS-capped via addLora).
@@ -913,7 +925,8 @@ export function App() {
 
           {/* Model control. A page carries no host model context, so the app
               starts on DEFAULT_CHECKPOINT and lets the user CHANGE it via the
-              HOST's checkpoint picker (useCheckpointPicker) — the block never
+              HOST's resource picker (useResourcePicker, type=Checkpoint,
+              UNFILTERED so every ecosystem is reachable) — the block never
               browses a catalog. Every pick is DISCOVERY ONLY: the server
               re-validates + re-prices it at estimate/submit. */}
           <div style={fieldStyle}>
