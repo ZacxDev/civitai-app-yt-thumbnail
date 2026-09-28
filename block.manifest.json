@@ -1,7 +1,7 @@
 {
   "$schema": "https://civitai.com/schemas/app-block/v1.json",
   "blockId": "yt-thumbnail",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "name": "YT Thumbnail",
   "tagline": "YouTube thumbnails at 1280×720 — generate, remix your own image, then overlay the text.",
   "description": "YT Thumbnail makes YouTube thumbnails at exactly 1280×720 without you ever touching an aspect-ratio setting.\n\nGenerate — describe the thumbnail and get up to four 16:9 candidates in one run. The aspect is locked, so nothing comes back the wrong shape or needs cropping afterwards.\n\nRemix — start from an image you already have. Feed in a frame from your video or an earlier thumbnail and steer it with a prompt, keeping the composition you liked.\n\nEdit — drop a candidate into the built-in canvas editor and lay big, readable text over it. Positioning, sizing and line-wrapping are handled for you, and the export walks JPEG quality down until the file fits YouTube's 2 MB thumbnail cap — so what you download is always uploadable.\n\nGenerations spend your own Buzz. Every run shows a cost estimate and waits for you to confirm before it submits.",
