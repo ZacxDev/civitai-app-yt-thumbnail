@@ -80,6 +80,31 @@ vi.mock('@civitai/blocks-react', () => ({
   useRequestSignIn: () => ({ requestSignIn: vi.fn() }),
   useResourcePicker: () => ({ open: resourcePickerOpen }),
   useImageUpload: () => ({ open: vi.fn().mockResolvedValue(null) }),
+  // 🔴 EVERY hook App imports must be listed here. A missing one fails with
+  // "No <name> export is defined on the mock" — which vitest reports as a test
+  // FAILURE, indistinguishable at a glance from a broken assertion. A prior
+  // session burned three "reds" that way and they proved nothing.
+  useAppStorage: () => ({
+    get: vi.fn().mockResolvedValue(null),
+    set: vi.fn().mockResolvedValue({ ok: true }),
+    delete: vi.fn().mockResolvedValue({ ok: true, deleted: false }),
+    list: vi.fn().mockResolvedValue({ keys: [] }),
+    getQuota: vi
+      .fn()
+      .mockResolvedValue({ usedBytes: 0, rowCount: 0, limitBytes: 5e7, limitRows: 1e6 }),
+  }),
+  useSharedStorage: () => ({
+    list: vi.fn().mockResolvedValue({ items: [] }),
+    get: vi.fn().mockResolvedValue(null),
+    report: vi.fn().mockResolvedValue(undefined),
+    getCount: vi.fn().mockResolvedValue(0),
+    getCounts: vi.fn().mockResolvedValue({}),
+    append: vi.fn().mockResolvedValue({ key: 'shared_1' }),
+    update: vi.fn().mockResolvedValue(undefined),
+    vote: vi.fn().mockResolvedValue(1),
+    unvote: vi.fn().mockResolvedValue(0),
+    withdraw: vi.fn().mockResolvedValue({ ok: true, deleted: true }),
+  }),
 }));
 
 const { App } = await import('./App.js');
