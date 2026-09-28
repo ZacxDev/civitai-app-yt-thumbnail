@@ -42,12 +42,29 @@ export interface SourceImage {
   height: number;
 }
 
-/** Suffixable prompt styles tuned for thumbnail aesthetics (quick-fill chips). */
-export const THUMB_PROMPT_STYLES: ReadonlyArray<{ label: string; suffix: string }> = [
-  { label: 'Clickbait', suffix: 'youtube thumbnail style, shocked expression, vibrant colors, high contrast, dramatic lighting, centered subject, bold' },
-  { label: 'Cinematic', suffix: 'cinematic lighting, dramatic atmosphere, ultra detailed, movie still, depth of field' },
-  { label: 'Bold & Simple', suffix: 'bold flat colors, simple composition, strong focal point, clean background' },
-];
+/**
+ * Compose the user's prompt with a FORMAT's suffix into the prompt one workflow
+ * will actually carry. (Formats themselves live in `formats.ts`; this is the
+ * money-path half — the string that gets priced and generated.)
+ *
+ * The result is ALWAYS within {@link PROMPT_MAX}, and the suffix is RESERVED:
+ * when the combined text would overflow, the USER's prompt is what gets trimmed,
+ * not the format. A plain `clampPrompt(user + suffix)` would silently drop the
+ * tail — i.e. exactly the format the viewer selected and is about to PAY for —
+ * producing a generation that ignores the chosen format with no indication why.
+ * Trimming the user's own text is visible to them; dropping the format is not.
+ */
+export function composePrompt(prompt: string, suffix: string): string {
+  const base = prompt.trim();
+  const suf = suffix.trim();
+  if (suf === '') return clampPrompt(base);
+  if (base === '') return clampPrompt(suf);
+  const JOINER = ', ';
+  const room = PROMPT_MAX - suf.length - JOINER.length;
+  // A suffix at/over the cap on its own leaves no room for any user text.
+  if (room <= 0) return clampPrompt(suf);
+  return `${base.slice(0, room)}${JOINER}${suf}`;
+}
 
 // ---------------------------------------------------------------------------
 // Per-account Buzz — which pool funds a generation.
@@ -340,4 +357,209 @@ export function phaseForSnapshot(snapshot: BlockWorkflowSnapshot): GenPhase {
     case 'processing':
       return 'polling';
   }
+}
+
+// ---------------------------------------------------------------------------
+// MULTI-WORKFLOW money path — N selected formats ⇒ N workflows.
+//
+// WHY N REQUESTS AND NOT ONE. A format is a prompt suffix, and a workflow body
+// carries exactly ONE `params.prompt`. Two formats mean two different prompts,
+// so they cannot share a request no matter how the quantity is set. `quantity`
+// multiplies IMAGES WITHIN one prompt; formats multiply PROMPTS. They compose:
+// 3 formats × quantity 2 = 3 workflows of 2 images = 6 images.
+//
+// 🔴 THE SPEND CONSEQUENCE, which is the whole reason this is a separate model:
+// the manifest's `page.buzzBudgetPerGen` is enforced PER WORKFLOW, so N formats
+// authorise N budgets, not one. The viewer must see the TOTAL before clicking,
+// and after a PARTIAL failure must be told what was actually spent — never the
+// estimate, and never a total that quietly includes runs that never ran.
+// ---------------------------------------------------------------------------
+
+/**
+ * One format's independent trip through estimate -> submit -> poll. The App
+ * holds an array of these instead of the old single set of scalars, and every
+ * transition goes through {@link patchRun} so a late reply from one workflow can
+ * never clobber another's state.
+ */
+export interface FormatRun {
+  /** The format this run generates for. */
+  formatId: string;
+  /** That format's display label, captured at launch so results stay tagged. */
+  label: string;
+  phase: GenPhase;
+  /** This run's own estimate. `null` when the estimate failed or hasn't run. */
+  estimatedCost: number | null;
+  /** What the SERVER reported this run cost. `null` until it reports one. */
+  actualCost: number | null;
+  spentAccount: BuzzAccountType | null;
+  workflowId: string | null;
+  imageUrls: string[];
+  error: string | null;
+}
+
+/** A fresh, idle run for one format. */
+export function initRun(formatId: string, label: string): FormatRun {
+  return {
+    formatId,
+    label,
+    phase: 'idle',
+    estimatedCost: null,
+    actualCost: null,
+    spentAccount: null,
+    workflowId: null,
+    imageUrls: [],
+    error: null,
+  };
+}
+
+/** One idle run per selected format, in selection order. */
+export function initRuns(formats: ReadonlyArray<{ id: string; label: string }>): FormatRun[] {
+  return formats.map((f) => initRun(f.id, f.label));
+}
+
+/**
+ * Apply a partial update to ONE run, by formatId. Returns a new array; unknown
+ * ids are a no-op. This is the only mutator, so an out-of-order reply from a
+ * slow workflow updates its own row and nothing else.
+ */
+export function patchRun(
+  runs: readonly FormatRun[],
+  formatId: string,
+  patch: Partial<FormatRun>,
+): FormatRun[] {
+  return runs.map((r) => (r.formatId === formatId ? { ...r, ...patch } : r));
+}
+
+/**
+ * The TOTAL Buzz the pending click is expected to cost: the sum of the runs'
+ * individual estimates.
+ *
+ * Returns `null` when NO run has a usable estimate — the caller then shows the
+ * button with no price rather than a fabricated one. When only SOME runs priced
+ * (a partial estimate failure), the sum of the known ones is returned together
+ * with `partial: true`, so the UI can mark it "at least" instead of implying the
+ * figure is the whole bill.
+ */
+export function aggregateEstimate(runs: readonly FormatRun[]): {
+  total: number | null;
+  partial: boolean;
+} {
+  const known = runs.filter((r) => r.estimatedCost != null && Number.isFinite(r.estimatedCost));
+  if (known.length === 0) return { total: null, partial: runs.length > 0 };
+  const total = known.reduce((sum, r) => sum + (r.estimatedCost as number), 0);
+  return { total, partial: known.length < runs.length };
+}
+
+/**
+ * What was ACTUALLY spent, summed from the runs the SERVER reported a cost for.
+ *
+ * 🔴 NEVER falls back to the estimate. On a partial failure the estimate covers
+ * workflows that never ran, so reporting it as spend would overstate the bill;
+ * `null` (rendered as '—') is the honest answer when the server has told us
+ * nothing yet. A run the server priced at 0 contributes 0 — that is the
+ * server's word, not a guess of ours.
+ */
+export function aggregateSpend(runs: readonly FormatRun[]): number | null {
+  const known = runs.filter((r) => r.actualCost != null && Number.isFinite(r.actualCost));
+  if (known.length === 0) return null;
+  return known.reduce((sum, r) => sum + (r.actualCost as number), 0);
+}
+
+/**
+ * Collapse N run phases into the ONE phase the page chrome renders.
+ *
+ * 🔴 SUCCESS OUTRANKS FAILURE, and that is the partial-failure contract: if any
+ * run produced images, the page is in its results state and those images are
+ * shown, even though another run failed. Ranking 'failed' first would throw away
+ * generations the viewer has already PAID for. The failures are surfaced
+ * separately via {@link failedRuns}, not by suppressing the successes.
+ *
+ * While work is in flight the LEAST advanced busy stage wins, so the button
+ * label doesn't read "Generating…" while another run is still being priced.
+ */
+export function overallPhase(runs: readonly FormatRun[]): GenPhase {
+  if (runs.length === 0) return 'idle';
+  if (runs.some((r) => r.phase === 'needs-consent')) return 'needs-consent';
+  if (runs.some((r) => r.phase === 'estimating')) return 'estimating';
+  if (runs.some((r) => r.phase === 'submitting')) return 'submitting';
+  if (runs.some((r) => r.phase === 'polling')) return 'polling';
+  if (runs.some((r) => r.phase === 'succeeded')) return 'succeeded';
+  // Same precedence as the single-run classifier: a disallowed pool is a
+  // recoverable preference problem and must not be reported as "out of Buzz".
+  if (runs.some((r) => r.phase === 'account-rejected')) return 'account-rejected';
+  if (runs.some((r) => r.phase === 'insufficient')) return 'insufficient';
+  if (runs.some((r) => r.phase === 'failed')) return 'failed';
+  return 'idle';
+}
+
+/** One generated image, tagged with the format that produced it. */
+export interface Candidate {
+  url: string;
+  formatId: string;
+  formatLabel: string;
+}
+
+/**
+ * Every image from every run, flattened into one gallery in run order and
+ * tagged with its format. Runs that failed simply contribute nothing — they do
+ * not remove anyone else's results.
+ */
+export function runCandidates(runs: readonly FormatRun[]): Candidate[] {
+  const out: Candidate[] = [];
+  for (const r of runs) {
+    for (const url of r.imageUrls) {
+      out.push({ url, formatId: r.formatId, formatLabel: r.label });
+    }
+  }
+  return out;
+}
+
+/** The runs that ended in a terminal non-success, for the partial-failure note. */
+export function failedRuns(runs: readonly FormatRun[]): FormatRun[] {
+  return runs.filter(
+    (r) => r.phase === 'failed' || r.phase === 'insufficient' || r.phase === 'account-rejected',
+  );
+}
+
+/** Did SOME runs succeed while others did not? Drives the partial-failure banner. */
+export function isPartialFailure(runs: readonly FormatRun[]): boolean {
+  return runs.some((r) => r.phase === 'succeeded') && failedRuns(runs).length > 0;
+}
+
+// ---------------------------------------------------------------------------
+// Default Buzz account selection.
+// ---------------------------------------------------------------------------
+
+/**
+ * The order a default account is chosen in: spend the free/earned pool first,
+ * then creator-earned, and only then the pool the viewer paid cash for.
+ * Deliberately NOT the same thing as the server's funding order — this is only
+ * which pool the app PREFERS on the viewer's behalf.
+ */
+export const ACCOUNT_DEFAULT_ORDER: readonly BuzzAccountType[] = ['blue', 'green', 'yellow'];
+
+/**
+ * Pick the account to default the picker to: the FIRST pool in
+ * {@link ACCOUNT_DEFAULT_ORDER} that by itself covers `cost`.
+ *
+ * Falls back to `'auto'` — today's behaviour, which threads NO `accountType` and
+ * lets the host drain its own order — when the balance is unknown, the cost is
+ * unknown, or NO single pool is sufficient. That last case matters: picking an
+ * insufficient pool would be strictly worse than Auto, because a preference the
+ * server cannot satisfy just wastes the fallback the host would have done for
+ * us. An explicit pick is only ever a PREFERENCE: the server clamps it to what
+ * the viewer holds and to the app's content-rating domain, and may reject it
+ * outright (see {@link isDisallowedAccountError}).
+ */
+export function pickDefaultAccount(
+  balance: Partial<Record<BuzzAccountType, number>> | null | undefined,
+  cost: number | null | undefined,
+): AccountChoice {
+  if (!balance) return 'auto';
+  if (cost == null || !Number.isFinite(cost) || cost <= 0) return 'auto';
+  for (const pool of ACCOUNT_DEFAULT_ORDER) {
+    const have = balance[pool];
+    if (typeof have === 'number' && Number.isFinite(have) && have >= cost) return pool;
+  }
+  return 'auto';
 }
