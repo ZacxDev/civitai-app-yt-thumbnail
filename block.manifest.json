@@ -7,9 +7,19 @@
   "description": "YT Thumbnail makes YouTube thumbnails at exactly 1280×720 without you ever touching an aspect-ratio setting.\n\nGenerate — describe the thumbnail and get up to four 16:9 candidates in one run. The aspect is locked, so nothing comes back the wrong shape or needs cropping afterwards.\n\nRemix — start from an image you already have. Feed in a frame from your video or an earlier thumbnail and steer it with a prompt, keeping the composition you liked.\n\nEdit — drop a candidate into the built-in canvas editor and lay big, readable text over it. Positioning, sizing and line-wrapping are handled for you, and the export walks JPEG quality down until the file fits YouTube's 2 MB thumbnail cap — so what you download is always uploadable.\n\nGenerations spend your own Buzz. Every run shows a cost estimate and waits for you to confirm before it submits.",
   "category": "generation",
   "type": "block",
-  "scopes": ["ai:write:budgeted"],
+  "scopes": [
+    "ai:write:budgeted",
+    "apps:storage:read",
+    "apps:storage:write",
+    "apps:storage:shared:read",
+    "apps:storage:shared:write"
+  ],
   "scopeJustifications": {
-    "ai:write:budgeted": "Runs image generations on the user's behalf, spending from the per-generation Buzz budget the page grants."
+    "ai:write:budgeted": "Runs image generations on the user's behalf, spending from the per-generation Buzz budget the page grants.",
+    "apps:storage:read": "Loads the thumbnail formats this viewer saved earlier, so their own formats are on the picker when they come back.",
+    "apps:storage:write": "Saves, edits and deletes the viewer's own thumbnail formats. They stay private to that viewer unless they explicitly publish one.",
+    "apps:storage:shared:read": "Lists the formats other viewers chose to publish, with their vote totals, so a viewer can browse and use a community format.",
+    "apps:storage:shared:write": "Publishes a format the viewer chose to share, and casts their votes and abuse reports on published formats."
   },
   "page": {
     "path": "/",
