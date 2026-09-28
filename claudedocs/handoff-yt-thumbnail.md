@@ -34,9 +34,17 @@ with a YouTube-capped export.
 |---|---|---|---|
 | 0.1.0 | `pubreq_01M3JE62KDFVK17V8FWA95SEQF` | `17def4f` | approved, superseded |
 | 0.1.1 | `pubreq_01M3JZB7TRZ6TMD1MX7H4M33VZ` | `c5e175d` | **approved + live** (listing copy) |
-| 0.1.2 | `pubreq_01M3K1PRF8Y0KXCT5RA6ZHDJWW` | `cb6f661` | **pending** (checkpoint-picker fix) |
+| 0.1.2 | `pubreq_01M3K1PRF8Y0KXCT5RA6ZHDJWW` | `cb6f661` | **approved + live** (checkpoint-picker fix) |
+| 0.1.3 | `pubreq_01M3MY1W7XECTKKE8GTNGKEKJZ` | `b66ddaf` | **pending** (formats, storage, publishing, N-workflow) |
 
-Live 0.1.1 keeps serving while 0.1.2 is in review — confirmed HTTP 200 after the submit. Branch `fix-checkpoint-picker-family-lock` is the tip and CONTAINS `listing-media`; merging it into `main` brings everything. Still **no git remote** — every submit has warned that the source exists only on this machine.
+**Remote now EXISTS** (this was rank-1 for two sessions): `git@github.com:ZacxDev/civitai-app-yt-thumbnail.git`, PUBLIC, `main` tracks `origin/main`. Every submitted source commit is on it. Before publishing, every blob in every commit was scanned — JWT / Civitai-key / AWS+GitHub-token patterns all 0, with `tok123` hitting 9 blobs as the positive control, so those zeros are measurements rather than a dead grep.
+
+0.1.2 live is confirmed by artifact, not just by status: served bundle moved to `assets/index-CfiTDCZc.js`, with `pm-editor-canvas` and `pm-change-model` at **1** and the not-yet-shipped `pm-format-row` at **0** — a pair, never a bare zero.
+
+## 0.1.3 — what is in review
+Formats replace presets (six built-ins with REAL generated preview art in `public/formats/`), multi-select submitting **one workflow per selected format**, private custom formats and publishable shared ones via app storage, a cost preview on the Generate button, and a first-sufficient blue→green→yellow account default. Landed as PR #1 (feature) + PR #2 (bump). 284/284 across 17 files, up from 188/14.
+
+🔴 **The four storage scopes have NEVER been granted on any account.** They are consent-gated: first real use hits a consent prompt, and a 403 before that is expected, not a defect. **No live storage or publish call has ever been made against this code** — that path is entirely unexercised in production.
 
 ## RESOLVED — `description` is absent from the schema but DOES land
 0.1.1 shipped `tagline`/`description`/`category` with an explicit unknown: `description` is in NO version of the published manifest schema (`v1.json` is the only one served; `v2`/`v1.1`/`latest` all 404), and the schema permits unknown keys, so `civitai app validate` returned rc=0 either way and proved nothing. **After 0.1.1 approved, `civitai app doctor` reports none of `empty-tagline` / `empty-description` / `empty-category`.** All three landed. The published schema is incomplete; the CLI's insistence was correct. Only `no-screenshots` remains (optional).
@@ -47,6 +55,23 @@ Live 0.1.1 keeps serving while 0.1.2 is in review — confirmed HTTP 200 after t
 - **Fix (`ea40598`):** `useResourcePicker({ resourceType: 'Checkpoint' })` with `baseModelGroup` OMITTED — documented as "an unconstrained pick of the type". Deliberately NOT `useCheckpointPicker` with `baseModelGroup: ''`: that field is required there, and `''` is only documented in the dev shim's `filterCardsByFamily`, unverified against prod. Cost: the picker no longer pre-highlights the current model (that option belongs to the dropped hook).
 - **The LoRA picker KEEPS its family filter** on purpose — a LoRA really must match. Pinned by a test so an over-broad "drop every baseModelGroup" edit fails loudly.
 - **Deliberately NOT built:** a client-side warning for a cross-family LoRA left over after an ecosystem switch (newly reachable). The server validates compatibility and rejects before any spend, and `submitErrorReason` surfaces its wording verbatim; a fuzzy client check would duplicate a server rule and misfire where the server is right (`SDXL 1.0` vs `SDXL Turbo` — one ecosystem, two strings).
+
+## 🔴 OPEN PRODUCT DECISION — the platform ignores requested dimensions
+Measured 2026-09-28 against the live backend. `params.width`/`params.height` are **inert**: every generation returned **1216×832** (aspect 1.46) whatever was asked — 1280×720 and 1344×768, on SD XL 1.0 **and** on FLUX.1 [dev]. Two ecosystems, three requests, one answer, so this is not SDXL bucketing.
+
+The downloaded file is still a true 1280×720 because the editor cover-crops — but ~18% of the model's composition is trimmed away unseen, which for a *thumbnail* app means framing the model chose is silently discarded. The app's UI copy was corrected in 0.1.3 to describe the **exported** file; the underlying framing loss is untouched and needs a call: correct the copy further, show the crop so users can reframe, or find whether any host parameter actually controls output size.
+
+⚠ Scope: `blocks.submitWorkflow`, txt2img only. NOT tested on img2img (`sourceImage` has a source aspect to honour) or `quantity > 1`.
+
+Cost data from the same run: SD XL 1.0 = **3 Buzz** per image, FLUX.1 [dev] = **33** — an 11× spread. Total spent generating previews + probes: **57 Buzz** across 9 workflows.
+
+## RESOLVED — CORS on generated images; the canvas editor export works
+Generated images serve from `orchestration-new.civitai.com`, which **reflects any Origin**. The decisive case is `Origin: null`, because the block's sandbox has no `allow-same-origin` and its origin is therefore opaque — and both hops of the redirect carry the header (a chain fails CORS if any single hop omits it):
+```
+Origin: null → 301 access-control-allow-origin: null
+             → 200 access-control-allow-origin: null   content-type: image/jpeg
+```
+No taint, `toBlob` works. **Do not add defensive workarounds for this.**
 
 ## Open investigations — live diagnosis state
 ### 🔴 The app's scope is UNCONSENTED on this account — a generation would 403
