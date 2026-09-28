@@ -9,25 +9,18 @@ Currently REFUSES: scope `civitai-app-yt-thumbnail` is not in
 Ordinary for a brand-new repo — register the scope or ignore until content exists.
 
 ## Goal
-Ship **YT Thumbnail** — a Civitai page-money app that generates YouTube
-thumbnails at 1280×720: txt2img + img2img remix + canvas text-overlay editor
-with a YouTube-capped export.
-- **closing-condition: MET 2026-09-27 21:42** — `app_state.py yt-thumbnail` rc=0 **and** `curl -sS -o /dev/null -w '%{http_code}' "https://yt-thumbnail.civit.ai/"` printed **200**. v1 is approved, deployed and serving.
-- Remaining arc is no longer "ship it": it is the store LISTING (revision under review) and the unremoved local-only-git risk. See Next steps.
+Ship **YT Thumbnail** — a Civitai page-money app that generates YouTube thumbnails: txt2img + img2img remix + multi-format generation + a canvas text-overlay editor with a YouTube-capped export.
+- **closing-condition: check** — `civitai app listing status` no longer prints "A revision is currently under moderator review" **and** `civitai app doctor` reports `yt-thumbnail ✓ No problems` **and** the live bundle greps `yt-storage-anon` ≥1 alongside a known-present positive control. Two of the three already hold; the pending listing-media revision is the open one.
+- Arc 1 ("ship it") was MET 2026-09-27 — `app_state.py yt-thumbnail` rc=0 and `https://yt-thumbnail.civit.ai/` returned 200. That line was frozen and is kept here as history; the field above is THIS arc's, opened by the formats/storage/listing work rather than extending the old one.
 
 ## State now
-- Branch/PR: `main` @ `5faa9f8` (2 commits: `17def4f` app + `5faa9f8` chore). **No remote — commits exist only on this machine.** No PR (new repo).
-- DONE this session (all committed in `17def4f`):
-  - Scaffold `page-money` → full v1: `src/generation.ts` (always-16:9 params 1280×720, `quantity` clamp 1–4, `sourceImage` img2img threading, prompt presets; Comfy machinery removed), `src/editor.ts` NEW (cover-crop, wrap, overlay spec, drawThumbnail, JPEG quality ladder to YouTube 2MB cap, CORS-aware load), `src/App.tsx` rewritten (Generate/Remix tabs, candidates picker, gallery → editor, download; money-path driver untouched), `comfy.ts`+`comfy.test.ts` deleted, README rewritten to match code.
-  - 180/180 tests green; tsc clean; `civitai app validate` ✓; `npm run build` ✓; harness smoke ✓. Mutation-checked: breaking quantity/sourceImage threading turns both e2e tests red.
-- **APPROVED + LIVE.** `pubreq_01M3JE62KDFVK17V8FWA95SEQF` submitted 2026-09-27 17:01 CDT, **reviewed 21:38, deploy `live` 21:39** (it flipped mid-session on 2026-09-27 — a `listing status` read at ~21:37 still said `draft`). Source commit `17def4f` stamped server-side.
-  - Verified, not inferred: `app_state.py yt-thumbnail` rc=0; `curl` on `https://yt-thumbnail.civit.ai/` → **200**; served bundle `assets/index-BApQOvKD.js` greps **`pm-editor-canvas` 1 / `pm-comfy-beta` 0** — the 0 is meaningful because the positive control in the same grep, same file, same backtick quoting returned 1.
-- **Listing media DONE (2026-09-27 ~21:42).** `assets/{icon,cover}.{svg,png}` committed on branch `listing-media` (`f597804`). icon 512×512/19.9 KiB, cover 1600×900/220.1 KiB, flat vector rendered by `rsvg-convert` (`nix-shell -p librsvg`). Both accepted; publish floor now MET.
-  - 🔴 Because the listing was already LIVE, they did **not** attach directly — they staged on revision **`alpr_01M3JY8NMRA1PC6AJQFTJCFF8G`, pending moderator review**. The live listing is unchanged until that is approved. `set-icon` staged silently (below floor); `set-cover` **auto-submitted the revision** on meeting the floor, exactly as `set-icon --help` says ("it reuses this revision and submits it once the floor is met") — there is no separate `submit-revision` step to run, and running one now would be a no-op.
-- Dev/live wiring: `.env.development.local` holds `VITE_LIVE_BLOCK_TOKEN` minted with `--spend --budget 250` (payload verified: `["ai:write:budgeted","user:read:self"], buzzBudget: 250`; ~4h TTL from ~15:35 CDT — **expired ~19:35, re-mint before any dev:live run**). CLI credential = OAuth `zachlowdenzx` (id 8753561), can spend (AI Services) + submit Apps; balance ~4.07M Buzz.
-- IN FLIGHT: moderator review of listing revision `alpr_01M3JY8NMRA1PC6AJQFTJCFF8G` (external; not self-service). The APP is live regardless — the revision gates only the store listing's media.
-- Still unverified against the real backend: no live generation has run, so 1280×720 pricing, CORS-on-image-URLs, and budget-vs-quantity remain open (see Open investigations). Now actually runnable — the app is live.
-- Known gaps: **no git remote** (the submitted bundle's source still exists only on this machine); branch `listing-media` is unmerged (no remote ⇒ no PR was possible); opencode MCP `CIVITAI_TOKEN` unwired (CLI credential ≠ MCP env var); `CIVITAI_HOST_KEY` unset (dev:live nav shows name only — harmless); subsystem-index entry DRAFTED but unwritten (see item 4); listing has 0 screenshots (optional, up to 8).
+- **App: 0.1.3 APPROVED + LIVE.** `pubreq_01M3K1PRF8Y0KXCT5RA6ZHDJWW`… superseded — current live row is **0.1.3 / `b66ddaf`**, deploy `live`, `HTTP 200`, `app_state.py` rc=0, floor 0.1.3.
+- **Repo is PUBLIC with a remote:** `git@github.com:ZacxDev/civitai-app-yt-thumbnail.git`. `main` @ `ca3bddb`, clean, tracking `origin/main`. Five PRs merged (#1 features, #2 bump, #3 handoff, #4 screenshots, #5 AI media). **No open PRs in this repo.**
+- **Verified live, not inferred:** served bundle `assets/index-BrzuzOdM.js` carries `yt-hero`/`yt-format-card`/`yt-format-new`/`yt-published-board`/`yt-storage-anon`/`pm-result-format`/`pm-partial` each at **1**, with `pm-editor-canvas` 1 as positive control and retired `pm-comfy-beta` 0. Preview art serves `200 image/webp` from `/formats/<id>.webp`.
+- **End-to-end money path exercised in production** (2026-09-28): two formats selected → **two workflows**, two separately-labelled candidates, **6 Buzz debited from Blue**, button read `Generate · 6 Buzz`, editor opened a **1280×720 canvas with no error**. Multi-format, cost preview and the CORS-dependent editor export are all confirmed working live.
+- **Listing:** `approved`, icon ✓, cover ✓, **4 screenshots LIVE** (approved revision). **IN FLIGHT:** a revision carrying the new AI-generated icon+cover — `alpr_01M3N183249CTB062W288KMM5S`, pending moderator review. The live listing keeps the old art until it clears.
+- **devrc `flow-yt-thumbnail` / PR #1904 is OPEN** (2 commits: the per-app flow, and the retraction below). The devrc checkout is currently **on that branch**, which is how the corrected flow docs are live for the bridge.
+- Buzz spent this session: **~81** (57 previews+probes, 6 live UI generation, 18+6 listing art).
 
 ## Version history (server-confirmed, never from a CLI exit code)
 | ver | pubreq | source | state |
@@ -42,9 +35,7 @@ with a YouTube-capped export.
 0.1.2 live is confirmed by artifact, not just by status: served bundle moved to `assets/index-CfiTDCZc.js`, with `pm-editor-canvas` and `pm-change-model` at **1** and the not-yet-shipped `pm-format-row` at **0** — a pair, never a bare zero.
 
 ## 0.1.3 — what is in review
-Formats replace presets (six built-ins with REAL generated preview art in `public/formats/`), multi-select submitting **one workflow per selected format**, private custom formats and publishable shared ones via app storage, a cost preview on the Generate button, and a first-sufficient blue→green→yellow account default. Landed as PR #1 (feature) + PR #2 (bump). 284/284 across 17 files, up from 188/14.
-
-🔴 **The four storage scopes have NEVER been granted on any account.** They are consent-gated: first real use hits a consent prompt, and a 403 before that is expected, not a defect. **No live storage or publish call has ever been made against this code** — that path is entirely unexercised in production.
+SUPERSEDED — 0.1.3 is **approved, live and verified** (see *State now*). Nothing is in review for the APP. The only thing pending is the **listing-media revision** `alpr_01M3N183249CTB062W288KMM5S`.
 
 ## RESOLVED — `description` is absent from the schema but DOES land
 0.1.1 shipped `tagline`/`description`/`category` with an explicit unknown: `description` is in NO version of the published manifest schema (`v1.json` is the only one served; `v2`/`v1.1`/`latest` all 404), and the schema permits unknown keys, so `civitai app validate` returned rc=0 either way and proved nothing. **After 0.1.1 approved, `civitai app doctor` reports none of `empty-tagline` / `empty-description` / `empty-category`.** All three landed. The published schema is incomplete; the CLI's insistence was correct. Only `no-screenshots` remains (optional).
@@ -97,14 +88,24 @@ No taint, `toBlob` works. **Do not add defensive workarounds for this.**
 - **Leading hypothesis:** quantity 1–2 fits 250; quantity 4 on some checkpoints won't.
 - **Next probe:** dev:live, quantity 4 → read the estimate response's `cost.total`; if rejected, note the price and cap the picker hint or wait for approval (real budget applies then).
 
+### The four storage scopes have never been granted — publish/persist is UNEXERCISED in production
+- as-of: 2026-09-28
+- **Symptom + exact repro:** 0.1.3 declares `apps:storage:read`, `apps:storage:write`, `apps:storage:shared:read`, `apps:storage:shared:write`. A newly declared scope is dropped from the token until the viewer consents, so the first real storage call 403s while manifest and runtime both look correct.
+- **Observed (with values):** on the live app as `zachlowdenzx`, `yt-storage-anon` is absent (signed in) and `yt-published-board` renders only behind `yt-board-toggle`; **no storage or publish call has ever been made against this code**, in production or in dev. The custom-format draft was filled in and then **cancelled deliberately** rather than saved, precisely to avoid a write on an unconsented scope. `via: measurement`.
+- **Ruled out:** that the scopes are missing from the manifest — all four are present with justifications and `civitai app validate` rc=0; `via: command`.
+- **Leading hypothesis:** the consent prompt appears on first Save/Publish and everything works after it; entirely untested.
+- **Next probe:** on the live app, click `yt-format-new` → fill → **Save**, and record whether a consent prompt appears, then whether the format survives a reload (`useAppStorage` round-trip). Then `yt-board-toggle` → Publish → confirm the suffix lands in the MODERATED `body`, not `data`.
+
 ## Next steps (ranked)
-1. Merge `listing-media` into `main` and push the repo to a remote — the submitted bundle's source, and now the listing assets, exist only on this machine (submit warned: "HEAD is on no remote"). Needs the user's call on host/repo name; then `git checkout main && git merge --ff-only listing-media && git remote add origin <url> && git push -u origin main`.
-   forcing: user
-2. First real generation + close the two open investigations — the app is live, so these are finally runnable. Re-mint the dev token (the old one has expired), then one real gen (**spends the viewer's Buzz**), the CORS probe below, and budget sizing vs the manifest 300.
-   forcing: none
-3. Watch listing revision `alpr_01M3JY8NMRA1PC6AJQFTJCFF8G` to approval — `civitai app listing status` reports it. External moderator action; nothing to do but check. Optionally add screenshots (≤8) BEFORE it clears, so they ride the same review cycle rather than opening a second one.
+1. Watch listing-media revision `alpr_01M3N183249CTB062W288KMM5S` to approval — `civitai app listing status` stops printing "A revision is currently under moderator review". External moderator action; nothing to do but check. Repo: none.
    forcing: gate
-4. Complete the subsystem-index write + wire opencode MCP `CIVITAI_TOKEN` — the index entry is drafted at scope `civitai-app-yt-thumbnail`, ref `src` (kept at `/tmp/opencode/scratch/civitai-app-yt-thumbnail-src.md`); the write refused (`rc=11`: scope unregistered in `~/.config/subsystem-store/routes.json`, which is home-manager-managed READ-ONLY — unblocking means adding `"civitai-app-yt-thumbnail": "civitai"` to the devrc nix source + switching, then `cairn create --scope civitai-app-yt-thumbnail --ref src --file <draft>` + `cairn sync && cairn-validate --scope civitai-app-yt-thumbnail`). Route recommendation: `civitai` (fleet majority for generation apps: sensei/model-benchmarking/generate-from-model; playable-collections is the lone `personal`). Then: inject `CIVITAI_TOKEN` from `~/.config/civitai/config.yaml` via `~/.config/opencode/plugin/env.js` (opencode restart needed) so the two MCP servers stop 401ing.
+2. Merge devrc PR #1904 (`innovation-upstream/devrc`) — carries the per-app browser flow AND the 🔴 retraction below. Until it lands, every other session still reads "a synthetic in-frame click does nothing on a billing control", which is false and unsafe. Files: `scripts/browser-bridge/flows/{civit.ai,yt-thumbnail.civit.ai}.md`, `flows/_index.json`. **Also: the devrc checkout is parked on `flow-yt-thumbnail`** — return it to `main` after merging.
+   forcing: user
+3. Exercise the storage + publish path once (see Open investigations) — it is the only part of 0.1.3 with zero production evidence. Repo: none (live app).
+   forcing: none
+4. Decide the 1216×832 framing question (below) — correct the copy further, show the crop so users can reframe, or find a parameter that controls output size. Repo: `civitai-app-yt-thumbnail`, `src/generation.ts`.
+   forcing: user
+5. Register the `civitai-app-yt-thumbnail` cairn scope, then land the DRAFTED index entry — `cairn create` still REFUSES verbatim: *"scope `civitai-app-yt-thumbnail` is not in the routing table `/home/zach/.config/subsystem-store/routes.json`"* (configured instances: `personal`, `civitai`). That file is home-manager-managed READ-ONLY, so unblocking means adding `"civitai-app-yt-thumbnail": "civitai"` to the devrc nix source + `home-manager switch`, then `cairn create --scope civitai-app-yt-thumbnail --ref src --file <entry>`. **The entry is written and VALIDATES clean** (`cairn-validate --validate` → `OK — 1 of 1 parse`); it is parked at `<scratchpad>/src.md` and **will be lost when the scratchpad is cleared** — re-derive from this doc's Gotchas if so. Route `civitai` is the fleet majority for generation apps. This has now blocked twice.
    forcing: none
 
 ## Defects (batched)
@@ -124,16 +125,27 @@ No taint, `toBlob` works. **Do not add defensive workarounds for this.**
 - Scaffold's `phaseForSubmitError`/`isFeatureGated`/`'gated'` phase were DELETED with the comfy mode; don't re-add tests referencing them.
 - README/docs match the code as of `17def4f` (comfy section deleted; "pack ships no Slider" claim fixed — it ships `Slider` and `TextInput`).
 
+- 🔴 **RETRACTED, and it is the most dangerous thing in this doc's history: "a synthetic in-frame `--frame` click does nothing on a billing control" is FALSE.** Measured 2026-09-28: a framed `click` on `[data-testid=pm-generate]` submitted two workflows and **spent 6 real Buzz**. Both `flows/civit.ai.md` and `flows/yt-thumbnail.civit.ai.md` asserted it; both are corrected in devrc PR #1904. **Never fire an in-frame click at a money control to see whether it works.**
+- 🔴 **Why that false claim survived as a "reproducible observation" — the trap that produced it:** `pm-generate` is `disabled` until the prompt is non-empty, **and the prompt field renders a placeholder that reads exactly like a filled-in value** (`a serene mountain lake at golden hour, highly detailed`). A click on a disabled button reports `ok: true` and changes nothing — indistinguishable from a swallowed untrusted event. **`type` a real prompt, then read `.disabled`, before drawing any conclusion about trust.**
+- 🔴 **`xargs` cannot exec a shell builtin, so `... | xargs -0 command grep ...` exits 127 with EMPTY output — indistinguishable from a clean zero.** This produced a confident "no format testids exist" that was simply a broken pipeline. Use plain `grep` inside `xargs` (the `grep` function does not apply there anyway).
+- 🔴 **A bundle-grep zero is worthless if you invented the token.** `pm-format-row` returned 0 and nearly became "the formats work did not deploy" — the real ids use a **`yt-` prefix**. Derive probe names from source, and always report a pair with a known-present control.
+- **The LSP lags branch switches; `tsc` is the arbiter.** Three separate waves of diagnostics this session (`selectedFormats` unused, `THUMB_PROMPT_STYLES` missing, whole-module "cannot find") were all stale — `tsc --noEmit` was clean each time, with `noUnusedLocals` ON.
+- **Listing media auto-submits the revision once the publish floor is met**, and batched attaches join ONE revision (measured: 4 screenshots all landed on `alpr_01M3MZECSN49QVBT5WG1TYZA5B`). Put the real `--changelog` on every attach — you cannot tell in advance which one is last.
+- **The icon's YouTube-mark hazard.** The best generated icon was a red rounded square with a play triangle — essentially the YouTube logo. The app's NAME is nominative descriptive use and is fine; reproducing the MARK on a public listing for an unaffiliated app is not. Final icon uses a magenta/cyan burst with no red, and a VECTOR play mark composited over generated art (generated play symbols are mushy and die at 32px).
+- **The `civitai` CLI commit guard blocks heredocs**: `git commit -F <file>` (write the message with the Write tool). A compound `checkout -b && commit` is also refused because the guard reads the branch at parse time — split them.
+
 ## How to verify
 ```bash
 cd /home/zach/workspace/civit/civitai-app-yt-thumbnail
-npx tsc -p tsconfig.json --noEmit && npm test   # expect 180/180 across 12 files
-npm run build                                    # platform's build command
-civitai app validate .
-civitai app status yt-thumbnail                  # pending → approved (pubreq_01M3JE62KDFVK17V8FWA95SEQF)
-python3 ~/.config/opencode/skills/civitai-app-fleet/app_state.py yt-thumbnail   # exit 0 iff live
-npm run dev:harness                              # mock host at :5186 (mock banner visible)
-# live (spends YOUR Buzz):
-civitai app dev-token yt-thumbnail --spend --budget 250 --env > .env.development.local
-npm run dev:live
+npx tsc -p tsconfig.json --noEmit && npm test    # expect 284/284 across 17 files
+npm run build && civitai app validate .
+python3 ~/.claude/skills/civitai-app-fleet/app_state.py yt-thumbnail   # rc=0 iff live
+civitai app doctor | sed -n '/^yt-thumbnail/,/^$/p'                    # expect "✓ No problems"
+civitai app listing status                       # revision pending -> approved
+# served-bundle proof (ALWAYS report a pair, never a bare zero):
+B=$(curl -sS https://yt-thumbnail.civit.ai/ | grep -oE 'assets/index-[A-Za-z0-9_-]+\.js' | head -1)
+curl -sS "https://yt-thumbnail.civit.ai/$B" > /tmp/b.js
+for t in yt-format-card yt-storage-anon pm-editor-canvas pm-comfy-beta; do
+  printf '%-20s %s\n' "$t" "$(grep -oF -- "\`$t\`" /tmp/b.js | wc -l)"   # last must be 0, others 1
+done
 ```
