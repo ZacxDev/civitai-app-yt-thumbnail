@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { resolveBlockTier, type BlockSizeTier } from '@civitai/blocks-react';
 
-import { App } from './App.js';
+import { App, SHELL_PADDING } from './App.js';
 import { layoutForTier } from './layout.js';
 import { installMockMoneyHost } from './mock-buzz.js';
 import { palette, parseHex, type Palette } from './palette.js';
@@ -367,6 +367,189 @@ describe('the layout the App renders, at EVERY tier', () => {
     render(<App />);
     await screen.findByTestId('pm-generate');
     expect(content().style.maxWidth).toBe('640px');
+  });
+
+  // =========================================================================
+  // THE RAIL IS BOUNDED, SO THE SPEND BUTTON CANNOT BE STRANDED BELOW THE FOLD
+  // =========================================================================
+
+  it('the rail is HEIGHT-BOUNDED and scrolls its own overflow', async () => {
+    // 🔴 WHAT THIS IS FOR, AND WHAT IT CANNOT SEE. `position: sticky` with no
+    // `max-height` and no `overflow` is worse than no sticky at all once the rail is
+    // taller than the scrollport: the frame's scroll moves the MAIN column, the rail
+    // cannot scroll its own overflow, and its tail — quantity, spend-from, Generate,
+    // and the three pre-spend gate alerts — sits below the fold for the whole sticky
+    // range. At `lg`+ the rail holds the mode toggle, the prompt, the model, up to
+    // MAX_LORAS LoRA rows and all of that tail, so it exceeds a 1280×800 laptop's
+    // ~740px of scrollport well before the LoRA cap.
+    //
+    // 🔴 jsdom PERFORMS NO LAYOUT, so nothing here observes the rail travelling,
+    // overflowing or scrolling. What IS assertable is that the bound exists in the
+    // emitted style and that both numbers are DERIVED from `SHELL_PADDING` rather
+    // than picked — a magic number would drift the moment the shell's inset moved.
+    // Whether the tail is reachable in pixels is unverified and carried as a
+    // `deferred[]` item in `taste.json`.
+    setBlockWidth(INSIDE.lg);
+    uninstall = installMockMoneyHost(VIEWER);
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+
+    const rail = screen.getByTestId('yt-rail');
+    expect(rail.style.position).toBe('sticky');
+
+    // The bound, and the overflow that makes the bound reachable rather than a clip.
+    // Both must be present: `maxHeight` alone would CUT the Generate button off.
+    expect(rail.style.maxHeight).toBe(`calc(100dvh - ${SHELL_PADDING * 2}px)`);
+    expect(rail.style.overflowY).toBe('auto');
+
+    // `top: 0` put a stuck rail flush against the frame's top edge, ignoring the
+    // inset the shell gives every other edge.
+    expect(rail.style.top).toBe(`${SHELL_PADDING}px`);
+    expect(rail.style.top).not.toBe('0px');
+
+    // The derivation, asserted as a derivation: the bound is TWO insets (one above,
+    // one below), so it moves with the shell rather than beside it.
+    expect(rail.style.maxHeight).toContain(String(SHELL_PADDING * 2));
+    expect(SHELL_PADDING).toBeGreaterThan(0);
+  });
+
+  // =========================================================================
+  // THE HERO AT `lg`+ — the brand surface, in a pass whose subject is the brand
+  // =========================================================================
+
+  it('the hero EXISTS in the rail layout, above both columns', async () => {
+    // 🔴 DELETING `{hero}` FROM THE `lg`+ BRANCH USED TO LEAVE THE SUITE GREEN.
+    // The hero was asserted only in the non-rail layout, so the app's brand surface
+    // had no coverage at all on the widest screens — the ones this pass is about.
+    setBlockWidth(INSIDE.lg);
+    uninstall = installMockMoneyHost(VIEWER);
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+
+    const hero = screen.getByTestId('yt-hero');
+    expect(hero).toBeInTheDocument();
+    // Above the rail grid, not inside either column — the masthead spans both.
+    const grid = screen.getByTestId('yt-rail-grid');
+    expect(hero.compareDocumentPosition(grid) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(grid).not.toContainElement(hero);
+    expect(content()).toContainElement(hero);
+  });
+
+  it('the hero SCALES with the block, which App.tsx claims as a feature', async () => {
+    // 🔴 TWO MUTANTS THAT BOTH SURVIVED A GREEN SUITE: collapsing `heroStyle`'s
+    // padding to the narrow value, and collapsing `heroTitleStyle`'s fontSize to 22.
+    // `heroStyle`'s own docblock says "the padding and the headline scale with the
+    // block, so the hero is a masthead on a 1600px block rather than a banner that
+    // eats the fold" — a claim with no test is a claim.
+    //
+    // Both widths are asserted, because either number alone passes against a
+    // constant. The two fixtures are in different tiers AND on opposite sides of the
+    // rail boundary, which is the dimension the scaling keys on.
+    setBlockWidth(INSIDE.lg);
+    uninstall = installMockMoneyHost(VIEWER);
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+
+    const wideHero = screen.getByTestId('yt-hero');
+    expect(wideHero.style.padding).toBe('22px 28px');
+    const wideTitle = screen.getByText('YT Thumbnail');
+    expect(wideTitle.style.fontSize).toBe('26px');
+
+    // The narrow arm, in a second render — the values must DIFFER, not merely exist.
+    uninstall?.();
+    restoreClientWidth?.();
+    restoreResizeObserver?.();
+    setBlockWidth(INSIDE.base);
+    uninstall = installMockMoneyHost(VIEWER);
+    render(<App />);
+    const narrowHero = (await screen.findAllByTestId('yt-hero')).at(-1)!;
+    expect(narrowHero.style.padding).toBe('18px 20px');
+    expect(narrowHero.style.padding).not.toBe(wideHero.style.padding);
+    const narrowTitle = screen.getAllByText('YT Thumbnail').at(-1)!;
+    expect(narrowTitle.style.fontSize).toBe('22px');
+    expect(narrowTitle.style.fontSize).not.toBe(wideTitle.style.fontSize);
+  });
+});
+
+// ===========================================================================
+// COST DISCLOSURE — the copy that may never be deleted.
+//
+// 🔴 NO TEST PINNED ANY OF THESE, IN THE PASS THAT DELETED THREE ADJACENT STRINGS
+// AND RECORDED "KEPT: every cost disclosure" AS A DECISION. The deletions were
+// right and the decision was right; what was missing is any mechanism that would
+// notice the NEXT deletion. This app spends the viewer's own Buzz, so the three
+// places it says so are the ones a copy-trimming pass must not reach.
+//
+// Pinned as WHOLE NORMALISED STRINGS rather than keywords. A guard on the word
+// "Buzz" is walkable by rewording around it; the whole string makes a cosmetic
+// reword fail the test, which is the price of a machine-readable claim.
+// ===========================================================================
+
+describe('the cost disclosures survive', () => {
+  let uninstall: (() => void) | undefined;
+
+  afterEach(() => {
+    uninstall?.();
+    uninstall = undefined;
+    restoreClientWidth?.();
+    restoreClientWidth = undefined;
+    restoreResizeObserver?.();
+    restoreResizeObserver = undefined;
+  });
+
+  /** Collapse whitespace so a re-wrap in JSX is not a failure. */
+  const norm = (el: HTMLElement) => (el.textContent ?? '').replace(/\s+/g, ' ').trim();
+
+  it('the PRE-spend per-format cost note says generations cost Buzz', async () => {
+    setBlockWidth(INSIDE.md);
+    uninstall = installMockMoneyHost(VIEWER);
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+
+    // One format is selected by default (the at-least-one invariant).
+    expect(norm(screen.getByTestId('yt-format-cost-note'))).toBe('One generation. Costs Buzz.');
+  });
+
+  it('the cost note scales to N formats — the format count IS the bill', async () => {
+    // The plural arm is a different string, and it is the one that carries the
+    // "each one costs" warning. Selecting a second format is what makes the count
+    // reachable, and it is the interaction that doubles the price.
+    setBlockWidth(INSIDE.md);
+    uninstall = installMockMoneyHost(VIEWER);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+
+    const unselected = screen
+      .getAllByTestId('yt-format-card')
+      .find((c) => c.querySelector('[role="checkbox"][aria-checked="false"]'));
+    expect(unselected, 'no unselected format card to click').toBeDefined();
+    await user.click(unselected!.querySelector('[role="checkbox"]') as HTMLElement);
+
+    expect(norm(screen.getByTestId('yt-format-cost-note'))).toBe(
+      '2 separate generations — each one costs Buzz.',
+    );
+  });
+
+  it('the POST-spend figure is reported, and it is the SERVER’s number', async () => {
+    // The third disclosure: what was actually taken. It must never be the estimate —
+    // a partial failure would otherwise bill for work that never ran.
+    setBlockWidth(INSIDE.md);
+    uninstall = installMockMoneyHost({
+      ...VIEWER,
+      consentGranted: true,
+      cost: 8,
+      pollsUntilDone: 2,
+      buzzBalance: { blue: 100, green: 0, yellow: 0 },
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    const generateBtn = await screen.findByTestId('pm-generate');
+    await user.type(screen.getByLabelText(/prompt/i), 'a serene mountain lake');
+    await user.click(generateBtn);
+    await screen.findByAltText(/generated result/i, {}, { timeout: 5000 });
+
+    expect(norm(screen.getByTestId('pm-spent'))).toContain('Spent 8 Buzz');
   });
 });
 

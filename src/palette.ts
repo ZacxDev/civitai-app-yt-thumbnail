@@ -288,10 +288,25 @@ export const AA_TEXT = 4.5;
  * Border-against-ground adjacencies the app actually draws, `[border, ground]`.
  *
  * 🔴 THESE ARE NOT GRADED AT WCAG 1.4.11's 3:1, AND SAYING SO IS THE POINT.
- * Measured, the widest of them is 1.48:1 and the narrowest 1.22:1 — these are
- * decorative hairlines separating two filled surfaces, not the sole boundary of a
- * control, so 3:1 is the wrong bar and asserting it would either fail honestly or
- * force a palette that looks like a wireframe. What 1.4.11 *does* govern here is
+ * Measured across every row below × both themes, the narrowest is 1.22:1 (`border` on
+ * `surfaceRaised`, dark) and the widest 2.151:1 (`borderStrong` on `page`, dark) —
+ * these are decorative hairlines separating two filled surfaces, not the sole
+ * boundary of a control, so 3:1 is the wrong bar and asserting it would either fail
+ * honestly or force a palette that looks like a wireframe.
+ *
+ * 🔴 THE VERSION OF THIS SENTENCE THAT SHIPPED SAID "the widest of them is 1.48:1",
+ * AND THAT WAS THE WRONG POPULATION. 1.476:1 is the widest of the three `border`
+ * rows only; it is not the widest of `BORDER_PAIRS`, which is what the sentence
+ * claimed. The correction cuts the argument's strength where it mattered: at 2.151:1
+ * `borderStrong` on `page` is most of the way to 3:1, so "3:1 would force a
+ * wireframe" is a weaker claim for `borderStrong` than the 1.48 figure made it look.
+ * It is still the reason the bar below is "a hairline is still a hairline" rather than
+ * 1.4.11 — `borderStrong` draws the rail edge and the pill outline, neither of which
+ * is a control's sole boundary — but the margin is narrower than was stated, and no
+ * fresh justification is offered for it beyond that. `BORDER_MIN`'s own docblock, at
+ * 1.22, named the narrowest correctly and is unchanged.
+ *
+ * What 1.4.11 *does* govern here is
  * SELECTED STATE, and the format card does not rest on the tint: a selected card
  * carries a ✓ badge drawn in `brandFg` on `brand` (6.55:1 dark / 4.90:1 light,
  * both in `TEXT_PAIRS`) plus `aria-checked`, so the state survives a viewer who

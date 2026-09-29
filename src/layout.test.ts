@@ -314,4 +314,77 @@ describe('layoutForTier', () => {
       }
     });
   });
+
+  // =========================================================================
+  // THE ASSUMPTION THE CLAMP USED TO MAKE SILENTLY.
+  // =========================================================================
+  describe('the top of the SDK tier ladder is an ASSUMPTION, so it is pinned', () => {
+    it('`xl` is the widest tier the SDK reports today', () => {
+      // 🔴 THE ASSUMPTION `ultrawide && tier === 'xl'` USED TO BURY. The ladder is
+      // `@civitai/theme`'s, not this app's, and the clamp read as a statement about
+      // ultrawide while actually being a statement about the ladder's LAST element.
+      // This is the announcement: if a wider tier is ever added, this case names it
+      // instead of the fourth column vanishing quietly.
+      //
+      // Asserted through `resolveBlockTier`, a FIRST-PARTY export, rather than by
+      // importing `BREAKPOINT_KEYS` from the transitive `@civitai/theme`. The claim
+      // is the same one and this spelling cannot break on a dependency layout.
+      for (const width of [1440, 1920, 2560, 3440, 5120, 7680]) {
+        expect(resolveBlockTier(width), `${width}px no longer resolves to xl`).toBe('xl');
+      }
+    });
+
+    it('the ladder `layout.ts` mirrors really IS the SDK ladder', () => {
+      // 🔴 `layout.ts` MIRRORS `BREAKPOINT_KEYS` RATHER THAN IMPORTING IT, because
+      // `@civitai/theme` is a TRANSITIVE dependency — pinned by
+      // `@civitai/blocks-react`, absent from this app's `package.json` — so shipped
+      // code importing it would take an undeclared dependency. A mirror needs a pin,
+      // and this is it: each tier is reached through `resolveBlockTier` at a width
+      // strictly inside it, in ascending order, so a key INSERTED anywhere in the
+      // scale fails here rather than being absorbed by `admitsUltrawide`'s
+      // "unrecognised means wider" branch.
+      const ladder: readonly [BlockSizeTier, number][] = [
+        ['base', 1],
+        ['xs', 480],
+        ['sm', 768],
+        ['md', 1024],
+        ['lg', 1184],
+        ['xl', 1440],
+      ];
+      for (const [tier, width] of ladder) {
+        expect(resolveBlockTier(width), `${width}px no longer resolves to ${tier}`).toBe(tier);
+      }
+      // And nothing sits BETWEEN two rungs: the pixel under each rung belongs to the
+      // rung below it, so the ladder has no gap a new key could already be filling.
+      for (let i = 1; i < ladder.length; i++) {
+        expect(resolveBlockTier(ladder[i][1] - 1)).toBe(ladder[i - 1][0]);
+      }
+    });
+
+    it('a tier ADDED above xl still gets the fourth column', () => {
+      // 🔴 THE REGRESSION CASE. With the old `ultrawide && tier === 'xl'` this
+      // returns 3 columns and a 340px rail — the defect: a 2560px block quietly
+      // losing the fourth column and the wider rail while every other test stays
+      // green. An unrecognised tier is treated as wider than `xl`, so the app is
+      // correct the day the SDK appends one rather than the day someone notices.
+      const future = layoutForTier('2xl' as BlockSizeTier, true);
+      expect(future.rail).toBe(true);
+      expect(future.resultColumns).toBe(4);
+      expect(future.railWidth).toBe(400);
+      expect(future.ultrawide).toBe(true);
+
+      // The assumption stated as a test rather than left in a comment: today the SDK
+      // has no such tier, so this case is about the FUTURE and says so.
+      expect(resolveBlockTier(2560)).toBe('xl');
+    });
+
+    it('but a tier no ultrawide block can REPORT is still clamped', () => {
+      // The other direction, and the reason "any tier that gets the rail" is not the
+      // fix: `lg` spans 1184–1439, so no block ≥ULTRAWIDE_MIN ever reports it.
+      expect(resolveBlockTier(ULTRAWIDE_MIN)).not.toBe('lg');
+      expect(layoutForTier('lg', true).resultColumns).toBe(3);
+      expect(layoutForTier('lg', true).railWidth).toBe(340);
+      expect(layoutForTier('lg', true).ultrawide).toBe(false);
+    });
+  });
 });

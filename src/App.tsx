@@ -1979,6 +1979,17 @@ function phaseLabel(phase: GenPhase): string {
 //    breakpoint comparison in this file.
 // ---------------------------------------------------------------------------
 
+/**
+ * The shell's inset, in px — the gap between the block's edge and its content.
+ *
+ * 🔴 NAMED BECAUSE A SECOND SURFACE DERIVES FROM IT. `railStyle` needs both the
+ * sticky offset and the rail's height bound expressed in terms of this inset, and
+ * `index.html`'s boot skeleton mirrors it as a CSS literal. A bare `24` in
+ * `shellStyle` made those three numbers three independent coincidences; asserted
+ * against this constant they are one value with one reason.
+ */
+export const SHELL_PADDING = 24;
+
 /** The block root: layout, plus the app's own page ground. */
 function shellStyle(pal: Palette): React.CSSProperties {
   return {
@@ -1987,7 +1998,7 @@ function shellStyle(pal: Palette): React.CSSProperties {
     display: 'flex',
     justifyContent: 'center',
     alignItems: 'flex-start',
-    padding: 24,
+    padding: SHELL_PADDING,
     boxSizing: 'border-box',
     background: pal.page,
     color: pal.text,
@@ -2091,11 +2102,43 @@ function railGridStyle(layout: BlockLayout): React.CSSProperties {
  *
  * `alignSelf: 'start'` keeps the grid item from stretching to the row height, which
  * sticky needs in order to have anywhere to travel.
+ *
+ * 🔴 THE HEIGHT BOUND IS WHAT KEEPS THE SPEND BUTTON ON SCREEN, AND WITHOUT IT
+ * STICKY MADE THINGS WORSE. An unbounded sticky rail taller than the scrollport
+ * cannot scroll its own overflow: the viewer sees its top, the frame's scroll moves
+ * the MAIN column, and the rail's tail — quantity, spend-from, **Generate**, and the
+ * `needs-consent` / `insufficient` / `account-rejected` alerts that gate the spend —
+ * stays below the fold for the whole sticky range. That inverts the rail's purpose,
+ * because the control that debits the viewer's Buzz is the one thing that must be
+ * reachable from wherever the prompt is. At `lg`+ the rail carries mode toggle →
+ * prompt → model → up to `MAX_LORAS` LoRA rows → quantity → spend-from → Generate →
+ * alerts, so it exceeds a 1280x800 laptop's ~740px of scrollport well before the
+ * LoRA cap. `maxHeight` + `overflowY: auto` give the rail its OWN scrollport, so its
+ * tail is always one scroll away inside the rail rather than unreachable.
+ *
+ * BOTH NUMBERS ARE DERIVED FROM `SHELL_PADDING`, not picked. `top` is one inset, so
+ * a stuck rail keeps the same gap to the frame's top edge that the shell gives every
+ * other edge — `top: 0` sat flush against it. The bound is `100dvh` less TWO insets
+ * (one above, one below), which is the height the shell's own box leaves inside the
+ * frame. `100dvh` and not the frame's own height because the frame IS viewport-height
+ * on the full-page surface (see above), and on the slot surface `clampBlockHeight`'s
+ * ceiling is itself the viewport less host chrome, so `100dvh` is an over-estimate
+ * there rather than an under-estimate — it can leave the rail taller than its
+ * scrollport, never shorter than its content needs.
+ *
+ * 🔴 NOT VERIFIED IN PIXELS, AND THAT IS NOT A DETAIL. jsdom performs no layout, so
+ * nothing here can observe a sticky rail actually travelling, overflowing, or
+ * scrolling. What the suite asserts is that the bound and the overflow are PRESENT in
+ * the emitted style and that both are expressed in terms of `SHELL_PADDING`. Whether
+ * the tail is reachable on a real 1280x800 laptop is unmeasured and carried as a
+ * `deferred[]` item in `taste.json` alongside the rest of the browser check.
  */
 function railStyle(pal: Palette): React.CSSProperties {
   return {
     position: 'sticky',
-    top: 0,
+    top: SHELL_PADDING,
+    maxHeight: `calc(100dvh - ${SHELL_PADDING * 2}px)`,
+    overflowY: 'auto',
     alignSelf: 'start',
     display: 'block',
     padding: 16,

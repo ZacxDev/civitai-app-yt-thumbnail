@@ -29,17 +29,46 @@
          and nowhere else. There is deliberately NO `prefers-color-scheme: dark`
          block: a UA reporting `no-preference`, or one that does not support the
          query at all, matches neither branch and would fall through to whatever
-         the base rules say — so the base rules have to be the dark ones. -->
+         the base rules say — so the base rules have to be the dark ones.
+
+         🔴 EVERY HEX AND EVERY WIDTH BELOW IS A SECOND COPY OF A VALUE THIS APP
+         OWNS IN TYPESCRIPT, AND THAT IS THE HAZARD, NOT THE FIX. This document
+         is static: it cannot import `src/palette.ts` or call `layoutForTier`,
+         so mirroring them here duplicates them. A silently-drifting duplicate
+         is worse than the mismatch it replaces — so
+         `src/boot-skeleton.test.ts` parses THIS `<style>` block and fails when
+         any value here disagrees with its source, including when a hex appears
+         here that no palette token accounts for. Change a value in
+         `palette.ts` or `layout.ts` and that test tells you to change it here.
+
+         🔴 WHY IT HAD TO CHANGE. `block.manifest.json` declares
+         `"bootSkeleton": true`, so the host stands down its own veil and this
+         document IS the loading state. It previously painted the pack's old
+         greys (#101113 / #1a1b1e / #2c2e33) at a 640px cap, which agreed with
+         the app only while the app was also 640px of host greys. Once the app
+         became a full-width `page`-grounded layout with a rail, the boot state
+         jumped BOTH colour and width at mount on the full-page surface — a
+         640px dark-grey card on near-black snapping to a full-width #0B0E14
+         page — which is exactly the surface the layout pass exists to improve.
+
+         🔴 A MEDIA QUERY IS LEGITIMATE HERE, WHERE A CONTAINER QUERY IS NOT.
+         `layout.ts` explains why the app cannot use a container query (a query
+         prelude cannot read `--civitai-bp-*`). The cap ladder below is a
+         VIEWPORT media query instead, and inside the block's sandboxed iframe
+         the viewport IS the box the app measures: `useBlockBreakpoint` observes
+         `document.documentElement`, which its own docs state "inside the
+         sandbox IS the slot the host handed us". So the skeleton and the app
+         change shape at the same widths rather than at two different ones. -->
     <style>
       html {
         /* The strong guarantee. Unlike `color-scheme` this does not depend on
-           UA support for anything. */
-        background: #101113;
+           UA support for anything. `palette.dark.page`. */
+        background: #0b0e14;
       }
       body {
         margin: 0;
       }
-      /* Mirrors the `shell` style in src/App.tsx. */
+      /* Mirrors `shellStyle` in src/App.tsx, including its `SHELL_PADDING`. */
       [data-boot-skeleton] {
         min-height: 100dvh;
         display: flex;
@@ -49,18 +78,23 @@
         box-sizing: border-box;
       }
       /* Attribute selectors, not classes: a class is fair game for CSS-modules
-         hashing or a purge pass, an attribute survives the bundler. */
+         hashing or a purge pass, an attribute survives the bundler.
+
+         The cap is `layoutForTier`'s one-column rung; the two media queries
+         below are its other two. `palette.dark.surface` + `.border`. */
       [data-boot-skeleton] [data-boot-shape='card'] {
         width: 100%;
         max-width: 640px;
         padding: 24px;
         border-radius: 8px;
-        background: #1a1b1e;
-        border: 1px solid #2c2e33;
+        background: #14181f;
+        border: 1px solid #2a313d;
         box-sizing: border-box;
       }
+      /* The shimmer blocks stand in for controls inside the panel, so they take
+         the token a control inside a panel takes: `palette.dark.surfaceRaised`. */
       [data-boot-skeleton] [data-boot-shape='card'] > [data-boot-shape] {
-        background: #2c2e33;
+        background: #1c222b;
         border-radius: 6px;
         margin-bottom: 16px;
       }
@@ -78,16 +112,37 @@
         height: 36px;
         margin-bottom: 0;
       }
+      /* The two-column rung: `breakpoints.sm` (768), cap
+         `layoutForTier('sm').maxWidth` (1184). */
+      @media (min-width: 768px) {
+        [data-boot-skeleton] [data-boot-shape='card'] {
+          max-width: 1184px;
+        }
+      }
+      /* The rail rung: `breakpoints.lg` (1184), where
+         `layoutForTier('lg').maxWidth` is null — the block fills its width, so
+         the boot card does too. The skeleton does NOT draw a rail: two columns
+         of placeholder shapes would promise a layout the app might not land on
+         (the rail needs `lg` measured on the app's own box, not the viewport),
+         and an uncapped card is the width claim the two surfaces do share. */
+      @media (min-width: 1184px) {
+        [data-boot-skeleton] [data-boot-shape='card'] {
+          max-width: none;
+        }
+      }
       @media (prefers-color-scheme: light) {
         html {
-          background: #f8f9fa;
+          /* `palette.light.page`. */
+          background: #f7f9fc;
         }
         [data-boot-skeleton] [data-boot-shape='card'] {
+          /* `palette.light.surface` + `.border`. */
           background: #ffffff;
-          border-color: #dee2e6;
+          border-color: #d2d9e4;
         }
         [data-boot-skeleton] [data-boot-shape='card'] > [data-boot-shape] {
-          background: #e9ecef;
+          /* `palette.light.surfaceRaised`. */
+          background: #edf0f6;
         }
       }
     </style>
