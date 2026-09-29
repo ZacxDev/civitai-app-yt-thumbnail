@@ -1,0 +1,154 @@
+{
+  "slug": "yt-thumbnail",
+  "pass": {
+    "date": "2026-09-29",
+    "scope": "layout + brand half of app-taste (phases 1, 2, 6). Interaction (3), identity (4), moderation (5), re-shoot (7) and submit (8) are NOT part of this pass.",
+    "skill": "app-taste @ civitai/civitai origin/main .claude/skills/app-taste/SKILL.md"
+  },
+  "brandDepth": "skin",
+  "hue": {
+    "value": "#FF49BD",
+    "lightThemeValue": "#D8008A",
+    "howDerived": "MEASURED, not chosen. (1) saturation x value-weighted HSV histogram of the LIVE assets/icon.png -> dominant bucket 320-329 deg (weight 1443.6), cyan secondary 183 deg; taken as 322 deg. (2) placed on the brand family's fixed L*=62 at the highest in-gamut chroma for that hue using brand-assets-rev5-2026-08-13/scripts/wheel.py's own fit_chroma: LCh h=345.0, C*=81 -> #FF49BD, realized HSV 321.8 deg (0.2 deg from the measurement), realized L* 61.4. (3) light theme is the same hue one lightness step down via emit-svg.py's shade(-0.22), because #FF49BD reaches only 2.87:1 against paper and cannot carry text there.",
+    "source": "the app's own LIVE listing mark (assets/icon.png, commit efb2acb) resolved through brand-assets-rev5-2026-08-13",
+    "wheelGate": {
+      "bar": "rev5 wheel.py gate 1 — minimum pairwise HSV hue separation >= 40 deg across the onsite family",
+      "result": "FAIL",
+      "measured": {
+        "gen-matrix #DB6EC9 (309.9 deg)": "11.8 deg",
+        "playable-collections #FA6478 (352.0 deg)": "30.2 deg",
+        "custom-generators #A880ED (262.0 deg)": "59.7 deg",
+        "app-requests #F09800 (38.0 deg)": "76.2 deg",
+        "panorama-360 #2994FF (210.0 deg)": "111.8 deg",
+        "sensei #67A63A (95.0 deg)": "133.2 deg",
+        "model-benchmarking #00AB89 (168.1 deg)": "153.7 deg"
+      },
+      "whyShippedAnyway": "yt-thumbnail is an EIGHTH onsite app and the wheel is documented FULL at seven (seven at >=42 deg already consume 294 of 360 deg). Moving the app off its own live mark would put the in-app skin at odds with the icon and cover that are approved and live on the store today, which is the worse of the two wrongs. Tracked in deferred[] with a closing condition."
+    },
+    "dualThemeContrast": {
+      "method": "computed in-app by palette.ts contrastRatio(), asserted for every pair in TEXT_PAIRS in BOTH themes",
+      "bar": "WCAG AA 4.5:1 for body text",
+      "worstPairDark": "brand on surface — 5.88:1",
+      "worstPairLight": "brandFg on brand / brand on surface — 4.90:1; brand on page 4.64:1"
+    }
+  },
+  "sdkVersionAtPass": {
+    "@civitai/blocks-react": "0.49.0",
+    "@civitai/app-sdk": "0.39.0",
+    "note": "read from the INSTALLED packages in this clone, not from the monorepo. No @civitai/* version was hand-edited by this pass."
+  },
+  "heroPrompt": null,
+  "heroSeed": null,
+  "heroNote": "NO IMAGE WAS GENERATED AND NO BUZZ WAS SPENT BY THIS PASS. The in-app hero stays a pure-CSS gradient (now palette-driven, correct in both themes at every width). The store icon/cover are the operator's, already live from commit efb2acb.",
+  "decisions": [
+    {
+      "fork": "How does the block decide its shape? Per-call-site breakpoint ternaries, CSS container queries, or one pure function?",
+      "chosen": "One pure function, layoutForTier(tier, isUltrawide) in src/layout.ts, returning every decision as a field.",
+      "constraint": "A CSS container query CANNOT read a custom property in its prelude — `@container (min-width: var(--civitai-bp-sm))` is silently dead, no error and no warning — so the breakpoints would have to be duplicated as literals in a second place. And this app's only test environment is jsdom, which lays nothing out and evaluates no container queries: a container-query layout could only be asserted as the TEXT of a CSS rule, which type-checks past a wrong value. A function returning numbers can be asserted with literal numbers."
+    },
+    {
+      "fork": "The content-column cap: keep 640, raise it, or drop it?",
+      "chosen": "Cap by COLUMN COUNT, not by tier: 640 at one column (base/xs), 1100 at two (sm/md), uncapped at three or more (lg/xl/ultrawide).",
+      "constraint": "The live block iframe measures ~1600px on desktop and `maxWidth: 640` was applied on every screen, so ~60% of the block was empty. Dropping the cap everywhere would be the opposite bug — a 1600px-wide single text column. Tying it to the column count makes it one rule with one reason. Consequence recorded honestly: the two-column cap of 1100 never binds at `sm` (768-1023), because that tier is narrower than its own cap."
+    },
+    {
+      "fork": "The brief asked for a COLUMN COUNT ladder (1/2/2/3/3/4) on both grids. Apply it to the format picker too?",
+      "chosen": "No. The results grid keeps the count ladder; the format picker is sized instead — `auto-fill` with a minimum card width (124 / 160 / 200 / 220 px).",
+      "constraint": "A fixed count is wrong for the format grid in BOTH directions. At `base` a one-card-per-row picker gives each of the six built-in formats a ~340px 16:9 preview and makes the picker taller than the phone, where auto-fill at 124px already fits two or three. At `xl` a count of three stretches three cards across ~1000px of main column and makes each preview wider than the thumbnail it previews. What the ask wanted — 'previews at usable size' — is a minimum, so that is what it is."
+    },
+    {
+      "fork": "Where does ultrawide come from? Extend the tier ladder, or an app-owned threshold?",
+      "chosen": "An app-owned boolean hook, useUltrawide(rootRef, threshold = 1800), mirroring useBlockBreakpoint's observe/dedupe/seed discipline.",
+      "constraint": "useBlockBreakpoint's top tier `xl` is UNBOUNDED — measured through the real resolveBlockTier, 1440 and 2560 resolve identically — and the hook deliberately exposes no raw width (its own docs: doing so 'would either force a render per pixel or be a lie'). So a fourth column has no tier to hang off. 1800 rather than 1440 because the live desktop block is ~1600px: a lower threshold would make ultrawide the normal case and leave the 3-column layout unreachable."
+    },
+    {
+      "fork": "Trust the ultrawide flag, or clamp it to the tier?",
+      "chosen": "Clamp: the 4-column branch requires `ultrawide && tier === 'xl'`.",
+      "constraint": "The two values come from two independent ResizeObservers and can disagree during a resize frame; a caller or a test can also pass a combination no real geometry produces (`('sm', true)`). Taking the tier as the authority makes the 4-column branch unreachable except from a block that is genuinely both >=1440 and >=1800."
+    },
+    {
+      "fork": "brandDepth: accent (host tokens) or skin (app palette)?",
+      "chosen": "skin.",
+      "constraint": "Explicitly requested for this pass. It transfers light/dark correctness to the app, so the rubric's dual-theme check became mandatory: every surface/border/text pair is asserted in BOTH themes, and the contrast is COMPUTED rather than eyeballed."
+    },
+    {
+      "fork": "Implement the palette as cascading CSS custom properties or a typed TS object?",
+      "chosen": "A typed TS object keyed by theme (`palette.dark.surface`), consumed through the existing inline-style objects.",
+      "constraint": "jsdom does not resolve the cascade for custom properties — getComputedStyle hands back the literal `var(--x)` text — so a var()-based palette could only be asserted as 'a string that mentions a token name'. Under skin the dual-theme assertion is mandatory; a structural check that type-checks past a wrong value would make that assertion dishonest."
+    },
+    {
+      "fork": "Does `skin` mean restyling the W6 pack's components too?",
+      "chosen": "No. The app palette owns the surfaces the APP draws (shell, hero, rail, field chrome, pill rows, format cards, board, candidate grid). Button/Alert/Card/Textarea/TextInput/Slider/SegmentedControl/Badge keep theming themselves from the pack stylesheet.",
+      "constraint": "The pack styles itself from `data-theme` on the block root, which the app already sets; fighting it would mean overriding a stylesheet the app does not own, in both themes, with no way to assert the result in jsdom. Both families read the same `data-theme`, so they flip together."
+    },
+    {
+      "fork": "Secondary text: keep `color: token` + `opacity: 0.8`, or an explicit dim token?",
+      "chosen": "An explicit `textDim` token, and `opacity` removed from the affected surfaces.",
+      "constraint": "Under skin the contrast of every text pair IS the claim, and an opacity on top of a token makes the realized ratio a number no test can read off the palette. Measured: textDim is 7.84:1 on dark page, 6.62:1 on light. Same change for the hero sub-line, which under light theme had been pushed below AA by its opacity."
+    },
+    {
+      "fork": "What goes in the persistent rail at lg+, and what goes in the main column?",
+      "chosen": "Rail (sticky, 340px / 400px ultrawide): mode toggle, prompt, model, LoRAs, images-per-format, spend-from, Generate, and the three PRE-spend gates. Main: hero above both, then results, then the format picker.",
+      "constraint": "The ask names prompt/model/LoRA for the rail. The format picker went to main because it is the surface that wants width (usable previews), and results went above it because they are the app's primary object once they exist (phase 2). Post-spend reporting (the server's spend figure, per-format failures) moved to the results block so it sits beside what it describes; pre-spend gates stayed next to the button that triggers them."
+    },
+    {
+      "fork": "Below lg, where does the format picker sit relative to the Generate button?",
+      "chosen": "Between the prompt and the model control, as before — which is why the inputs are two fragments rather than one `controls` constant.",
+      "constraint": "The format count IS the workflow count, so the picker decides the bill. Putting it after Generate would ask people to choose formats after paying."
+    },
+    {
+      "fork": "The rail was asked for as 'persistent'. Make it position:sticky?",
+      "chosen": "The declaration is there, but the persistence the app actually delivers is SIDE-BY-SIDE, not sticky.",
+      "constraint": "PLATFORM LIMIT discovered during this pass: `position: sticky` needs a scrolling ancestor and this block has none. `useBlockResize(rootRef)` posts RESIZE_IFRAME on every height change so the host fits the iframe to content (the hook's own docs), which means the iframe never overflows — the page that scrolls is the host's, outside the frame. So sticky is almost certainly inert in production. It is kept because it costs nothing and becomes load-bearing if a block is ever given a fixed-height slot, and because the rail's benefit does not depend on it: inputs and the candidate grid are in two columns, so neither is below the other's fold. NOT independently measured in a browser — see deferred[] — and the app-taste reference/platform-constraints.md should learn it (that file lives in the civitai repo, outside this PR's scope)."
+    },
+    {
+      "fork": "Which copy to delete under phase 2?",
+      "chosen": "Deleted: the prompt description's restatement of the 1280x720 crop (the hero says it and the download button repeats it); the LoRA row's 'Optional. Up to 3, each with a weight.' (the 0/3 badge, the slider and the cap message already say all of it); 'pick one to edit' from the candidate count (every card carries an 'Edit & download' button). KEPT: every cost disclosure, the anonymous-persistence note, and the 'a preference, the server picks the final pool' honesty line.",
+      "constraint": "The rubric forbids a paragraph that explains what the adjacent control already shows, and separately requires that any cost or partial-truth disclosure stays. The three deletions are the first kind; the three keeps are the second."
+    },
+    {
+      "fork": "How to assert a layout in an environment that performs no layout?",
+      "chosen": "Two halves that meet at a named seam: layout.test.ts pins the NUMBERS layoutForTier returns with hand-written literals; responsive.test.tsx renders the real App at every tier and asserts those numbers reached the DOM, as data-* attributes AND as the inline gridTemplateColumns/maxWidth a browser would read.",
+      "constraint": "jsdom computes no geometry, so neither half alone is evidence: the pure function could be right while the component ignored it, and the component could thread a value the function computes wrongly."
+    }
+  ],
+  "deferred": [
+    {
+      "item": "yt-thumbnail's brand hue fails the rev5 wheel's >=40 deg separation gate (11.8 deg from gen-matrix). The onsite hue wheel is full at seven apps and this is the eighth.",
+      "closingCondition": "MECHANICAL: add 'yt-thumbnail' to the APPS list in brand-assets-rev5-*/scripts/wheel.py (or its successor) and re-run it; the item closes when GATE 1 prints PASS — either because the wheel was re-spaced for 8+ onsite apps, or because yt-thumbnail was moved to the offsite graphite-plate grammar, which makes hue non-scarce. If the resolution changes the hue, this app's palette.ts BRAND_DARK/BRAND_LIGHT and palette.test.ts change with it.",
+      "checkedBy": "whoever next runs the `listing-media` skill's `brand` path for a new onsite app — that is the run the gate blocks."
+    },
+    {
+      "item": "No before/after --evidence capture diff. The rubric's Evidence section is unsatisfied for this pass, and the capture recipe for this app does not exist (.claude/skills/app-capture/scripts/recipes/ has no yt-thumbnail.json).",
+      "closingCondition": "MECHANICAL: `.claude/skills/app-capture/scripts/recipes/yt-thumbnail.json` exists and `capture.sh <recipe> --evidence` exits 0 against the approved build. Phase 7 cannot ship with this PR by construction — the re-shoot needs the new version LIVE, i.e. through moderator review, so it always trails phase 8.",
+      "checkedBy": "the operator, after the submission that carries this pass is approved."
+    },
+    {
+      "item": "No browser-driven verification of the new layouts. Every layout assertion here is jsdom + literal numbers; nothing has rendered these widths in a real engine. The grid/sticky/minmax behaviour is asserted as the CSS the app emits, not as pixels it produces.",
+      "closingCondition": "MECHANICAL: the four widths in the test fixtures (361 / 1099 / 1301 / 1907) are screenshotted through a real browser and the rail, the 3-and-4-column candidate grids and the side-by-side editor are visible in them — by `civitai app dev-tunnel` plus the app-capture recipe above, or by adding a browser driver to this repo (none is installed today: package.json has no Playwright or Puppeteer).",
+      "checkedBy": "the operator, at the same time as the evidence capture — the two share the same run."
+    },
+    {
+      "item": "Phases 3 (interaction), 4 (identity) and 5 (moderation) of the taste pass are untouched. The rubric items for reduced-motion, menu semantics and optimistic rollback are n-a rather than pass, because this pass added no transitions, no overflow menus and no new mutations.",
+      "closingCondition": "NAMED JUDGEMENT over named evidence: a later app-taste run on this app scores the rubric's Interaction and Honesty sections from the BUILT app and records each item as pass/fail/n-a in this file's own `rubric` block. Not a work item until someone opens that run — stated here so it is not mistaken for something this PR claims.",
+      "checkedBy": "whoever runs the next app-taste pass on yt-thumbnail, reading the rubric against the built app."
+    },
+    {
+      "item": "Write the sticky/RESIZE_IFRAME finding back to the app-taste constraints file. The skill's own promotion rule says a constraint discovered mid-pass goes into .claude/skills/app-taste/reference/platform-constraints.md in the pass's OWN PR — that file lives in the civitai repo, which this PR cannot touch.",
+      "closingCondition": "MECHANICAL: platform-constraints.md in civitai@main contains the finding ('a block whose height is reported via useBlockResize has no internal scroll, so position: sticky inside it is inert'), verifiable with `git -C <civitai> grep -n 'sticky' -- .claude/skills/app-taste/reference/platform-constraints.md`.",
+      "checkedBy": "the operator, in a civitai-repo PR; the measurement is in hand now and decays, so this is the one deferred item that should not wait for the capture run."
+    },
+    {
+      "item": "The format picker's `auto-fill` minimum (124/160/200/220) was reasoned from the built-in format count and the 16:9 preview aspect, not measured against real previews at real widths.",
+      "closingCondition": "MECHANICAL: the browser capture above exists AND the format grid at 361px still fits >=2 cards per row while the grid at 1523px shows previews >=200px wide. If either fails, the ladder in layout.ts moves and layout.test.ts's literals move with it.",
+      "checkedBy": "the same capture run; the two numbers are readable off the screenshots."
+    }
+  ],
+  "tests": {
+    "baseline": "284 tests / 17 files, all green — re-measured in this worktree at 3dfd79a (origin/main tip at the time of the pass), not taken on trust",
+    "afterPass": "459 tests / 20 files, all green",
+    "newFiles": ["src/layout.test.ts", "src/palette.test.ts", "src/useUltrawide.test.tsx"],
+    "extended": ["src/responsive.test.tsx — was 2 widths (361, 900); now every tier plus ultrawide, both themes, and the two surfaces that need a generation first"],
+    "environment": "jsdom only. No browser driver is installed in this repo; see deferred[]."
+  }
+}

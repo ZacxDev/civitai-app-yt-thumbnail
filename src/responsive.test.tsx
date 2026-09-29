@@ -1,10 +1,13 @@
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { resolveBlockTier } from '@civitai/blocks-react';
+import { resolveBlockTier, type BlockSizeTier } from '@civitai/blocks-react';
 
 import { App } from './App.js';
+import { layoutForTier } from './layout.js';
 import { installMockMoneyHost } from './mock-buzz.js';
+import { palette, parseHex, type Palette } from './palette.js';
 
 // The width-adaptive layout, tested at its actual widths.
 //
@@ -147,5 +150,426 @@ describe('the block breakpoint scale', () => {
     // `measured`.
     expect(resolveBlockTier(0)).toBe('base');
     expect(resolveBlockTier(Number.NaN)).toBe('base');
+  });
+});
+
+// ===========================================================================
+// THE FULL LADDER, DRIVEN THROUGH THE REAL APP
+//
+// 🔴 THE SUITE ABOVE DROVE TWO WIDTHS — 361 AND 900 — AND THAT IS THE HOLE THIS
+// SECTION CLOSES. A suite that pins two points is structurally blind to every
+// defect on the tiers it never renders: before this pass `lg`, `xl` and ultrawide
+// had no coverage at all, which is exactly where the 640px column and the
+// 2-column result grid were wrong. Every tier below is rendered explicitly.
+//
+// `layout.test.ts` pins the NUMBERS `layoutForTier` returns, with literal
+// expectations. This section pins that the App actually THREADS them to the DOM.
+// Either half alone is a claim about one side of a seam nobody owns.
+// ===========================================================================
+
+/** One width strictly inside each tier — the same fixtures `layout.test.ts` uses. */
+const INSIDE: Record<BlockSizeTier, number> = {
+  base: 361,
+  xs: 613,
+  sm: 901,
+  md: 1099,
+  lg: 1301,
+  xl: 1523,
+};
+/** `xl` AND above the app-owned 1800px ultrawide threshold. */
+const INSIDE_ULTRAWIDE = 1907;
+
+const VIEWER = { viewer: { id: 2, username: 'dev', status: 'active' as const } };
+
+/** jsdom normalises a colour to `rgb(r, g, b)`; express the palette the same way. */
+function rgb(hex: string): string {
+  const [r, g, b] = parseHex(hex);
+  return `rgb(${r}, ${g}, ${b})`;
+}
+
+function content(): HTMLElement {
+  return screen.getByTestId('yt-content');
+}
+
+describe('the layout the App renders, at EVERY tier', () => {
+  let uninstall: (() => void) | undefined;
+
+  afterEach(() => {
+    uninstall?.();
+    uninstall = undefined;
+    restoreClientWidth?.();
+    restoreClientWidth = undefined;
+    restoreResizeObserver?.();
+    restoreResizeObserver = undefined;
+  });
+
+  it.each(
+    (['base', 'xs', 'sm', 'md', 'lg', 'xl'] as const).map((tier) => [tier, INSIDE[tier]] as const),
+  )('%s (%ipx)', async (tier, width) => {
+    setBlockWidth(width);
+    uninstall = installMockMoneyHost(VIEWER);
+    render(<App />);
+
+    await screen.findByTestId('pm-generate');
+
+    const expected = layoutForTier(tier, false);
+
+    // The tier the decision was made from, so a failure says WHY.
+    expect(document.querySelector('[data-block-tier]')).toHaveAttribute('data-block-tier', tier);
+    expect(document.querySelector('[data-ultrawide]')).toHaveAttribute('data-ultrawide', 'false');
+
+    const box = content();
+    expect(box).toHaveAttribute(
+      'data-max-width',
+      expected.maxWidth === null ? 'none' : String(expected.maxWidth),
+    );
+    expect(box).toHaveAttribute('data-rail', expected.rail ? 'on' : 'off');
+    expect(box).toHaveAttribute('data-result-columns', String(expected.resultColumns));
+    expect(box).toHaveAttribute('data-min-card', String(expected.formatMinCardPx));
+
+    // 🔴 THE ATTRIBUTE IS NOT THE LAYOUT — the inline style is what a browser
+    // reads, so it is asserted too. `data-max-width: none` must mean the style
+    // carries NO cap, not a cap of the string "none".
+    expect(box.style.maxWidth).toBe(expected.maxWidth === null ? '' : `${expected.maxWidth}px`);
+
+    // The format grid is SIZED (auto-fill + a minimum), not counted.
+    const grid = screen.getByTestId('yt-format-grid');
+    expect(grid.style.gridTemplateColumns).toBe(
+      `repeat(auto-fill, minmax(${expected.formatMinCardPx}px, 1fr))`,
+    );
+
+    // The rail exists exactly when the layout says so — asserted in BOTH
+    // directions, because "the rail is present at lg" and "the rail is absent at
+    // sm" are two different claims.
+    if (expected.rail) {
+      const rail = screen.getByTestId('yt-rail');
+      expect(screen.getByTestId('yt-main')).toBeInTheDocument();
+      expect(screen.getByTestId('yt-rail-grid').style.gridTemplateColumns).toBe(
+        `${expected.railWidth}px minmax(0, 1fr)`,
+      );
+      // 🔴 THIS PINS A DECLARATION, NOT A BEHAVIOUR, and is labelled as such.
+      // `useBlockResize` asks the host to fit the iframe to content, so the frame
+      // never scrolls and `sticky` has no scrolling ancestor to stick within — see
+      // `railStyle`. Kept so the declaration is not dropped by accident; the rail's
+      // real property is the two assertions below, which are behavioural.
+      expect(rail.style.position).toBe('sticky');
+      // The prompt is IN the rail, and the format picker is NOT — that is the
+      // restructure, not just a second column existing.
+      expect(rail).toContainElement(screen.getByLabelText(/prompt/i));
+      expect(rail).not.toContainElement(grid);
+      expect(screen.getByTestId('yt-main')).toContainElement(grid);
+    } else {
+      expect(screen.queryByTestId('yt-rail')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('yt-main')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('yt-rail-grid')).not.toBeInTheDocument();
+    }
+
+    // The one structural swap this app already shipped, still driven from the
+    // same place.
+    expect(screen.getByTestId('pm-model-row')).toHaveAttribute('data-layout', expected.modelRow);
+  });
+
+  it('ultrawide (1907px) gets the fourth column and the wider rail', async () => {
+    // 🔴 THE ONLY CASE THE SDK CANNOT REACH. `xl` is unbounded, so 1523 and 1907
+    // resolve to the SAME tier — the difference below is entirely the app-owned
+    // `useUltrawide` threshold, and without this test that hook could be wired to
+    // nothing and every other assertion would stay green.
+    setBlockWidth(INSIDE_ULTRAWIDE);
+    uninstall = installMockMoneyHost(VIEWER);
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+
+    expect(document.querySelector('[data-block-tier]')).toHaveAttribute('data-block-tier', 'xl');
+    expect(document.querySelector('[data-ultrawide]')).toHaveAttribute('data-ultrawide', 'true');
+    expect(content()).toHaveAttribute('data-result-columns', '4');
+    expect(content()).toHaveAttribute('data-min-card', '220');
+    expect(screen.getByTestId('yt-rail-grid').style.gridTemplateColumns).toBe(
+      '400px minmax(0, 1fr)',
+    );
+  });
+
+  it('1523px and 1907px are the SAME tier — the difference is not the tier', async () => {
+    // The control for the test above: it proves the 4-column branch is not simply
+    // "xl", which is the reading a single ultrawide test would leave open.
+    expect(resolveBlockTier(INSIDE.xl)).toBe('xl');
+    expect(resolveBlockTier(INSIDE_ULTRAWIDE)).toBe('xl');
+
+    setBlockWidth(INSIDE.xl);
+    uninstall = installMockMoneyHost(VIEWER);
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+    expect(content()).toHaveAttribute('data-result-columns', '3');
+    expect(screen.getByTestId('yt-rail-grid').style.gridTemplateColumns).toBe(
+      '340px minmax(0, 1fr)',
+    );
+  });
+
+  it('the 640px column is GONE from every tier that has room', async () => {
+    // The regression this pass exists for, asserted where a user would meet it:
+    // the live desktop block measures ~1600px and used to render a 640px column.
+    setBlockWidth(INSIDE.xl);
+    uninstall = installMockMoneyHost(VIEWER);
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+    expect(content().style.maxWidth).toBe('');
+    expect(content().getAttribute('style') ?? '').not.toContain('640px');
+  });
+
+  it('a narrow block still gets the readable 640px cap', async () => {
+    // The other direction: removing the cap everywhere would be a different bug,
+    // and the assertion above cannot see it.
+    setBlockWidth(INSIDE.xs);
+    uninstall = installMockMoneyHost(VIEWER);
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+    expect(content().style.maxWidth).toBe('640px');
+  });
+});
+
+// ===========================================================================
+// BOTH THEMES, ON THE RENDERED APP — mandatory under `brandDepth: "skin"`.
+//
+// `palette.test.ts` grades every surface/border/text PAIR in both themes. What it
+// cannot see is whether the App reaches for the right palette: a component that
+// hardcoded `palette.dark` would leave that file completely green. So each
+// assertion below names the theme's own value AND rejects the other theme's.
+// ===========================================================================
+
+describe.each([
+  ['dark', palette.dark, palette.light],
+  ['light', palette.light, palette.dark],
+] as const)('the App skins itself for the %s theme', (theme, own: Palette, other: Palette) => {
+  let uninstall: (() => void) | undefined;
+
+  afterEach(() => {
+    uninstall?.();
+    uninstall = undefined;
+    restoreClientWidth?.();
+    restoreClientWidth = undefined;
+    restoreResizeObserver?.();
+    restoreResizeObserver = undefined;
+  });
+
+  it('the block root carries the theme and the page ground', async () => {
+    setBlockWidth(INSIDE.md);
+    uninstall = installMockMoneyHost({ ...VIEWER, theme });
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+
+    const root = document.querySelector('[data-block-tier]') as HTMLElement;
+    expect(root).toHaveAttribute('data-theme', theme);
+    expect(root.style.backgroundColor).toBe(rgb(own.page));
+    expect(root.style.backgroundColor).not.toBe(rgb(other.page));
+    expect(root.style.color).toBe(rgb(own.text));
+    expect(root.style.color).not.toBe(rgb(other.text));
+  });
+
+  it('the hero gradient uses BOTH stops from THIS theme, plus its ink', async () => {
+    // The hero was the surface that used to be entirely host-owned
+    // (`--civitai-color-primary` → `-primary-hover` → `-surface-2`). Under `skin`
+    // its light-theme pair is a separate set of literals, which is precisely the
+    // thing that stays invisible until someone opens the other theme.
+    setBlockWidth(INSIDE.md);
+    uninstall = installMockMoneyHost({ ...VIEWER, theme });
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+
+    const hero = screen.getByTestId('yt-hero');
+    expect(hero.style.background).toBe(
+      `linear-gradient(135deg, ${own.heroFrom} 0%, ${own.heroTo} 100%)`,
+    );
+    expect(hero.style.background).not.toContain(other.heroFrom);
+    expect(hero.style.color).toBe(rgb(own.heroFg));
+  });
+
+  it('the model field, a selected format card and a quantity pill all read this theme', async () => {
+    setBlockWidth(INSIDE.md);
+    uninstall = installMockMoneyHost({ ...VIEWER, theme });
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+
+    // A surface + a border + text, on one element.
+    const model = screen.getByTestId('pm-model-label');
+    expect(model.style.backgroundColor).toBe(rgb(own.surface));
+    expect(model.style.color).toBe(rgb(own.text));
+    expect(model.style.borderColor).toBe(rgb(own.border));
+    expect(model.style.backgroundColor).not.toBe(rgb(other.surface));
+
+    // The SELECTED state: tint ground + tint border. One format is always
+    // selected (the at-least-one invariant), so this needs no interaction.
+    const selected = screen
+      .getAllByTestId('yt-format-card')
+      .find((c) => c.querySelector('[role="checkbox"][aria-checked="true"]'));
+    expect(selected).toBeDefined();
+    expect(selected!.style.backgroundColor).toBe(rgb(own.brandTint));
+    expect(selected!.style.borderColor).toBe(rgb(own.brandTintBorder));
+    expect(selected!.style.backgroundColor).not.toBe(rgb(other.brandTint));
+
+    // The brand pill: brand ground + brandFg text. Quantity 1 is selected by
+    // default.
+    const pill = screen.getByTestId('pm-quantity-1');
+    expect(pill.style.backgroundColor).toBe(rgb(own.brand));
+    expect(pill.style.color).toBe(rgb(own.brandFg));
+    expect(pill.style.backgroundColor).not.toBe(rgb(other.brand));
+
+    // And an UNSELECTED pill is the plain surface, so the two states differ.
+    const off = screen.getByTestId('pm-quantity-2');
+    expect(off.style.backgroundColor).toBe(rgb(own.surface));
+    expect(off.style.backgroundColor).not.toBe(pill.style.backgroundColor);
+  });
+
+  it('the rail ground comes from THIS theme, at lg', async () => {
+    // The rail is new in this pass, so it has no host-token history to fall back
+    // on — if it were wrong in one theme nothing else would say so.
+    setBlockWidth(INSIDE.lg);
+    uninstall = installMockMoneyHost({ ...VIEWER, theme });
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+
+    const rail = screen.getByTestId('yt-rail');
+    expect(rail.style.backgroundColor).toBe(rgb(own.railBg));
+    expect(rail.style.borderColor).toBe(rgb(own.borderStrong));
+    expect(rail.style.borderColor).not.toBe(rgb(other.borderStrong));
+  });
+
+  it('secondary copy uses the dim TOKEN, never an opacity', async () => {
+    // 🔴 THE OLD CODE DIMMED THIS WITH `opacity: 0.8` ON TOP OF A TOKEN, which
+    // makes the realized contrast a number no test can read off the palette —
+    // and under `skin` the contrast of every text pair is the claim. An explicit
+    // token is assertable; an opacity is not.
+    setBlockWidth(INSIDE.md);
+    uninstall = installMockMoneyHost({ ...VIEWER, theme });
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+
+    const note = screen.getByTestId('yt-format-cost-note');
+    expect(note.style.color).toBe(rgb(own.textDim));
+    expect(note.style.opacity).toBe('');
+  });
+});
+
+// ===========================================================================
+// THE TWO SURFACES THAT NEED A GENERATION FIRST
+// ===========================================================================
+
+/**
+ * 🔴 A THIRD STUB, AND LIKE THE OTHER TWO IT IS LOAD-BEARING. jsdom fetches
+ * nothing, so an `<img>`'s `load` event NEVER fires and `loadImageElement`'s
+ * promise never settles — the editor stays on `editorStatus === 'loading'` forever
+ * and renders only "Loading image…". A test of the editor's LAYOUT written without
+ * this would time out looking for a split that the code is perfectly capable of
+ * rendering. (The existing e2e editor test only asserts the editor mounted, which
+ * is why it never needed this.)
+ *
+ * The draw effect is unaffected: jsdom's `canvas.getContext('2d')` returns null, so
+ * `drawThumbnail` is skipped either way.
+ */
+function installImageLoad(): () => void {
+  const originalSrc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+  Object.defineProperty(HTMLImageElement.prototype, 'src', {
+    configurable: true,
+    get(this: HTMLImageElement) {
+      return (originalSrc?.get?.call(this) as string) ?? '';
+    },
+    set(this: HTMLImageElement, value: string) {
+      originalSrc?.set?.call(this, value);
+      setTimeout(() => this.onload?.(new Event('load')), 0);
+    },
+  });
+
+  // jsdom has no 2D context (it logs "Not implemented" to its virtual console and
+  // returns undefined, which the draw effect then treats as falsy). Returning null
+  // makes the skip EXPLICIT — the editor's layout is what these tests are about,
+  // and a suite that prints a stack trace on the happy path trains people to
+  // ignore its output.
+  const originalCtx = HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.getContext = () => null;
+
+  return () => {
+    if (originalSrc) Object.defineProperty(HTMLImageElement.prototype, 'src', originalSrc);
+    HTMLCanvasElement.prototype.getContext = originalCtx;
+  };
+}
+
+describe('results and the editor, at width', () => {
+  let uninstall: (() => void) | undefined;
+  let restoreImageLoad: (() => void) | undefined;
+
+  afterEach(() => {
+    uninstall?.();
+    uninstall = undefined;
+    restoreImageLoad?.();
+    restoreImageLoad = undefined;
+    restoreClientWidth?.();
+    restoreClientWidth = undefined;
+    restoreResizeObserver?.();
+    restoreResizeObserver = undefined;
+  });
+
+  /** Drive the real money path to a succeeded run so candidates exist. */
+  async function generate(width: number) {
+    setBlockWidth(width);
+    uninstall = installMockMoneyHost({
+      ...VIEWER,
+      consentGranted: true,
+      cost: 8,
+      pollsUntilDone: 2,
+      buzzBalance: { blue: 100, green: 0, yellow: 0 },
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    const generateBtn = await screen.findByTestId('pm-generate');
+    await user.type(screen.getByLabelText(/prompt/i), 'a serene mountain lake');
+    await user.click(generateBtn);
+    await screen.findByAltText(/generated result/i, {}, { timeout: 5000 });
+    return user;
+  }
+
+  it.each([
+    [INSIDE.base, 1],
+    [INSIDE.md, 2],
+    [INSIDE.lg, 3],
+    [INSIDE_ULTRAWIDE, 4],
+  ])('the candidate grid is %i-wide → %i columns', async (width, columns) => {
+    // 🔴 IT WAS `repeat(2, …)` AT EVERY WIDTH, including a 361px phone and a
+    // 1907px monitor. Four widths, four different answers — a single-width test
+    // could not tell a working ladder from a hardcoded 2.
+    await generate(width as number);
+    const grid = screen.getByTestId('yt-results-grid');
+    expect(grid).toHaveAttribute('data-columns', String(columns));
+    expect(grid.style.gridTemplateColumns).toBe(`repeat(${columns}, minmax(0, 1fr))`);
+  });
+
+  it('the results land ABOVE the controls once they exist', async () => {
+    // Phase 2: the app's primary object is the first thing on screen. Asserted
+    // structurally (document order), not by looking for a heading.
+    await generate(INSIDE.md);
+    const results = screen.getByTestId('yt-results-grid');
+    const prompt = screen.getByLabelText(/prompt/i);
+    expect(
+      results.compareDocumentPosition(prompt) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it('the editor puts the canvas beside its controls at lg', async () => {
+    const user = await generate(INSIDE.lg);
+    restoreImageLoad = installImageLoad();
+    await user.click(screen.getByTestId('pm-edit-0'));
+    const split = await screen.findByTestId('pm-editor-split');
+    expect(split).toHaveAttribute('data-layout', 'side-by-side');
+    expect(split.style.gridTemplateColumns).toBe('minmax(0, 3fr) minmax(0, 2fr)');
+    // The canvas and the text field are siblings in the split, not stacked in one
+    // column — the point of the restructure.
+    expect(screen.getByTestId('pm-editor-canvas').parentElement).toBe(split);
+    expect(split).toContainElement(screen.getByTestId('pm-editor-controls'));
+  });
+
+  it('the editor stacks on a narrow block', async () => {
+    const user = await generate(INSIDE.base);
+    restoreImageLoad = installImageLoad();
+    await user.click(screen.getByTestId('pm-edit-0'));
+    const split = await screen.findByTestId('pm-editor-split');
+    expect(split).toHaveAttribute('data-layout', 'stacked');
+    expect(split.style.gridTemplateColumns).toBe('minmax(0, 1fr)');
   });
 });
