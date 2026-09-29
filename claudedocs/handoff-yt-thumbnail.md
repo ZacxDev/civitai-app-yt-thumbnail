@@ -11,16 +11,23 @@ Ordinary for a brand-new repo — register the scope or ignore until content exi
 ## Goal
 Ship **YT Thumbnail** — a Civitai page-money app that generates YouTube thumbnails: txt2img + img2img remix + multi-format generation + a canvas text-overlay editor with a YouTube-capped export.
 - **closing-condition: check** — `civitai app listing status` no longer prints "A revision is currently under moderator review" **and** `civitai app doctor` reports `yt-thumbnail ✓ No problems` **and** the live bundle greps `yt-storage-anon` ≥1 alongside a known-present positive control. Two of the three already hold; the pending listing-media revision is the open one.
+- 🔴 **MET 2026-09-29 — THIS ARC IS CLOSED.** All three legs measured green in one pass (see *State now*). Frozen at round 1: the devrc gate work below was operator-directed and belongs to a NEW arc, not another round of this one.
 - Arc 1 ("ship it") was MET 2026-09-27 — `app_state.py yt-thumbnail` rc=0 and `https://yt-thumbnail.civit.ai/` returned 200. That line was frozen and is kept here as history; the field above is THIS arc's, opened by the formats/storage/listing work rather than extending the old one.
 
 ## State now
-- **App: 0.1.3 APPROVED + LIVE.** `pubreq_01M3K1PRF8Y0KXCT5RA6ZHDJWW`… superseded — current live row is **0.1.3 / `b66ddaf`**, deploy `live`, `HTTP 200`, `app_state.py` rc=0, floor 0.1.3.
-- **Repo is PUBLIC with a remote:** `git@github.com:ZacxDev/civitai-app-yt-thumbnail.git`. `main` @ `ca3bddb`, clean, tracking `origin/main`. Five PRs merged (#1 features, #2 bump, #3 handoff, #4 screenshots, #5 AI media). **No open PRs in this repo.**
-- **Verified live, not inferred:** served bundle `assets/index-BrzuzOdM.js` carries `yt-hero`/`yt-format-card`/`yt-format-new`/`yt-published-board`/`yt-storage-anon`/`pm-result-format`/`pm-partial` each at **1**, with `pm-editor-canvas` 1 as positive control and retired `pm-comfy-beta` 0. Preview art serves `200 image/webp` from `/formats/<id>.webp`.
-- **End-to-end money path exercised in production** (2026-09-28): two formats selected → **two workflows**, two separately-labelled candidates, **6 Buzz debited from Blue**, button read `Generate · 6 Buzz`, editor opened a **1280×720 canvas with no error**. Multi-format, cost preview and the CORS-dependent editor export are all confirmed working live.
-- **Listing:** `approved`, icon ✓, cover ✓, **4 screenshots LIVE** (approved revision). **IN FLIGHT:** a revision carrying the new AI-generated icon+cover — `alpr_01M3N183249CTB062W288KMM5S`, pending moderator review. The live listing keeps the old art until it clears.
-- **devrc `flow-yt-thumbnail` / PR #1904 is OPEN** (2 commits: the per-app flow, and the retraction below). The devrc checkout is currently **on that branch**, which is how the corrected flow docs are live for the bridge.
-- Buzz spent this session: **~81** (57 previews+probes, 6 live UI generation, 18+6 listing art).
+- 🔴 **CLOSING CONDITION MET 2026-09-29 — arc CLOSED.** All three legs, measured in one pass:
+  `listing status` → `approved`, icon ✓ cover ✓, 4 screenshots, **no "under moderator review" line**; `doctor` → `yt-thumbnail ✓ No problems`; bundle `assets/index-BrzuzOdM.js` → `yt-format-card 1 · yt-storage-anon 1 · pm-editor-canvas 1 (control) · pm-comfy-beta 0`.
+- **Listing revision `alpr_01M3N183249CTB062W288KMM5S` was APPROVED, not rejected** — "no revision pending" alone cannot tell those apart, so it was checked separately. `https://civitai.com/api/v1/apps/yt-thumbnail` reports `updatedAt 2026-09-29T02:40:43Z`, and the served `iconUrl`/`coverUrl` were downloaded and viewed: the icon is the magenta/cyan burst with the composited vector play mark, the cover is the AI clickbait art with the `1280×720` badge. **The AI-generated art is LIVE.**
+- **App: 0.1.3 APPROVED + LIVE**, current live row `0.1.3 / b66ddaf`, deploy `live`, `HTTP 200`, `app_state.py` rc=0, floor 0.1.3.
+- **End-to-end money path exercised in production** (2026-09-28, carried forward — still the only live proof of it): two formats selected → **two workflows**, two separately-labelled candidates, **6 Buzz debited from Blue**, button read `Generate · 6 Buzz`, editor opened a **1280×720 canvas with no error**. Multi-format, cost preview and the CORS-dependent editor export are all confirmed working live.
+- **Repo is PUBLIC with a remote:** `git@github.com:ZacxDev/civitai-app-yt-thumbnail.git`. Six PRs merged (#1 features, #2 bump, #3 handoff, #4 screenshots, #5 AI media, #6 handoff).
+- **`civitai-app-yt-thumbnail`: `main` @ `3229041`, clean, tracking `origin/main`. No open PRs. NOTHING was changed in this repo this session** — it was read and probed only.
+- 🔴 **devrc PR #1904 — the gate that was blocking it is FIXED and PUSHED; CI was still PENDING at handoff time.** Head is **`041b7e32`**, branch `flow-yt-thumbnail`, 4 commits, 14 behind `origin/main`. Two commits added this session: `6adcbed8` (the gate pin + its tests) and `041b7e32` (a `browser-bridge/SKILL.md` note so the next person adding a flow file does not re-derive it).
+- **What blocked it:** `tekton/devrc-pytests` failed `test_no_client_subdomain_literal_is_committed` — 4 hits, all introduced by this PR (`flows/_index.json:23` and `flows/yt-thumbnail.civit.ai.md:1,25,36`). The gate has been on `main` since 2026-08-17 (`#526`); the PR simply predates its first CI run here. ⚠ `mergeStateStatus` was `UNSTABLE`, **so GitHub would have allowed the merge straight through the red gate.**
+- **Verified before the fix and after:** reproduced the CI failure locally (1 failed / 17 passed, same test); after the fix **19 passed** (18 existing + 1 new). The **merged tree** was also built and tested — throwaway worktree off current `origin/main`, clean merge, gate green, worktree and branch removed.
+- The two untracked `claudedocs/scope-chief-*.md` files in the devrc checkout are **byte-identical to open PR #1783** — not stranded work, no action needed.
+- **No clawgate task** — `clawgate_handoff.sh resolve` exited **5** (NOTHING RESOLVED). An unknown session id also answers 200/empty, so this cannot distinguish "touched no task" from "wrong id". No `clawgate-task:` field was written.
+- **Buzz spent this session: 0.** No generation was run; every probe was a read.
 
 ## Version history (server-confirmed, never from a CLI exit code)
 | ver | pubreq | source | state |
@@ -97,15 +104,13 @@ No taint, `toBlob` works. **Do not add defensive workarounds for this.**
 - **Next probe:** on the live app, click `yt-format-new` → fill → **Save**, and record whether a consent prompt appears, then whether the format survives a reload (`useAppStorage` round-trip). Then `yt-board-toggle` → Publish → confirm the suffix lands in the MODERATED `body`, not `data`.
 
 ## Next steps (ranked)
-1. Watch listing-media revision `alpr_01M3N183249CTB062W288KMM5S` to approval — `civitai app listing status` stops printing "A revision is currently under moderator review". External moderator action; nothing to do but check. Repo: none.
-   forcing: gate
-2. Merge devrc PR #1904 (`innovation-upstream/devrc`) — carries the per-app browser flow AND the 🔴 retraction below. Until it lands, every other session still reads "a synthetic in-frame click does nothing on a billing control", which is false and unsafe. Files: `scripts/browser-bridge/flows/{civit.ai,yt-thumbnail.civit.ai}.md`, `flows/_index.json`. **Also: the devrc checkout is parked on `flow-yt-thumbnail`** — return it to `main` after merging.
+1. **Merge devrc PR #1904 once `tekton/devrc-pytests` is GREEN on head `041b7e32`.** The fix is committed and pushed; only CI confirmation is outstanding. 🔴 Do NOT merge on `mergeStateStatus` alone — it reads `UNSTABLE` and would let a red gate through. After merging, **return the devrc checkout from `flow-yt-thumbnail` to `main`** (it is parked there) and re-sync the base clone: `git -C $DEVRC fetch origin && git -C $DEVRC merge --ff-only origin/main`. Repo: `innovation-upstream/devrc`.
    forcing: user
-3. Exercise the storage + publish path once (see Open investigations) — it is the only part of 0.1.3 with zero production evidence. Repo: none (live app).
+2. Exercise the storage + publish path once (see *Open investigations* → the four storage scopes) — it is the only part of 0.1.3 with zero production evidence. Repo: none (live app).
    forcing: none
-4. Decide the 1216×832 framing question (below) — correct the copy further, show the crop so users can reframe, or find a parameter that controls output size. Repo: `civitai-app-yt-thumbnail`, `src/generation.ts`.
+3. Decide the 1216×832 framing question — correct the copy further, show the crop so users can reframe, or find a parameter that controls output size. Repo: `civitai-app-yt-thumbnail`, `src/generation.ts`.
    forcing: user
-5. Register the `civitai-app-yt-thumbnail` cairn scope, then land the DRAFTED index entry — `cairn create` still REFUSES verbatim: *"scope `civitai-app-yt-thumbnail` is not in the routing table `/home/zach/.config/subsystem-store/routes.json`"* (configured instances: `personal`, `civitai`). That file is home-manager-managed READ-ONLY, so unblocking means adding `"civitai-app-yt-thumbnail": "civitai"` to the devrc nix source + `home-manager switch`, then `cairn create --scope civitai-app-yt-thumbnail --ref src --file <entry>`. **The entry is written and VALIDATES clean** (`cairn-validate --validate` → `OK — 1 of 1 parse`); it is parked at `<scratchpad>/src.md` and **will be lost when the scratchpad is cleared** — re-derive from this doc's Gotchas if so. Route `civitai` is the fleet majority for generation apps. This has now blocked twice.
+4. Register the `civitai-app-yt-thumbnail` cairn scope, then land the DRAFTED index entry. `cairn recall` **still refuses verbatim** (re-measured 2026-09-29): *"scope `civitai-app-yt-thumbnail` is not in the routing table `/home/zach/.config/subsystem-store/routes.json`"* (configured instances: `personal`, `civitai`). That file is home-manager-managed READ-ONLY, so unblocking means adding `"civitai-app-yt-thumbnail": "civitai"` to the devrc nix source + `home-manager switch`. **devrc PR #1862 (`chore/cairn-route-civitai-app-requests`) is the exact same change for a sibling scope — copy its shape.** The entry is written and VALIDATES clean but is parked in a scratchpad and may be gone; re-derive from this doc's Gotchas if so. This has now blocked three times.
    forcing: none
 
 ## Defects (batched)
@@ -134,6 +139,17 @@ No taint, `toBlob` works. **Do not add defensive workarounds for this.**
 - **The icon's YouTube-mark hazard.** The best generated icon was a red rounded square with a play triangle — essentially the YouTube logo. The app's NAME is nominative descriptive use and is fine; reproducing the MARK on a public listing for an unaffiliated app is not. Final icon uses a magenta/cyan burst with no red, and a VECTOR play mark composited over generated art (generated play symbols are mushy and die at 32px).
 - **The `civitai` CLI commit guard blocks heredocs**: `git commit -F <file>` (write the message with the Write tool). A compound `checkout -b && commit` is also refused because the guard reads the branch at parse time — split them.
 
+- 🔴 **A `<slug>.civit.ai` App Block host trips devrc's `test_no_client_subdomain_literal_is_committed`, and the fix is a PIN, never a wider regex.** Every per-app browser flow file will hit this. **Widening the pattern is a SECURITY REGRESSION, measured:** require ≥2 labels before the apex so a single-label tenant host stops being a finding, and `grafana-staging.civit.ai` — the gate's OWN planted positive control — also stops being a finding. Current pattern: both FOUND. Widened: both **not found**. A tenant host and an internal host are the same shape; nothing in the string separates them. So: one pinned, justified `ALLOWLIST` entry per host, and the per-app recurrence is the feature — a human deciding "this one is public" each time.
+- **The justification a pin needs, and how to measure it.** The scanner's docstring allows a pin for "a subdomain that is genuinely public and genuinely not topology". GENUINELY PUBLIC is measurable: `env -i curl https://civitai.com/api/v1/apps/<slug>` returns `kindData.liveUrl` with **no cookie and no token** for an `approved` listing. `env -i` matters — a probe carrying ambient auth proves nothing about what a stranger can see. GENUINELY NOT TOPOLOGY: the scanner catalogues what leaks as `grafana-new.` / `auth.` / `sish.` / `review-<hash>.` / `<unreleased product>.` — a RELEASED, publicly-listed product is none of those. devrc `CLAUDE.md:498` also qualifies its ban with "used as an **example**", which an operational flow target is not.
+- 🔴 **`test_no_client_hostnames.py` is scanned BY ITS OWN GATE — assemble every host, never spell one.** The first draft of the pin block spelled both hosts in the `ALLOWLIST` keys AND in the prose explaining them, and `test_this_guards_own_sources_are_clean` failed on that very block. Build from a shared `_APEX = ".".join(("civit","ai"))`. ⚠ A host followed by `.md` (a *filename*) does NOT trip it — the right lookahead `(?!\.[A-Za-z0-9])` blocks the match — which is why the flow file's own NAME is tolerated while its CONTENT is not.
+- 🔴 **`git checkout -- <file>` with uncommitted work in it destroys that work.** Done this session mid-mutation-battery, intending to undo a mutant; the file was actually at HEAD + my unlanded edits, and all of it went. Nothing was lost only because the diff was still in the transcript. **Commit before running a mutation battery**, not after.
+- **Mutation batteries on Python must run under `PYTHONDONTWRITEBYTECODE=1`.** CPython validates a cached module on mtime-in-whole-SECONDS + size, so a same-length edit landing in the same second imports the ORIGINAL bytecode and the mutant scores SURVIVED without ever executing.
+- **A mutant "killed" is only evidence if the NAMED test went red.** M4 (repoint a pin at a nonexistent path) kills two tests at once; scoring on "something failed" would have credited the wrong guard. Match the expected test name, and keep one mutant — here M5 — that only the NEW test can catch, to prove the new test is reachable rather than riding another guard's failure.
+- **This host has no `pytest` in PATH and devrc's `.envrc` is `use opencode`** (no direnv-provided pytest either). Run devrc's python gates via `nix-shell -p python3Packages.pytest --run "..."`.
+- **`civitai app listing status` cannot distinguish an APPROVED revision from a REJECTED one** — both stop printing "A revision is currently under moderator review". To tell them apart, read `updatedAt` plus the served `iconUrl`/`coverUrl` from `https://civitai.com/api/v1/apps/<slug>` and actually LOOK at the image.
+- **`image.civitai.com` answers `301` to a `blobs-b2.civitai.com` URL** — `curl` without `-L` writes a 0-byte file and ImageMagick then reports "insufficient image data", which reads like a corrupt asset rather than a missing redirect flag. Use `curl -sSL`.
+- **There is no `civitai app listing` subcommand that inspects a revision** — `status` is the only read, and it is a snapshot.
+
 ## How to verify
 ```bash
 cd /home/zach/workspace/civit/civitai-app-yt-thumbnail
@@ -141,11 +157,17 @@ npx tsc -p tsconfig.json --noEmit && npm test    # expect 284/284 across 17 file
 npm run build && civitai app validate .
 python3 ~/.claude/skills/civitai-app-fleet/app_state.py yt-thumbnail   # rc=0 iff live
 civitai app doctor | sed -n '/^yt-thumbnail/,/^$/p'                    # expect "✓ No problems"
-civitai app listing status                       # revision pending -> approved
+civitai app listing status                       # expect approved, NO "under moderator review"
+# the listing revision APPROVED (not rejected) — status alone cannot tell them apart:
+curl -sS https://civitai.com/api/v1/apps/yt-thumbnail | python3 -m json.tool | grep -E 'iconUrl|coverUrl|updatedAt'
 # served-bundle proof (ALWAYS report a pair, never a bare zero):
 B=$(curl -sS https://yt-thumbnail.civit.ai/ | grep -oE 'assets/index-[A-Za-z0-9_-]+\.js' | head -1)
 curl -sS "https://yt-thumbnail.civit.ai/$B" > /tmp/b.js
 for t in yt-format-card yt-storage-anon pm-editor-canvas pm-comfy-beta; do
   printf '%-20s %s\n' "$t" "$(grep -oF -- "\`$t\`" /tmp/b.js | wc -l)"   # last must be 0, others 1
 done
+# the devrc gate (needs pytest; this host has none in PATH):
+nix-shell -p python3Packages.pytest --run \
+  "PYTHONDONTWRITEBYTECODE=1 python3 -m pytest \$DEVRC/scripts/tests/test_no_client_hostnames.py -q"   # expect 19 passed
+gh pr checks 1904 --repo innovation-upstream/devrc
 ```
