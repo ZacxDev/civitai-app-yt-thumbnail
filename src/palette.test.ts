@@ -154,6 +154,38 @@ describe.each(THEMES)('palette.%s', (theme) => {
     },
   );
 
+  // 🔴 THE FOCUS RING IS A SURFACE THE SKIN USED TO MISS. `index.css` painted the
+  // `:focus-visible` outline in the HOST's `--civitai-color-primary` while the app
+  // had already moved to its own hue, so a keyboard user got a ring in a colour
+  // appearing nowhere else on the block. It is now `brand`, handed to the stylesheet
+  // by `shellStyle` as `--yt-focus-ring`.
+  //
+  // `brand` is already graded against `page` and `surface` at AA in `TEXT_PAIRS`;
+  // these are the remaining grounds a ring can land on, at the bar that actually
+  // governs a focus indicator (WCAG 1.4.11, 3:1 for non-text). Graded rather than
+  // assumed, because the light theme is the tight one: `brand` on `brandTint` is
+  // 4.20:1 there against 5.87:1 in dark.
+  const FOCUS_RING_GROUNDS: readonly (keyof Palette)[] = [
+    'page',
+    'surface',
+    'surfaceRaised',
+    'railBg',
+    'brandTint',
+  ];
+  const AA_NON_TEXT = 3;
+
+  it.each(FOCUS_RING_GROUNDS.map((g) => [g] as const))(
+    'the focus ring stays distinguishable on %s',
+    (ground) => {
+      const ratio = contrastRatio(pal.brand, pal[ground]);
+      expect(
+        ratio,
+        `${theme}: focus ring brand ${pal.brand} on ${ground} ${pal[ground]} is ` +
+          `${ratio.toFixed(2)}:1`,
+      ).toBeGreaterThanOrEqual(AA_NON_TEXT);
+    },
+  );
+
   it.each(BORDER_PAIRS.map((p) => [p[0], p[1]] as const))(
     '%s stays visible against %s',
     (border, ground) => {
@@ -263,6 +295,41 @@ describe('paletteFor', () => {
     const css = readFileSync(new URL('./index.css', import.meta.url), 'utf8');
     expect(css).toMatch(/color-scheme:\s*dark light/);
     expect(paletteFor(undefined)).toBe(palette.dark);
+  });
+});
+
+describe('the focus ring is the APP’s, not the host’s', () => {
+  // 🔴 A SECOND CROSS-FILE SEAM, AND IT PINS THE WHOLE DECLARATION RATHER THAN A
+  // WORD. A guard that only checked "the file mentions --yt-focus-ring" would pass
+  // while a second `outline:` rule elsewhere in the file still painted the host
+  // accent, so what is asserted is the complete set of `outline` declarations the
+  // stylesheet ships, normalised. The cost is that a cosmetic edit to that line fails
+  // this test; that is the price of a machine-readable claim.
+  const css = readFileSync(new URL('./index.css', import.meta.url), 'utf8');
+
+  it('the stylesheet paints exactly one outline, from the app property', () => {
+    const declarations = [...css.matchAll(/^\s*outline:\s*(.+?);\s*$/gm)].map((m) => m[1]);
+    expect(declarations).toEqual(['2px solid var(--yt-focus-ring, currentColor)']);
+  });
+
+  it('the positive control: the matcher CAN find an outline declaration', () => {
+    // Without this, an `outline` spelling the regex does not match would make the
+    // case above pass with an empty list — `toEqual` against one element would fail,
+    // but a future edit to `[]` would not. Feed it a declaration that must match.
+    const found = [
+      ...'x { outline: 1px dashed red; }\n  outline: 2px solid blue;\n'.matchAll(
+        /^\s*outline:\s*(.+?);\s*$/gm,
+      ),
+    ].map((m) => m[1]);
+    expect(found).toEqual(['2px solid blue']);
+  });
+
+  it('no outline in the stylesheet names a host token', () => {
+    // The specific regression: `outline: 2px solid var(--civitai-color-primary)`.
+    // Asserted on the DECLARATIONS, not the file, because the comment above the rule
+    // names that token on purpose — as the thing that was removed.
+    const declarations = [...css.matchAll(/^\s*outline:\s*(.+?);\s*$/gm)].map((m) => m[1]);
+    for (const d of declarations) expect(d).not.toMatch(/--civitai-color-/);
   });
 });
 

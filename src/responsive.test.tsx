@@ -179,6 +179,19 @@ const INSIDE: Record<BlockSizeTier, number> = {
 /** `xl` AND above the app-owned 1800px ultrawide threshold. */
 const INSIDE_ULTRAWIDE = 1907;
 
+/**
+ * A width in the 1101–1183 band — the hole the tier fixtures above cannot see.
+ *
+ * 🔴 `md` RUNS 1024–1183, AND A CAP BELOW 1183 GUTTERS THE TOP OF IT. The `md`
+ * fixture is 1099, which is under the old two-column cap of 1100, so the whole
+ * suite could stay green while a two-column block was centred inside gutters at
+ * every width from 1101 up. 1180 is the landscape CSS width of the 10.9-inch
+ * tablet class, i.e. the device the "full width on a tablet" requirement is about,
+ * and it is distinct from every breakpoint (1024 / 1184) and from every cap the
+ * layout can return.
+ */
+const TABLET_LANDSCAPE = 1180;
+
 const VIEWER = { viewer: { id: 2, username: 'dev', status: 'active' as const } };
 
 /** jsdom normalises a colour to `rgb(r, g, b)`; express the palette the same way. */
@@ -219,17 +232,14 @@ describe('the layout the App renders, at EVERY tier', () => {
     expect(document.querySelector('[data-ultrawide]')).toHaveAttribute('data-ultrawide', 'false');
 
     const box = content();
-    expect(box).toHaveAttribute(
-      'data-max-width',
-      expected.maxWidth === null ? 'none' : String(expected.maxWidth),
-    );
-    expect(box).toHaveAttribute('data-rail', expected.rail ? 'on' : 'off');
     expect(box).toHaveAttribute('data-result-columns', String(expected.resultColumns));
     expect(box).toHaveAttribute('data-min-card', String(expected.formatMinCardPx));
 
-    // 🔴 THE ATTRIBUTE IS NOT THE LAYOUT — the inline style is what a browser
-    // reads, so it is asserted too. `data-max-width: none` must mean the style
-    // carries NO cap, not a cap of the string "none".
+    // 🔴 THE INLINE STYLE IS THE LAYOUT — an attribute is only a report of it. The
+    // cap used to be asserted twice, as `data-max-width` and again as the style; the
+    // attribute is gone from the shipped DOM because this line is the stronger of
+    // the two claims. `maxWidth: null` must reach the DOM as NO cap, never as the
+    // string "none".
     expect(box.style.maxWidth).toBe(expected.maxWidth === null ? '' : `${expected.maxWidth}px`);
 
     // The format grid is SIZED (auto-fill + a minimum), not counted.
@@ -240,18 +250,25 @@ describe('the layout the App renders, at EVERY tier', () => {
 
     // The rail exists exactly when the layout says so — asserted in BOTH
     // directions, because "the rail is present at lg" and "the rail is absent at
-    // sm" are two different claims.
+    // sm" are two different claims. This pair replaces a `data-rail` attribute that
+    // said the same thing one element up: the element's presence and its grid
+    // template are what a browser acts on, and they cannot be right while the rail
+    // is missing.
     if (expected.rail) {
       const rail = screen.getByTestId('yt-rail');
       expect(screen.getByTestId('yt-main')).toBeInTheDocument();
       expect(screen.getByTestId('yt-rail-grid').style.gridTemplateColumns).toBe(
         `${expected.railWidth}px minmax(0, 1fr)`,
       );
-      // 🔴 THIS PINS A DECLARATION, NOT A BEHAVIOUR, and is labelled as such.
-      // `useBlockResize` asks the host to fit the iframe to content, so the frame
-      // never scrolls and `sticky` has no scrolling ancestor to stick within — see
-      // `railStyle`. Kept so the declaration is not dropped by accident; the rail's
-      // real property is the two assertions below, which are behavioural.
+      // 🔴 STICKY IS LIVE IN PRODUCTION — and this line is annotated because the
+      // version of it that shipped before this round said it was inert. Both host
+      // surfaces bound the iframe's height, so the app's content scrolls inside the
+      // frame and the rail has a scrolling ancestor: the full-page host handles no
+      // `RESIZE_IFRAME` at all and sizes the frame to the viewport, and the slot
+      // host clamps the height `RESIZE_IFRAME` asks for. See `railStyle` for the
+      // host-side reading. What is assertable HERE is still only the declaration —
+      // jsdom performs no layout, so it can never travel — and the pixels remain a
+      // `deferred[]` item in `taste.json`.
       expect(rail.style.position).toBe('sticky');
       // The prompt is IN the rail, and the format picker is NOT — that is the
       // restructure, not just a second column existing.
@@ -305,14 +322,41 @@ describe('the layout the App renders, at EVERY tier', () => {
   });
 
   it('the 640px column is GONE from every tier that has room', async () => {
-    // The regression this pass exists for, asserted where a user would meet it:
-    // the live desktop block measures ~1600px and used to render a 640px column.
+    // The regression this pass exists for, asserted where a user would meet it: a
+    // full-page block's column is as wide as the viewport (the host imposes no
+    // width — see `ULTRAWIDE_MIN`), and it used to render 640px of that.
     setBlockWidth(INSIDE.xl);
     uninstall = installMockMoneyHost(VIEWER);
     render(<App />);
     await screen.findByTestId('pm-generate');
     expect(content().style.maxWidth).toBe('');
     expect(content().getAttribute('style') ?? '').not.toContain('640px');
+  });
+
+  it(`a ${TABLET_LANDSCAPE}px block is NOT guttered — the top of md was capped`, async () => {
+    // 🔴 THE REGRESSION THIS CASE EXISTS FOR. The two-column cap used to be 1100
+    // while `md` runs to 1183, so a 1101–1183px block — a 10.9-inch tablet in
+    // landscape is 1180 — rendered a 1100px column with gutters either side. The
+    // tier fixtures cannot see it: `md`'s fixture is 1099.
+    //
+    // The assertion is the mechanism, not the literal: a cap only gutters when it
+    // is NARROWER than the block, so what has to hold is "no cap, or a cap at
+    // least as wide as the block". That stays true if the ladder moves again.
+    setBlockWidth(TABLET_LANDSCAPE);
+    uninstall = installMockMoneyHost(VIEWER);
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+
+    // The tier the cap was chosen from, so a failure says WHY.
+    expect(document.querySelector('[data-block-tier]')).toHaveAttribute('data-block-tier', 'md');
+
+    const cap = content().style.maxWidth;
+    const capPx = cap === '' ? Number.POSITIVE_INFINITY : Number.parseInt(cap, 10);
+    expect(
+      capPx,
+      `a ${TABLET_LANDSCAPE}px block is capped at ${cap || 'nothing'}, so it is centred inside ` +
+        `${(TABLET_LANDSCAPE - capPx) / 2}px of gutter either side`,
+    ).toBeGreaterThanOrEqual(TABLET_LANDSCAPE);
   });
 
   it('a narrow block still gets the readable 640px cap', async () => {
@@ -362,6 +406,23 @@ describe.each([
     expect(root.style.backgroundColor).not.toBe(rgb(other.page));
     expect(root.style.color).toBe(rgb(own.text));
     expect(root.style.color).not.toBe(rgb(other.text));
+  });
+
+  it('the block root hands the stylesheet THIS theme’s focus ring', async () => {
+    // 🔴 THE OTHER HALF OF A SEAM NEITHER FILE OWNS. `palette.test.ts` pins that
+    // `index.css` paints the outline from `--yt-focus-ring` and from nothing else;
+    // this pins that the App actually SETS that property, and sets it from the right
+    // theme. Each file alone leaves the ring undefined in production — the stylesheet
+    // would fall through to `currentColor`, which is a plausible-looking outline and
+    // would never fail anything.
+    setBlockWidth(INSIDE.md);
+    uninstall = installMockMoneyHost({ ...VIEWER, theme });
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+
+    const root = document.querySelector('[data-block-tier]') as HTMLElement;
+    expect(root.style.getPropertyValue('--yt-focus-ring')).toBe(own.brand);
+    expect(root.style.getPropertyValue('--yt-focus-ring')).not.toBe(other.brand);
   });
 
   it('the hero gradient uses BOTH stops from THIS theme, plus its ink', async () => {
@@ -534,9 +595,13 @@ describe('results and the editor, at width', () => {
     // 🔴 IT WAS `repeat(2, …)` AT EVERY WIDTH, including a 361px phone and a
     // 1907px monitor. Four widths, four different answers — a single-width test
     // could not tell a working ladder from a hardcoded 2.
+    //
+    // Asserted as the grid template only. A `data-columns` attribute used to repeat
+    // the same number on the same element; the template is what the browser lays
+    // out from, so the attribute was a second copy of one fact and is gone from the
+    // shipped DOM.
     await generate(width as number);
     const grid = screen.getByTestId('yt-results-grid');
-    expect(grid).toHaveAttribute('data-columns', String(columns));
     expect(grid.style.gridTemplateColumns).toBe(`repeat(${columns}, minmax(0, 1fr))`);
   });
 

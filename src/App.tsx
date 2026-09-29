@@ -1658,11 +1658,9 @@ export function App() {
               count now comes from `layoutForTier`: 1 on a phone, 2 mid, 3 at
               `lg`/`xl`, 4 ultrawide, so candidates are actually comparable
               side by side. */}
-          <div
-            style={galleryStyle(layout)}
-            data-testid="yt-results-grid"
-            data-columns={layout.resultColumns}
-          >
+          {/* No `data-columns` here: `galleryStyle`'s `gridTemplateColumns` already
+              carries the count, in the form a browser acts on. */}
+          <div style={galleryStyle(layout)} data-testid="yt-results-grid">
             {candidates.map((c, i) => (
               <div key={c.url} style={galleryItemStyle}>
                 <div style={{ position: 'relative' }}>
@@ -1993,7 +1991,18 @@ function shellStyle(pal: Palette): React.CSSProperties {
     boxSizing: 'border-box',
     background: pal.page,
     color: pal.text,
-  };
+    // 🔴 THE ONE PLACE THIS APP SHIPS A CUSTOM PROPERTY, AND IT IS DELIBERATE.
+    // `index.css` paints the `:focus-visible` outline for raw textareas/buttons, and
+    // a stylesheet rule cannot read a TS palette — it used to name the HOST's
+    // `--civitai-color-primary`, which under `brandDepth: "skin"` is a colour that
+    // appears nowhere else on the block. Handing the stylesheet the app's own
+    // `brand` through an inherited property keeps the hex in `palette.ts` (still one
+    // place, still asserted in both themes) instead of duplicating it into CSS with
+    // a `prefers-color-scheme` branch that the host's `data-theme` would not agree
+    // with. The cast is because `React.CSSProperties` has no index signature for
+    // `--*`; React itself passes such keys through to `style.setProperty`.
+    ['--yt-focus-ring' as string]: pal.brand,
+  } as React.CSSProperties;
 }
 
 /**
@@ -2009,19 +2018,28 @@ function contentStyle(layout: BlockLayout): React.CSSProperties {
 }
 
 /**
- * The layout numbers, on the DOM.
+ * The layout numbers that reach the DOM in NO other form.
  *
- * Not decoration and not only for devtools: jsdom lays nothing out, so these
- * attributes are how a test can assert that the App actually THREADED the pure
- * function's answer through to the render — `layout.test.ts` pins the numbers
- * `layoutForTier` produces, and these pin that the component used them. Either
- * half alone is a claim about one side of the seam.
+ * jsdom lays nothing out, so these attributes are how a test asserts the App
+ * actually THREADED the pure function's answer through to the render —
+ * `layout.test.ts` pins the numbers `layoutForTier` produces, and these pin that
+ * the component used them. Either half alone is a claim about one side of the seam.
+ *
+ * 🔴 ONLY THE NUMBERS WITH NO INLINE-STYLE TWIN ARE HERE, AND THE REST WERE
+ * DELETED. `data-max-width`, `data-rail` and the results grid's `data-columns` each
+ * restated a fact the inline style on the same element already carries
+ * (`style.maxWidth`, the rail grid's `gridTemplateColumns` plus the rail element's
+ * existence, and the results grid's `gridTemplateColumns`). The style is the
+ * stronger witness of the two — a browser reads it, and it cannot be right while
+ * the layout is wrong — so a duplicate attribute in the shipped DOM bought a second
+ * assertion of the same thing and one more place to get out of step. What survives:
+ * `resultColumns`, because the column count is decided at every tier but only
+ * reaches a style once candidates exist, and `formatMinCardPx`, which the grid
+ * carries as `minmax()` but is worth naming at the content box too.
  */
 function contentProps(layout: BlockLayout) {
   return {
     'data-testid': 'yt-content',
-    'data-max-width': layout.maxWidth === null ? 'none' : String(layout.maxWidth),
-    'data-rail': layout.rail ? 'on' : 'off',
     'data-result-columns': String(layout.resultColumns),
     'data-min-card': String(layout.formatMinCardPx),
   } as const;
@@ -2043,20 +2061,36 @@ function railGridStyle(layout: BlockLayout): React.CSSProperties {
 /**
  * The persistent controls rail.
  *
- * 🔴 `position: sticky` IS PROBABLY INERT IN PRODUCTION, AND SAYING SO IS THE
- * POINT. Sticky needs a scrolling ancestor, and this block does not have one:
- * `useBlockResize(rootRef)` posts `RESIZE_IFRAME` on every height change so the
- * host FITS THE IFRAME TO CONTENT (the hook's own docs), which means the iframe
- * never overflows and the sticky rail has nothing to stick within — the page that
- * scrolls is the host's, outside the frame. The declaration is kept because it
- * costs nothing and becomes load-bearing the moment a block is given a
- * fixed-height slot, but the rail's real benefit at `lg`+ does not depend on it:
- * the inputs and the candidate grid are SIDE BY SIDE, so neither is below the
- * other's fold in the first place. Recorded in `taste.json`; the app-taste
- * constraints file should learn it.
+ * 🔴 `position: sticky` IS LIVE ON BOTH HOST SURFACES — AND THE VERSION OF THIS
+ * COMMENT THAT SHIPPED BEFORE THIS ROUND SAID THE OPPOSITE. It claimed the rail had
+ * no scrolling ancestor because `useBlockResize(rootRef)` posts `RESIZE_IFRAME` and
+ * the host therefore fits the iframe to content. That was reasoned, not measured,
+ * and it is false on both surfaces a block can be mounted in (read off
+ * `civitai@main`):
  *
- * `alignSelf: 'start'` keeps the grid item from stretching to the row height,
- * which is required for sticky to work at all where sticky works.
+ *  - FULL PAGE (`/apps/run/<slug>`) — the only surface wide enough to reach the
+ *    `lg` rail in the first place. `PageBlockHost.tsx` handles NO `RESIZE_IFRAME`
+ *    message at all; `IframeHost.tsx` is the only host component that does. It
+ *    sizes the frame `height: 100%` with `min-height: calc(100dvh - <site header>)`,
+ *    so the frame is viewport-height whatever the app reports and the app's own
+ *    content scrolls INSIDE it.
+ *  - SLOT (`IframeHost.tsx`) — `RESIZE_IFRAME` is honoured, but the height goes
+ *    through `clampBlockHeight`, which takes the minimum of the requested height,
+ *    the manifest's `maxHeight`, a hard ceiling, and the viewport less the host's
+ *    own chrome. Past that clamp the frame stops growing and the app scrolls
+ *    internally here too.
+ *
+ * So the rail genuinely stays on screen while the candidate grid scrolls past it.
+ * `useBlockResize` is still called and still right — it is what lets a SHORT block
+ * occupy only the height it needs in a slot — but "the host fits the iframe to
+ * content" is not a property that survives either surface, and it was the wrong
+ * reason to call sticky inert. `taste.json` carries the correction.
+ *
+ * Sticky is not the rail's only benefit: the inputs and the candidate grid are SIDE
+ * BY SIDE, so neither is below the other's fold even before anything scrolls.
+ *
+ * `alignSelf: 'start'` keeps the grid item from stretching to the row height, which
+ * sticky needs in order to have anywhere to travel.
  */
 function railStyle(pal: Palette): React.CSSProperties {
   return {

@@ -16,12 +16,19 @@ import { ULTRAWIDE_MIN, layoutForTier, type BlockLayout } from './layout.js';
  * One fixture width strictly INSIDE each tier.
  *
  * 🔴 THE WIDTHS ARE CHOSEN TO DISCRIMINATE. Each is distinct from every
- * breakpoint constant (480 / 768 / 1024 / 1184 / 1440), from the ultrawide
- * threshold (1800), and from every value `layoutForTier` can RETURN (640 / 1100 /
- * 124 / 160 / 200 / 220 / 340 / 400) — a fixture that happens to equal a constant
- * the assertion also names cannot see a mutant that hardcodes that constant. None
- * of them sits on a boundary either: a width that lands exactly ON the comparison
- * it is meant to exercise passes whether the comparison is `>=` or `>`.
+ * breakpoint constant (480 / 768 / 1024 / 1184 / 1440), from the tier-top widths
+ * the gutter case names (1023 / 1183), from the ultrawide threshold (1800), and
+ * from every value `layoutForTier` can RETURN (640 / 1184 / 124 / 160 / 200 / 220 /
+ * 340 / 400) — a fixture that happens to equal a constant the assertion also names
+ * cannot see a mutant that hardcodes that constant. None of them sits on a boundary
+ * either: a width that lands exactly ON the comparison it is meant to exercise
+ * passes whether the comparison is `>=` or `>`.
+ *
+ * ⚠️ AND THAT IS WHY `md`'s FIXTURE COULD NOT SEE THE GUTTER BUG. 1099 is strictly
+ * inside `md` and distinct from every constant, and the two-column cap was 1100 —
+ * so this fixture sat one pixel under the cap and the whole table stayed green while
+ * every width from 1101 to 1183 was guttered. "Inside the tier" is not "inside the
+ * range the cap governs"; the tier-top case below is what covers the difference.
  */
 const INSIDE: Record<BlockSizeTier, number> = {
   base: 361,
@@ -86,7 +93,7 @@ const CASES: readonly Case[] = [
     expected: {
       tier: 'sm',
       ultrawide: false,
-      maxWidth: 1100,
+      maxWidth: 1184,
       formatMinCardPx: 160,
       resultColumns: 2,
       rail: false,
@@ -103,7 +110,7 @@ const CASES: readonly Case[] = [
     expected: {
       tier: 'md',
       ultrawide: false,
-      maxWidth: 1100,
+      maxWidth: 1184,
       formatMinCardPx: 160,
       resultColumns: 2,
       rail: false,
@@ -130,7 +137,7 @@ const CASES: readonly Case[] = [
     },
   },
   {
-    name: 'xl, not ultrawide — the live ~1600px desktop block',
+    name: 'xl, not ultrawide — a windowed desktop browser, or a 1600/1680 monitor',
     tier: 'xl',
     ultrawide: false,
     width: INSIDE.xl,
@@ -190,7 +197,9 @@ describe('layoutForTier', () => {
   it('every fixture width is distinct from every breakpoint and every output value', () => {
     // The mutation-isolation control, mechanised: a fixture that equals a constant
     // the assertions name cannot observe a mutant that hardcodes that constant.
-    const forbidden = new Set([480, 768, 1024, 1184, 1440, 1800, 640, 1100, 124, 160, 200, 220, 340, 400, 0]);
+    const forbidden = new Set([
+      480, 768, 1024, 1184, 1440, 1800, 1023, 1183, 640, 124, 160, 200, 220, 340, 400, 0,
+    ]);
     for (const width of [...Object.values(INSIDE), INSIDE_ULTRAWIDE]) {
       expect(forbidden.has(width)).toBe(false);
     }
@@ -257,6 +266,42 @@ describe('layoutForTier', () => {
       expect(all[0].resultColumns).toBe(1);
       expect(all[all.length - 1].resultColumns).toBe(4);
       expect(new Set(all.map((l) => l.resultColumns)).size).toBe(4);
+    });
+
+    it('the TWO-column cap cannot gutter, at ANY width inside its own tiers', () => {
+      // 🔴 THE ONE-COLUMN CAP DELIBERATELY DOES GUTTER AND THE TWO-COLUMN ONE MUST
+      // NOT, so this is scoped rather than universal. 640 at `base`/`xs` gutters
+      // from 641px up, which is the point of it: a single text column wants a
+      // readable measure. Two columns are already spending the width, and "full
+      // width on a tablet" is the requirement, so a cap narrower than the tier's
+      // own top width is a defect — it was 1100 against a tier that runs to 1183.
+      //
+      // Each pair is `[tier, the widest width that tier admits]`, one below the next
+      // breakpoint on the SDK ladder; the case below re-derives them through
+      // `resolveBlockTier` so they cannot drift into fiction.
+      const TWO_COLUMN_TIERS = [
+        ['sm', 1023],
+        ['md', 1183],
+      ] as const;
+
+      for (const [tier, top] of TWO_COLUMN_TIERS) {
+        const cap = layoutForTier(tier).maxWidth;
+        expect(cap, `${tier} is meant to be capped`).not.toBeNull();
+        expect(
+          cap as number,
+          `${tier} caps the column at ${cap}px but the tier runs to ${top}px, so a block ` +
+            `between ${(cap as number) + 1} and ${top}px wide is centred inside ` +
+            `${(top - (cap as number)) / 2}px of gutter`,
+        ).toBeGreaterThanOrEqual(top);
+      }
+
+      // The control: each `top` really IS the last width in that tier, and one more
+      // pixel is the next tier. Without this the loop above could pass against two
+      // invented numbers.
+      for (const [tier, top] of TWO_COLUMN_TIERS) {
+        expect(resolveBlockTier(top)).toBe(tier);
+        expect(resolveBlockTier(top + 1)).not.toBe(tier);
+      }
     });
 
     it('the 640px column this pass removed survives ONLY below sm', () => {

@@ -4,10 +4,11 @@ import type { BlockSizeTier } from '@civitai/blocks-react';
  * ONE PLACE where the block's width decides its shape.
  *
  * 🔴 WHAT THIS REPLACES. Every screen used to be `{ width: '100%', maxWidth: 640 }`
- * — a single 640px centred column at every width. The live block iframe measures
- * ~1600px on a desktop, so roughly 60% of the block was empty, and the 1280×720
- * editor canvas was rendered at 640px wide while 900px of blank page sat beside
- * it. Nothing about that was a styling problem; it was one constant.
+ * — a single 640px centred column at every width. A full-page block's column is the
+ * viewport wide (see `ULTRAWIDE_MIN` for the host-side measurement), so on any
+ * ordinary desktop most of the block was empty — at 1600px, 60% of it — and the
+ * 1280×720 editor canvas was rendered at 640px wide while 900px of blank page sat
+ * beside it. Nothing about that was a styling problem; it was one constant.
  *
  * 🔴 WHY A PURE FUNCTION AND NOT TERNARIES AT THE CALL SITES. `App.tsx` is ~2000
  * lines with six surfaces that all want an answer to the same question. A
@@ -36,13 +37,27 @@ export interface BlockLayout {
    *
    * The cap is a function of `columns`, not of the tier: a single column wants a
    * readable measure, and a multi-column grid already spends the width. So the
-   * ladder is 640 at one column, 1100 at two, uncapped at three or more.
+   * ladder is 640 at one column, 1184 at two, uncapped at three or more.
    *
-   * It does not bind in every tier, and that is correct rather than dead: at `xs`
-   * (480–767) the 640 cap binds from 641px up, and at `md` (1024–1183) the 1100
-   * cap binds from 1101px up. At `sm` (768–1023) the two-column cap of 1100 never
-   * binds — the tier is narrower than its own cap — which is the honest shape of
-   * "cap by column count".
+   * 🔴 THE ONE-COLUMN CAP IS MEANT TO BIND; THE TWO-COLUMN ONE IS NOT. At `base`/
+   * `xs` the 640 cap binds from 641px up, and that is its whole job — a single text
+   * column wants a readable measure. Two columns are already spending the width, so
+   * there the requirement is the opposite: a two-column block fills its width. 1184
+   * is the `lg` boundary, one past the top of `md`, so the two-column cap cannot
+   * bind at ANY width in `sm` (768–1023) or `md` (1024–1183).
+   *
+   * 🔴 IT WAS 1100, AND THAT GUTTERED THE TOP OF `md`. `md` runs to 1183, so a
+   * block 1101–1183px wide got a 1100px column centred in it — 40px of gutter
+   * either side at 1180px, which is the landscape width of the 10.9-inch tablet
+   * class. Pinned by `layout.test.ts`'s "the TWO-column cap cannot gutter" case and
+   * by `responsive.test.tsx`'s 1180px arm.
+   *
+   * 🔴 SO WHAT DOES THE NUMBER STILL DO? Nothing, at any width its tiers admit —
+   * and that is stated rather than dressed up. It is the two-column rung of "cap by
+   * column count" written as a value instead of a special case. It is not `null`
+   * because in this module `null` means "the rail is on" — an invariant
+   * `layout.test.ts` asserts in both directions — and spending the same word on
+   * "two columns, no cap" would make it mean two things.
    */
   maxWidth: number | null;
   /**
@@ -84,11 +99,36 @@ export interface BlockLayout {
  * render per pixel or be a lie". So a fourth column needs a threshold the app owns
  * (`useUltrawide`), not a tier.
  *
- * 1800 rather than 1440: the live block iframe measures ~1600px on an ordinary
- * desktop, so a threshold at or below that would make "ultrawide" the normal case
- * and the 3-column `lg`/`xl` layout unreachable in practice.
+ * 1800 rather than 1440, and the argument is REACHABILITY OF BOTH BRANCHES, read
+ * off the host rather than guessed. A full-page block's column is simply the
+ * viewport: `PageBlockHost.tsx` gives the content wrapper `width: 100%` and no
+ * `max-width` in any spelling, and the host's own browser suite
+ * `PageBlockHostMaxWidth.browser.test.tsx` asserts the app column equals its parent
+ * AND the viewport, with zero gutter, at 1620 / 1905 / 2560 / 3440. So a maximised
+ * 1920×1080 browser hands the block ~1905px — over this threshold, which is what
+ * makes the 4-column branch something a person actually meets — while 1440–1799 (a
+ * windowed browser, a 1600 or 1680 monitor, a scaled laptop panel) stays `xl`
+ * without it. Neither branch is decoration.
+ *
+ * 🔴 THE REASON THAT USED TO BE HERE WAS STALE, AND IT ARGUED THE OPPOSITE WAY. It
+ * read "the live block iframe measures ~1600px on an ordinary desktop, so a
+ * threshold at or below that would make ultrawide the normal case". That 1600 was
+ * the host's own `max-width: 1600px` on the full-page surface, deleted in civitai
+ * `7570507fb8` (2026-09-28, "uncap the full-page app surface so each app controls
+ * its own width") — one day before this app's pass. After the uncap a maximised
+ * desktop IS ultrawide, so the old sentence was both out of date and pointing at a
+ * number it would not have chosen. The threshold survives the correction; its
+ * stated reason did not.
  */
 export const ULTRAWIDE_MIN = 1800;
+
+/**
+ * The two-column content cap — the `lg` boundary, so it cannot bind inside `sm` or
+ * `md`. Named rather than inlined because the `maxWidth` docblock's whole argument
+ * is that this value IS the next breakpoint; a bare literal makes that a
+ * coincidence a reader has to check.
+ */
+const TWO_COLUMN_MAX_WIDTH = 1184;
 
 /** Rail width at `lg`/`xl`. Wide enough for the prompt textarea to stay usable. */
 const RAIL_W = 340;
@@ -136,7 +176,7 @@ export function layoutForTier(tier: BlockSizeTier, ultrawide = false): BlockLayo
     return {
       tier,
       ultrawide: wide,
-      maxWidth: 1100,
+      maxWidth: TWO_COLUMN_MAX_WIDTH,
       formatMinCardPx: 160,
       resultColumns: 2,
       rail: false,
