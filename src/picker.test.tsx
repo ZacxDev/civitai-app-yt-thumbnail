@@ -123,7 +123,11 @@ vi.mock('@civitai/blocks-react', () => ({
 }));
 
 const { App } = await import('./App.js');
-const { DEFAULT_CHECKPOINT, familyHasLoras } = await import('./models.js');
+// 🔴 `DEFAULT_CHECKPOINT` is imported at the top because it EXISTS at bec8894;
+// `familyHasLoras` does NOT, so importing it here would make every case in this
+// file fail to import at base — a vacuous red that would hide the one case whose
+// red is real. It is imported lazily inside the single test that needs it.
+const { DEFAULT_CHECKPOINT } = await import('./models.js');
 
 const optsFor = (type: string) =>
   resourcePickerOpen.mock.calls.map((c) => c[0]).find((o) => o?.resourceType === type);
@@ -211,16 +215,22 @@ describe('host resource pickers', () => {
    * (a click handler wired past a cosmetic disable).
    */
   it('does not open the LoRA picker on a checkpoint family that has no LoRAs', async () => {
+    // 🔴 DELIBERATELY FREE OF ANY IMPORT THAT DOES NOT EXIST AT bec8894, so its
+    // red there is a REAL ASSERTION failure about the button, not a missing
+    // export. Measured at base with App.tsx + models.ts reverted: the default
+    // was SDXL, Add LoRA was enabled, clicking it DID open the picker, and this
+    // fails on `expect(optsFor('LORA')).toBeUndefined()`.
     resourcePickerOpen.mockResolvedValue(loraPick);
     const user = userEvent.setup();
     render(<App />);
 
-    // The shipped default IS such a family — asserted, not assumed.
-    expect(familyHasLoras(DEFAULT_CHECKPOINT.baseModel)).toBe(false);
-
     const add = await screen.findByTestId('pm-lora-add');
     await user.click(add);
 
+    // The picker was never opened — asserted on the CALL, not on the `disabled`
+    // attribute alone. A disabled attribute is what the user sees; whether a
+    // spend-adjacent host modal was opened is what actually matters, and a click
+    // handler wired past a cosmetic disable makes the two disagree.
     expect(optsFor('LORA')).toBeUndefined();
     expect(add).toBeDisabled();
     // ...and the reason is on screen, naming the family, rather than a dead
@@ -228,5 +238,13 @@ describe('host resource pickers', () => {
     expect(screen.getByTestId('pm-lora-unsupported')).toHaveTextContent(
       DEFAULT_CHECKPOINT.baseModel,
     );
+  });
+
+  it('the shipped default IS a family with no LoRAs — asserted, not assumed', async () => {
+    // The premise the case above rests on, separated so that case can stay
+    // import-clean at base. VACUOUS red at bec8894 (`familyHasLoras` does not
+    // exist there); its real evidence is models.test.ts's measured deny-set.
+    const { familyHasLoras } = await import('./models.js');
+    expect(familyHasLoras(DEFAULT_CHECKPOINT.baseModel)).toBe(false);
   });
 });
