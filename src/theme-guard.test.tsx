@@ -145,11 +145,18 @@ const COVERED_FILES = ALL_SOURCES.filter((f) => !EXEMPT.some((e) => e.file === f
  * odd number — so the walk opened a string at the last one and ran it to the next
  * quote 2,962 characters later. MEASURED against this implementation across the 13
  * covered files: **940 characters of real comment left unstripped, all of them in
- * that file, and 0 characters over-blanked.** Both directions were reachable: a hex
- * named in prose anywhere in that region was a FALSE finding, and an off-palette
- * literal written after any such regex was invisible. The demonstration is
- * `a regex literal's apostrophe …` below — `/can't/` on the line above an
- * off-palette hex hid it from version 2 completely.
+ * that file, and 0 characters over-blanked.** So a hex named in prose anywhere in
+ * that region was a FALSE finding — and it was live, not hypothetical.
+ *
+ * The other direction, a literal made INVISIBLE, needed one more step, and getting
+ * it wrong is how this would be mis-fixed: version 2 never blanked strings, so an
+ * inverted parity could only hide a colour by OVER-blanking. The spurious string
+ * ends at the next `'`, which leaves whatever follows sitting in what the walk now
+ * thinks is code — so a URL's `//` on that line became a comment start and the walk
+ * blanked to end of line. MEASURED on version 2: a bare off-palette hex appended
+ * under a `/can't/` was still caught; the same hex written after a URL string on one
+ * line went GREEN, and went red again the moment the regex above it was removed.
+ * That pair is `a regex literal's apostrophe …` below.
  *
  * HOW THIS ONE WORKS, AND WHY IT HAS NOTHING TO GET WRONG. It parses the file and
  * marks the extent of every leaf TOKEN. Everything else is trivia — whitespace or a
@@ -305,12 +312,18 @@ describe('GUARD A — no colour literal reaches an app surface', () => {
     expect(findingsIn(stripped)).toEqual([{ text: '#ABCDEF', where: 'realOwner' }]);
   });
 
-  it('a regex literal’s apostrophe does not invert quote parity — positive control', () => {
-    // 🔴 THE HOLE THE CHARACTER WALK LEFT OPEN, AS THE SHAPE THAT WALKS IT. One
-    // apostrophe inside a regex literal was read as a quote, so everything after it
-    // became "string" and no colour literal in the rest of the file was ever seen.
-    // Measured on version 2: this exact pair went GREEN.
-    const src = "export const APOSTROPHE_RE = /can't/;\nconst s = { color: '#2A313D' };\n";
+  it('a regex literal’s apostrophe does not invert quote parity', () => {
+    // 🔴 THE SHAPE THAT WALKED VERSION 2, AND THE MECHANISM IS WORTH BEING EXACT
+    // ABOUT, because the obvious fixture does NOT reproduce it. Version 2 never
+    // blanked strings, so an inverted parity could only HIDE a colour by
+    // over-blanking: the apostrophe's spurious string ends at the next `'`, which
+    // leaves the URL's `//` sitting in what the walk now thinks is code, and the walk
+    // blanks from there to end of line — taking the border literal with it. MEASURED:
+    // the hex alone under a `/can't/` was still caught; this pair went GREEN, with
+    // the same line caught the moment the regex above it was removed.
+    const src =
+      "export const APOSTROPHE_RE = /can't/;\n" +
+      "const s = { backgroundImage: 'url(https://cdn.example/x.png)', border: '1px solid #2A313D' };\n";
     expect(findingsIn(stripComments(src)).map((f) => f.text)).toEqual(['#2A313D']);
   });
 
