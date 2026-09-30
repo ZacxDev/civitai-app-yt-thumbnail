@@ -296,8 +296,16 @@ export function spentAccountLabel(spent: BuzzAccountType | undefined): string | 
  * it to the platform per-gen cap); this constant is exported for your own copy
  * and is not read by the scaffold's UI. The real ceiling is enforced
  * server-side, so changing this constant alone changes nothing about spend.
+ *
+ * 🔴 RAISED 300 -> 900 WITH THE OPENAI DEFAULT. The budget is enforced PER
+ * WORKFLOW and a generation is refused outright once the recipe's ceiling exceeds
+ * it. ChatGPT Images is 209 Buzz/image at a non-square aspect (measured
+ * 2026-09-30 — see DEFAULT_CHECKPOINT), so 300 admits quantity 1 and refuses
+ * every quantity above it; 900 keeps the whole 1..{@link QUANTITY_MAX} range
+ * usable. Format count does NOT multiply against this ceiling — N formats are N
+ * workflows, each with its own budget — but quantity does, within one workflow.
  */
-export const PAGE_BUZZ_BUDGET = 300;
+export const PAGE_BUZZ_BUDGET = 900;
 
 /** The scope the page token must carry before a generation can be submitted. */
 export const BUDGETED_SCOPE = 'ai:write:budgeted';

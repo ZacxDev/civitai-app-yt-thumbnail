@@ -25,7 +25,7 @@
     "path": "/",
     "title": "YT Thumbnail",
     "icon": "bolt",
-    "buzzBudgetPerGen": 300
+    "buzzBudgetPerGen": 900
   },
   "iframe": {
     "minHeight": 600,

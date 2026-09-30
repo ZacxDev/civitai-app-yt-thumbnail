@@ -57,6 +57,40 @@ describe('block.manifest.json', () => {
     expect((description as string).length).toBeLessThanOrEqual(2000);
   });
 
+  /**
+   * 🔴 THE PER-GENERATION BUZZ CEILING. RED AT bec8894 (it declared 300).
+   *
+   * This is a MONEY control and it is enforced PER WORKFLOW by the server, which
+   * reads the MANIFEST value at mint — not `PAGE_BUZZ_BUDGET`, which is only a
+   * mirror. A generation is REFUSED OUTRIGHT once the recipe's ceiling exceeds
+   * the budget, and the refusal names the ceiling rather than the budget, so the
+   * failure does not read as "your budget is too low".
+   *
+   * 900 is the operator's explicit choice for the ChatGPT Images default at
+   * 209 Buzz/image (measured 2026-09-30): 300 admits quantity 1 and refuses
+   * every quantity above it, 900 keeps the whole 1..4 range usable. Asserted as
+   * the LITERAL, because "greater than 300" would pass for a number far above
+   * what was authorised — this is a spend ceiling, and the point of pinning it
+   * is that raising it again is a deliberate, reviewed act.
+   */
+  it('🔴 declares the operator-chosen buzzBudgetPerGen of 900', () => {
+    const page = (manifest.page ?? {}) as Record<string, unknown>;
+    expect(page.buzzBudgetPerGen).toBe(900);
+  });
+
+  /**
+   * The mirror in `generation.ts` must agree with the manifest, or the constant
+   * documents a ceiling the server is not enforcing. INVARIANT GUARD in
+   * principle — both read 300 at base, so it was green there — but it only
+   * exists because this change moved the pair, and moving one of the two is
+   * exactly the drift it catches next time.
+   */
+  it('keeps PAGE_BUZZ_BUDGET in lockstep with the manifest value', async () => {
+    const { PAGE_BUZZ_BUDGET } = await import('./generation.js');
+    const page = (manifest.page ?? {}) as Record<string, unknown>;
+    expect(PAGE_BUZZ_BUDGET).toBe(page.buzzBudgetPerGen);
+  });
+
   // The schema's `category` enum, kept server-side in lockstep with
   // MARKETPLACE_CATEGORIES. An off-enum value is refused at approve.
   it('declares a category the marketplace enum actually contains', () => {

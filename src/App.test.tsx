@@ -6,6 +6,7 @@ import { createMockHost } from '@civitai/blocks-react/testing';
 
 import { App } from './App.js';
 import { installMockMoneyHost, mockBuzzBalance } from './mock-buzz.js';
+import { DEFAULT_CHECKPOINT } from './models.js';
 
 // Component tests: render <App/> against the SDK mock host under a scenario and
 // assert the rendered UI. `installMockMoneyHost` is a thin createMockHost wrapper:
@@ -57,7 +58,9 @@ describe('App (component)', () => {
     // The host-picker affordances: Change model + Add LoRA, starting on the
     // curated default checkpoint.
     expect(screen.getByTestId('pm-change-model')).toBeInTheDocument();
-    expect(screen.getByTestId('pm-model-label')).toHaveTextContent(/SD XL 1\.0/);
+    // Read off DEFAULT_CHECKPOINT rather than hard-coded: this case is about
+    // the picker affordances EXISTING, not about which model is default.
+    expect(screen.getByTestId('pm-model-label')).toHaveTextContent(DEFAULT_CHECKPOINT.label);
     expect(screen.getByTestId('pm-lora-add')).toBeInTheDocument();
   });
 

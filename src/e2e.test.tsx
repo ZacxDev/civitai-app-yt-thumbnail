@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { App } from './App.js';
 import { installMockMoneyHost } from './mock-buzz.js';
+import { DEFAULT_CHECKPOINT } from './models.js';
 
 // End-to-end proof of the money wiring: this drives the FULL page money path
 // through the REAL SDK transport (NO hook mocking) against the mock host. It is
@@ -57,7 +58,7 @@ describe('App money path (e2e)', () => {
     // The model starts on the curated DEFAULT (SD XL 1.0). Click "Change model" —
     // the mock host returns its canned Checkpoint pick (FLUX.1 [dev]); the label
     // updates to the picked model (the pick is still server-revalidated).
-    expect(screen.getByTestId('pm-model-label')).toHaveTextContent(/SD XL 1\.0/);
+    expect(screen.getByTestId('pm-model-label')).toHaveTextContent(DEFAULT_CHECKPOINT.label);
     await user.click(screen.getByTestId('pm-change-model'));
     await waitFor(() =>
       expect(screen.getByTestId('pm-model-label')).toHaveTextContent(/FLUX\.1 \[dev\]/),
