@@ -40,28 +40,33 @@ import {
   aggregateSpend,
   buildWorkflowBody,
   clampQuantity,
-  composePrompt,
+  clearPromptEdit,
+  effectivePrompt,
   failedRuns,
   formatCost,
   hasBudgetedScope,
-  hasSubmittablePrompt,
   imageUrlsFrom,
   initRuns,
   isBusyPhase,
   isPartialFailure,
+  isPromptEdited,
   overallPhase,
   patchRun,
   phaseForError,
   phaseForSnapshot,
   pickDefaultAccount,
+  promptFieldValue,
   promptWasTruncated,
+  promptsReadyToSubmit,
   runCandidates,
+  setPromptEdit,
   spentAccountLabel,
   submitErrorReason,
   isTerminalStatus,
   type AccountChoice,
   type FormatRun,
   type GenPhase,
+  type PromptEdits,
   type SourceImage,
 } from './generation.js';
 import {
@@ -260,6 +265,18 @@ export function App() {
 
   const [mode, setMode] = useState<GenMode>('generate');
   const [prompt, setPrompt] = useState('');
+  /**
+   * Per-format overrides of the composed prompt (see `generation.ts`'s
+   * PromptEdits). Keyed by format id, session-only, never persisted.
+   *
+   * 🔴 DELIBERATELY NOT PRUNED ON DESELECT, and that is the persistence answer:
+   * toggling a format's chip off and on again brings the row back with the
+   * viewer's text intact. A chip is a one-click, easily mis-hit control; losing
+   * a paragraph to a mis-click is a worse failure than carrying a few strings
+   * nothing currently reads. `effectivePrompt` only ever looks up the formats
+   * that are SELECTED, so a stale entry for a deleted format is inert.
+   */
+  const [promptEdits, setPromptEdits] = useState<PromptEdits>({});
   const [touched, setTouched] = useState(false);
   const [account, setAccount] = useState<AccountChoice>('auto');
   const [quantity, setQuantity] = useState(1);
@@ -370,7 +387,11 @@ export function App() {
   // `disabled` attribute would have produced an ENABLED button whose handler
   // still returned immediately: a click that reports success and spends nothing,
   // which is indistinguishable from a swallowed event. All three now read this.
-  const submittable = hasSubmittablePrompt(prompt, selectedFormats);
+  //
+  // It is EDIT-AWARE: `promptsReadyToSubmit` also refuses a click in which any
+  // selected row has been edited to blank, which would otherwise submit an empty
+  // `params.prompt` for that format and charge for it.
+  const submittable = promptsReadyToSubmit(prompt, selectedFormats, promptEdits);
 
   // Refetch the balance after a successful generation debits it.
   useEffect(() => {
@@ -618,8 +639,14 @@ export function App() {
     // uploaded sourceImage (img2img); generate does not. The FORMAT's difference
     // is the composed prompt — that is what makes these N requests rather than
     // one with a bigger quantity.
+    //
+    // 🔴 `effectivePrompt` IS THE SAME FUNCTION THE EDITABLE PREVIEW READS. It
+    // returns the viewer's edited text for a row they took over, and
+    // `composePrompt` byte-for-byte for a row they did not. There is no second
+    // path by which a prompt can reach this body, which is what stops the field
+    // and the wire from disagreeing about the string being paid for.
     const bodyFor = (fmt: Format, acct: AccountChoice) =>
-      buildWorkflowBody(composePrompt(prompt, fmt.suffix), checkpoint, loras, acct, {
+      buildWorkflowBody(effectivePrompt(prompt, fmt, promptEdits), checkpoint, loras, acct, {
         quantity,
         sourceImage: mode === 'remix' ? sourceImage : null,
       });
@@ -707,6 +734,7 @@ export function App() {
   }, [
     mode,
     prompt,
+    promptEdits,
     checkpoint,
     loras,
     account,
@@ -1264,10 +1292,24 @@ export function App() {
                             .then((res) => {
                               downloadBlob(res.blob, thumbnailFileName(downloadCount + 1));
                               setDownloadCount((n) => n + 1);
+                              // 🔴 THIS PATH CANNOT SEE WHETHER A FILE ARRIVED,
+                              // and on civitai.com it almost certainly did not.
+                              // `downloadBlob` fires an <a download> click and
+                              // returns; a sandboxed iframe without
+                              // `allow-downloads` drops it in silence, and this
+                              // block cannot request that token (an unverified
+                              // block is refused it at submit — see
+                              // `manifest.test.ts`). So the note reports only
+                              // what was MEASURED — the encode, its size, its
+                              // quality — and names the fallback that does not
+                              // depend on the sandbox at all: the browser's own
+                              // context menu on the canvas, which is user-agent
+                              // UI rather than a page-initiated download. It
+                              // must not say "Saved".
                               setExportNote(
                                 res.oversized
-                                  ? `Saved, but ${Math.round(res.bytes / 1024)} KB is over YouTube's 2 MB cap — trim the image.`
-                                  : `Saved · ${Math.round(res.bytes / 1024)} KB · quality ${Math.round(res.quality * 100)}%`,
+                                  ? `Exported · ${Math.round(res.bytes / 1024)} KB — over YouTube's 2 MB cap even at the lowest quality; trim the image. If no file appeared, right-click the preview above and choose "Save image as…".`
+                                  : `Exported · ${Math.round(res.bytes / 1024)} KB · quality ${Math.round(res.quality * 100)}%. If no file appeared, right-click the preview above and choose "Save image as…".`,
                               );
                             })
                             .catch(() => setExportNote('Export failed — try again.'));
@@ -1449,13 +1491,21 @@ export function App() {
         minCardPx={layout.formatMinCardPx}
       />
 
-      {/* 🔴 WHAT WILL ACTUALLY BE SENT. A format is a prompt SUFFIX composed at
-          body-build time, deliberately never typed into the prompt box — which
-          is what lets N formats be N different prompts. The cost of that design
-          was that selecting one changed nothing visible. This is the feedback,
-          and it is the REAL string: `composePrompt` is the same function the
-          submit body calls, so the preview cannot drift from the money path. */}
-      <ComposedPromptPreview prompt={prompt} formats={selectedFormats} pal={pal} />
+      {/* 🔴 WHAT WILL ACTUALLY BE SENT, AND NOW ALSO WHERE YOU CHANGE IT. A
+          format is a prompt SUFFIX composed at body-build time, deliberately
+          never typed into the prompt box — which is what lets N formats be N
+          different prompts. These boxes hold the REAL strings: `effectivePrompt`
+          is the same function `bodyFor` calls, so the field cannot drift from
+          the money path, and an edit stays scoped to its own workflow. */}
+      <ComposedPromptPreview
+        prompt={prompt}
+        formats={selectedFormats}
+        edits={promptEdits}
+        disabled={busy}
+        onEdit={(id, text) => setPromptEdits((cur) => setPromptEdit(cur, id, text))}
+        onReset={(id) => setPromptEdits((cur) => clearPromptEdit(cur, id))}
+        pal={pal}
+      />
 
       {/* 🔴 The anonymous path, said out loud. `useAppStorage` resolves null on
           read and REJECTS every write for an anonymous viewer, so a "New format"
@@ -1918,31 +1968,47 @@ function LoraSelector({
 }
 
 /**
- * READ-ONLY preview of the prompt each selected format will actually submit.
+ * The prompt each selected format will actually submit — EDITABLE.
  *
- * 🔴 IT CALLS `composePrompt`, IT DOES NOT RE-IMPLEMENT IT. A view that pasted
- * `prompt + ', ' + suffix` together would be a second copy of the composition
- * rule, and the two would disagree at exactly the moment it matters — the
- * PROMPT_MAX boundary, where the suffix is reserved and the USER's text is what
- * gets clamped. Driving the same function the submit body drives means the string
- * on screen is the string that gets priced and generated, truncation included.
+ * 🔴 IT CALLS `promptFieldValue` / `effectivePrompt`, IT DOES NOT RE-IMPLEMENT
+ * THEM. A view that pasted `prompt + ', ' + suffix` together would be a second
+ * copy of the composition rule, and the two would disagree at exactly the moment
+ * it matters — the PROMPT_MAX boundary, where the suffix is reserved and the
+ * USER's text is what gets clamped. Driving the same functions the submit body
+ * drives means the string in the box is the string that gets priced and
+ * generated, truncation included.
  *
  * 🔴 ONE ROW PER SELECTED FORMAT, BECAUSE THAT IS WHAT MULTI-SELECT MEANS. N
- * formats are N workflows with N different prompts; a single merged preview would
- * suggest one request carrying all of them, which is the misunderstanding the
- * per-format cost note exists to prevent. Each row's text box scrolls on its own
- * so six selected formats stay scannable instead of pushing the picker off screen.
+ * formats are N workflows with N different prompts; a single merged editor would
+ * suggest one request carrying all of them — and would collapse the batch, which
+ * is the one thing an edit must never do. Editing row A cannot touch row B.
  *
- * Not an input: there is nothing to edit here. The prompt box and the format
- * chips are the two controls, and this is their result.
+ * 🔴 EDITING DETACHES THE ROW FROM THE PROMPT BOX, PERMANENTLY AND VISIBLY.
+ * Once a row carries an edit it stops recomposing: typing more into the prompt
+ * box above leaves it alone. The alternative — rebasing the edit onto the new
+ * base prompt — has no non-arbitrary definition and would silently overwrite
+ * words the viewer is about to pay for. So the row wears an "Edited" badge and a
+ * Reset control, and Reset is the only way back to following the box.
+ *
+ * The cap is enforced on the way in (`setPromptEdit` clamps, the field carries
+ * `maxLength`, the count is live), so an over-long edit is never silently
+ * truncated somewhere between here and the wire.
  */
 function ComposedPromptPreview({
   prompt,
   formats,
+  edits,
+  disabled,
+  onEdit,
+  onReset,
   pal,
 }: {
   prompt: string;
   formats: readonly Format[];
+  edits: PromptEdits;
+  disabled: boolean;
+  onEdit: (formatId: string, text: string) => void;
+  onReset: (formatId: string) => void;
   pal: Palette;
 }) {
   if (formats.length === 0) return null;
@@ -1951,23 +2017,64 @@ function ComposedPromptPreview({
       <span style={fieldLabelStyle}>What gets sent</span>
       <span style={fieldDescStyle(pal)} data-testid="yt-prompt-preview-note">
         {formats.length === 1
-          ? 'The exact prompt this generation will carry.'
-          : `The exact prompt each of these ${formats.length} generations will carry.`}
+          ? 'The exact prompt this generation will carry — edit it here before you generate.'
+          : `The exact prompt each of these ${formats.length} generations will carry — edit any of them before you generate.`}
       </span>
       <div style={previewListStyle}>
         {formats.map((fmt) => {
-          const composed = composePrompt(prompt, fmt.suffix);
-          const trimmed = promptWasTruncated(prompt, fmt.suffix);
+          const edited = isPromptEdited(edits, fmt.id);
+          const value = promptFieldValue(prompt, fmt, edits);
+          // The TRIM note belongs to composition only: an edited row has no
+          // reserved suffix left to protect, it is simply the viewer's string.
+          const trimmed = !edited && promptWasTruncated(prompt, fmt.suffix);
+          const blank = edited && effectivePrompt(prompt, fmt, edits) === '';
           return (
             <div
               key={fmt.id}
               style={previewRowStyle(pal)}
               data-testid="yt-prompt-preview-row"
               data-format-id={fmt.id}
+              data-edited={edited ? 'true' : 'false'}
             >
-              <span style={previewRowLabelStyle(pal)}>{fmt.label}</span>
-              <span style={previewTextStyle(pal)} data-testid={`yt-prompt-preview-${fmt.id}`}>
-                {composed}
+              <Group justify="space-between" align="center" gap={8} wrap={false}>
+                <span style={previewRowLabelStyle(pal)}>{fmt.label}</span>
+                {edited && (
+                  <Group gap={6} align="center" wrap={false}>
+                    <span
+                      style={previewEditedStyle(pal)}
+                      data-testid={`yt-prompt-edited-${fmt.id}`}
+                    >
+                      Edited — no longer following the prompt box
+                    </span>
+                    <Button
+                      variant="subtle"
+                      size="sm"
+                      disabled={disabled}
+                      onClick={() => onReset(fmt.id)}
+                      data-testid={`yt-prompt-reset-${fmt.id}`}
+                    >
+                      Reset
+                    </Button>
+                  </Group>
+                )}
+              </Group>
+              <textarea
+                style={previewTextStyle(pal)}
+                data-testid={`yt-prompt-preview-${fmt.id}`}
+                // Deliberately does NOT contain the word "prompt": the page's
+                // own Prompt field is queried by accessible name across the
+                // suite, and N more fields answering to /prompt/i would make
+                // that query ambiguous everywhere. The section heading above
+                // ("What gets sent") supplies the context this name continues.
+                aria-label={`Text sent for ${fmt.label}`}
+                value={value}
+                disabled={disabled}
+                maxLength={PROMPT_MAX}
+                rows={3}
+                onChange={(e) => onEdit(fmt.id, e.target.value)}
+              />
+              <span style={previewCountStyle(pal)} data-testid={`yt-prompt-count-${fmt.id}`}>
+                {value.length} / {PROMPT_MAX}
               </span>
               {/* The suffix is RESERVED by `composePrompt`, so an overflow always
                   costs the VIEWER's words. Saying so is the difference between a
@@ -1978,6 +2085,14 @@ function ComposedPromptPreview({
                   data-testid={`yt-prompt-trimmed-${fmt.id}`}
                 >
                   Your prompt was trimmed to fit. The format text is kept in full.
+                </span>
+              )}
+              {/* An emptied row would submit `params.prompt: ""` and be charged
+                  for it, so `promptsReadyToSubmit` blocks the whole click. Name
+                  the row that is blocking it. */}
+              {blank && (
+                <span style={previewTrimStyle(pal)} data-testid={`yt-prompt-empty-${fmt.id}`}>
+                  This prompt is empty. Write something, or Reset it.
                 </span>
               )}
             </div>
@@ -2815,8 +2930,8 @@ function currentModelStyle(pal: Palette): React.CSSProperties {
   };
 }
 
-// The composed-prompt preview. A read-only surface, so it reads as a panel
-// (`surfaceRaised` inside the field) rather than as another input.
+// The composed-prompt editor. A panel (`surfaceRaised` inside the field) holding
+// one editable box per selected format.
 const previewListStyle: React.CSSProperties = { display: 'grid', gap: 6, marginTop: 4 };
 const previewIconStyle: React.CSSProperties = { flex: 'none', display: 'block' };
 function previewRowStyle(pal: Palette): React.CSSProperties {
@@ -2834,21 +2949,36 @@ function previewRowLabelStyle(pal: Palette): React.CSSProperties {
 }
 function previewTextStyle(pal: Palette): React.CSSProperties {
   return {
+    // A real <textarea>: the string here IS the string submitted, so it is the
+    // control, not a rendering of one.
+    width: '100%',
+    boxSizing: 'border-box',
+    resize: 'vertical',
+    padding: '6px 8px',
+    borderRadius: 6,
+    border: `1px solid ${pal.border}`,
+    background: pal.surface,
+    fontFamily: 'inherit',
     fontSize: 12,
     lineHeight: 1.45,
     color: pal.text,
-    // The whole string, wrapped — never clipped with an ellipsis. A preview that
+    // The whole string, wrapped — never clipped with an ellipsis. A field that
     // hides its own tail cannot answer the question it exists to answer.
-    whiteSpace: 'pre-wrap',
     overflowWrap: 'anywhere',
     // …but N of them must not push the picker off screen, so a long one scrolls
     // inside its own box.
-    maxHeight: 108,
+    maxHeight: 160,
     overflowY: 'auto',
   };
 }
 function previewTrimStyle(pal: Palette): React.CSSProperties {
   return { fontSize: 11, fontWeight: 600, color: pal.danger };
+}
+function previewEditedStyle(pal: Palette): React.CSSProperties {
+  return { fontSize: 10, fontWeight: 700, letterSpacing: 0.2, color: pal.textDim };
+}
+function previewCountStyle(pal: Palette): React.CSSProperties {
+  return { fontSize: 10, color: pal.textDim, justifySelf: 'end' };
 }
 
 // The Buzz-account menu: a trigger + an absolutely positioned popup.

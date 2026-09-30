@@ -117,6 +117,132 @@ export function hasSubmittablePrompt(
 }
 
 // ---------------------------------------------------------------------------
+// EDITABLE composed prompts.
+//
+// The composed-prompt preview shipped in 0.1.5 read-only. Making it editable is
+// a money-path change — the edited string is what gets SUBMITTED and therefore
+// what gets PAID FOR — so the whole model lives here, beside `composePrompt`,
+// rather than as state the view interprets for itself.
+//
+// 🔴 ONE STRING, ONE FUNCTION. `effectivePrompt` is the ONLY answer to "what
+// will this format submit". The preview field reads it (via
+// {@link promptFieldValue}, which differs only in that it does not trim while
+// you are still typing), the Generate gate reads it, and the submit body is
+// built from it. A view that kept its own copy of the edited text and a body
+// that recomposed from the base prompt is precisely the two-sources-of-truth
+// split that lets a viewer pay for a string they never saw.
+//
+// 🔴 N FORMATS STAY N PROMPTS. Edits are keyed BY FORMAT ID, never merged.
+// Editing one row cannot collapse the batch into one workflow, and two rows
+// edited to different text still submit two different prompts — the property
+// that makes multi-select mean anything.
+//
+// 🔴 THE CAP IS ENFORCED ON THE WAY IN, not discovered at submit.
+// {@link setPromptEdit} clamps to {@link PROMPT_MAX}; the field additionally
+// carries `maxLength`, and the row shows a live character count. An edit is
+// therefore never silently truncated between what is on screen and what is
+// sent. NOTE the asymmetry with `composePrompt`, and it is deliberate: an
+// UNEDITED row reserves the format suffix and clamps the USER's words, because
+// the app chose to append that suffix. An EDITED row is the viewer's own whole
+// string — there is no suffix left to reserve — so it is simply capped.
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-format overrides of the composed prompt, keyed by format id. An id that is
+ * ABSENT means "this row still follows the prompt box"; an id present (even with
+ * an empty string) means the viewer has taken the row over.
+ *
+ * Session state only. Deliberately NOT persisted to `useAppStorage`: an edit is
+ * about the click you are about to make, and a prompt silently restored from a
+ * previous visit is a string you would pay for without having written it now.
+ */
+export type PromptEdits = Readonly<Record<string, string>>;
+
+/** Has the viewer taken this row over from the prompt box? */
+export function isPromptEdited(edits: PromptEdits, formatId: string): boolean {
+  return typeof edits[formatId] === 'string';
+}
+
+/**
+ * Record an edit for one format, clamped to {@link PROMPT_MAX}.
+ *
+ * Clamping HERE (rather than at submit) is what keeps the field and the wire in
+ * agreement: the stored value is already within the cap, so the character count
+ * the viewer sees is the length that will be sent.
+ */
+export function setPromptEdit(edits: PromptEdits, formatId: string, text: string): PromptEdits {
+  return { ...edits, [formatId]: clampPrompt(text) };
+}
+
+/** Hand a row back to the prompt box — it recomposes and tracks it again. */
+export function clearPromptEdit(edits: PromptEdits, formatId: string): PromptEdits {
+  if (!isPromptEdited(edits, formatId)) return edits;
+  const next = { ...edits };
+  delete next[formatId];
+  return next;
+}
+
+/**
+ * What the editable field shows for this format: the raw edit if there is one,
+ * otherwise the live composition of the prompt box with the format's suffix.
+ *
+ * Raw — NOT trimmed — so that typing a space mid-sentence is not eaten under the
+ * cursor. {@link effectivePrompt} is the trimmed, submitted form; the two differ
+ * only in surrounding whitespace, exactly as the prompt box already differs from
+ * what `buildWorkflowBody` sends.
+ */
+export function promptFieldValue(
+  basePrompt: string,
+  format: { id: string; suffix: string },
+  edits: PromptEdits,
+): string {
+  return isPromptEdited(edits, format.id)
+    ? (edits[format.id] as string)
+    : composePrompt(basePrompt, format.suffix);
+}
+
+/**
+ * 🔴 THE STRING THIS FORMAT WILL SUBMIT. The single source of truth for the
+ * money path — `buildWorkflowBody` is fed this and nothing else.
+ *
+ * An edited row is the viewer's own text, trimmed and capped. An unedited row is
+ * `composePrompt`, byte-for-byte as before this change, suffix reservation and
+ * all — so nothing about the shipped, money-verified path moves for a viewer who
+ * never touches a row.
+ */
+export function effectivePrompt(
+  basePrompt: string,
+  format: { id: string; suffix: string },
+  edits: PromptEdits,
+): string {
+  if (isPromptEdited(edits, format.id)) return clampPrompt((edits[format.id] as string).trim());
+  return composePrompt(basePrompt, format.suffix);
+}
+
+/**
+ * The Generate gate, edit-aware. Two clauses, both asking "would this click
+ * spend on nothing":
+ *
+ *  1. the shipped rule — at least one selected format composes to something
+ *     ({@link hasSubmittablePrompt}); and
+ *  2. NO selected format resolves to an EMPTY prompt once edits are applied.
+ *
+ * Clause 2 is the new one and it is the reason clearing a row is safe: an edit
+ * emptied to blank would otherwise submit `params.prompt: ""` for that format
+ * and charge the viewer for it, while its siblings looked fine. Refusing the
+ * whole click is the conservative answer — the viewer can always deselect the
+ * row they did not want.
+ */
+export function promptsReadyToSubmit(
+  basePrompt: string,
+  formats: ReadonlyArray<{ id: string; suffix: string }>,
+  edits: PromptEdits,
+): boolean {
+  if (!hasSubmittablePrompt(basePrompt, formats)) return false;
+  return formats.every((f) => effectivePrompt(basePrompt, f, edits) !== '');
+}
+
+// ---------------------------------------------------------------------------
 // Per-account Buzz — which pool funds a generation.
 //
 // A block can prefer + read exactly three pools (the SDK's `BuzzAccountType`):

@@ -8,7 +8,14 @@ import { PROMPT_MAX } from './generation.js';
 import { installMockMoneyHost } from './mock-buzz.js';
 
 /**
- * THE COMPOSED-PROMPT PREVIEW, AND THE EMPTY-PROMPT GATE.
+ * THE COMPOSED-PROMPT FIELDS, AND THE EMPTY-PROMPT GATE.
+ *
+ * 🔴 ADDENDUM (editable prompts). The surface these cases describe as a
+ * "preview" is now an EDITABLE `<textarea>` per selected format, under the same
+ * testids. The cases below are unchanged in substance — they still assert the
+ * composed string — but they read `.value` instead of `textContent` (see the
+ * `text` helper). The editing behaviour itself is the third describe block, and
+ * its own matrix is stated there.
  *
  * 🔴 WHY THESE TWO LIVE IN ONE FILE. They are the two halves of one complaint:
  * a format is a prompt SUFFIX composed at body-build time and deliberately never
@@ -44,8 +51,17 @@ const VIEWER = { viewer: { id: 2, username: 'dev', status: 'active' as const } }
 /** The prompt string a SUBMIT_WORKFLOW message carried. */
 const promptOf = (body: unknown) => (body as { params: { prompt: string } }).params.prompt;
 
-/** Collapse the whitespace jsdom leaves between text nodes. */
-const text = (el: HTMLElement) => (el.textContent ?? '').replace(/\s+/g, ' ').trim();
+/**
+ * The string in one format's composed-prompt field.
+ *
+ * 🔴 SHAPE CHANGE, NOT A WEAKENING. Before the editable-prompt change this
+ * surface was a `<span>` and this helper read `textContent`; it is now a
+ * `<textarea>` under the SAME testid, so the string lives on `.value`. Every
+ * expectation below is unchanged — same literal strings, same lengths — and the
+ * new reader is if anything the stronger one: `.value` is the exact property the
+ * app itself resolves the submitted prompt from.
+ */
+const text = (el: HTMLElement) => (el as HTMLTextAreaElement).value;
 
 describe('the composed-prompt preview', () => {
   let uninstall: (() => void) | undefined;
@@ -64,7 +80,7 @@ describe('the composed-prompt preview', () => {
     // preview exists before any interaction — and it is the SUFFIX ALONE while
     // nothing has been typed, which is the empty-prompt case made visible.
     const row = await screen.findByTestId(`yt-prompt-preview-${CLICKBAIT.id}`);
-    expect(row).toHaveTextContent(CLICKBAIT.suffix);
+    expect(text(row)).toContain(CLICKBAIT.suffix);
     expect(text(row)).toBe(CLICKBAIT.suffix);
 
     await user.type(screen.getByLabelText(/prompt/i), 'a cat on a skateboard');
@@ -117,9 +133,7 @@ describe('the composed-prompt preview', () => {
     await user.type(screen.getByLabelText(/prompt/i), 'a cat');
 
     await waitFor(() =>
-      expect(screen.getByTestId(`yt-prompt-preview-${CLICKBAIT.id}`)).toHaveTextContent(
-        /^a cat,/,
-      ),
+      expect(text(screen.getByTestId(`yt-prompt-preview-${CLICKBAIT.id}`))).toMatch(/^a cat,/),
     );
     expect(screen.queryByTestId(`yt-prompt-trimmed-${CLICKBAIT.id}`)).not.toBeInTheDocument();
   });
@@ -163,6 +177,214 @@ describe('the composed-prompt preview', () => {
     await waitFor(() => expect(submitted).toHaveLength(2), { timeout: 5000 });
 
     expect([...submitted].sort()).toEqual([...previews].sort());
+  });
+});
+
+/**
+ * EDITING THE COMPOSED PROMPT BEFORE SUBMITTING.
+ *
+ * 🔴 RED/GREEN MATRIX, STATED HONESTLY. At the base ref (5c10658) the per-format
+ * surface is a read-only `<span>`, so `fireEvent.change` on it changes nothing
+ * and every case here fails — but it fails because the CONTROL does not exist,
+ * which is a vacuous red. These are BEHAVIOUR cases for a new surface, not
+ * regression coverage for a defect that happened.
+ *
+ * 🔴 WHAT THEY ARE FOR IS THE SEAM. `promptedit.test.ts` pins the model in
+ * isolation and cannot see the App; `App.formats.test.tsx` pins one submit per
+ * format and cannot see the fields. Neither can see the field and the wire
+ * disagreeing, which is the only failure mode that costs money. So every case
+ * below that matters asserts `params.prompt` ON THE SUBMITTED BODY, and reads
+ * the field only to prove it is the same string.
+ */
+describe('editing the composed prompt', () => {
+  let uninstall: (() => void) | undefined;
+  afterEach(() => {
+    uninstall?.();
+    uninstall = undefined;
+  });
+
+  /** A host that records every submitted prompt and finishes the workflows. */
+  const recordingHost = (submitted: string[]) =>
+    installMockMoneyHost({
+      ...VIEWER,
+      consentGranted: true,
+      cost: 8,
+      pollsUntilDone: 2,
+      onOutbound: (m) => {
+        if (m.type === 'SUBMIT_WORKFLOW') {
+          submitted.push(promptOf((m.payload as { body: unknown }).body));
+        }
+      },
+    });
+
+  const field = (id: string) =>
+    screen.getByTestId(`yt-prompt-preview-${id}`) as HTMLTextAreaElement;
+
+  it('🔴 the EDITED string is what reaches params.prompt — not the composed one', async () => {
+    const submitted: string[] = [];
+    uninstall = recordingHost(submitted);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+    await user.type(screen.getByLabelText(/prompt/i), 'a cat');
+
+    // The row starts as the composition…
+    await waitFor(() => expect(field(CLICKBAIT.id).value).toBe(`a cat, ${CLICKBAIT.suffix}`));
+    // …and the viewer replaces it wholesale.
+    fireEvent.change(field(CLICKBAIT.id), {
+      target: { value: 'a dog on a surfboard, hand painted' },
+    });
+    expect(field(CLICKBAIT.id).value).toBe('a dog on a surfboard, hand painted');
+
+    await user.click(screen.getByTestId('pm-generate'));
+    await waitFor(() => expect(submitted).toHaveLength(1), { timeout: 5000 });
+
+    // The literal edited string — and NOT the format suffix it replaced.
+    expect(submitted[0]).toBe('a dog on a surfboard, hand painted');
+    expect(submitted[0]).not.toContain(CLICKBAIT.suffix);
+  });
+
+  it('🔴 two formats still submit TWO DISTINCT prompts after one is edited', async () => {
+    // The constraint that made the preview read-only: N formats are N workflows
+    // with N prompts. An edit must scope to its own row and must not collapse
+    // the batch into one request.
+    const submitted: string[] = [];
+    uninstall = recordingHost(submitted);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+
+    await user.click(screen.getByTestId(`yt-format-${CINEMATIC.id}`));
+    await user.type(screen.getByLabelText(/prompt/i), 'a cat');
+    await waitFor(() => expect(screen.getAllByTestId('yt-prompt-preview-row')).toHaveLength(2));
+
+    fireEvent.change(field(CLICKBAIT.id), { target: { value: 'a dog on a surfboard' } });
+
+    await user.click(screen.getByTestId('pm-generate'));
+    await waitFor(() => expect(submitted).toHaveLength(2), { timeout: 5000 });
+
+    expect(new Set(submitted).size).toBe(2);
+    expect([...submitted].sort()).toEqual(
+      ['a dog on a surfboard', `a cat, ${CINEMATIC.suffix}`].sort(),
+    );
+    // …and the two fields on screen still ARE those two strings.
+    expect([field(CLICKBAIT.id).value, field(CINEMATIC.id).value].sort()).toEqual(
+      [...submitted].sort(),
+    );
+  });
+
+  it('🔴 an OVER-LONG edit is clamped to PROMPT_MAX before it can be submitted', async () => {
+    // `fireEvent.change` writes the value directly, bypassing the field's own
+    // `maxLength` — which is exactly the case the clamp in `setPromptEdit`
+    // exists for. The expectation is re-derived here (the cap), not read back
+    // from the function under test.
+    const submitted: string[] = [];
+    uninstall = recordingHost(submitted);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+
+    fireEvent.change(field(CLICKBAIT.id), { target: { value: 'q'.repeat(PROMPT_MAX + 500) } });
+    // Clamped in the field too, so the count the viewer reads is the truth.
+    expect(field(CLICKBAIT.id).value).toHaveLength(PROMPT_MAX);
+    expect(screen.getByTestId(`yt-prompt-count-${CLICKBAIT.id}`)).toHaveTextContent(
+      `${PROMPT_MAX} / ${PROMPT_MAX}`,
+    );
+
+    await user.click(screen.getByTestId('pm-generate'));
+    await waitFor(() => expect(submitted).toHaveLength(1), { timeout: 5000 });
+    expect(submitted[0]).toHaveLength(PROMPT_MAX);
+    expect(submitted[0]).toBe('q'.repeat(PROMPT_MAX));
+  });
+
+  it('🔴 an edited row DETACHES from the prompt box; an unedited sibling keeps tracking it', async () => {
+    // THE DOCUMENTED DECISION. Rebasing an edit onto a changed base prompt has
+    // no non-arbitrary definition and would overwrite words the viewer is about
+    // to pay for, so an edited row simply stops recomposing — and says so.
+    uninstall = installMockMoneyHost({ ...VIEWER });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+    await user.click(screen.getByTestId(`yt-format-${CINEMATIC.id}`));
+    await waitFor(() => expect(screen.getAllByTestId('yt-prompt-preview-row')).toHaveLength(2));
+
+    fireEvent.change(field(CLICKBAIT.id), { target: { value: 'a dog on a surfboard' } });
+    expect(screen.getByTestId(`yt-prompt-edited-${CLICKBAIT.id}`)).toBeInTheDocument();
+    expect(screen.queryByTestId(`yt-prompt-edited-${CINEMATIC.id}`)).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/prompt/i), { target: { value: 'a wolf' } });
+
+    // The edited row is untouched…
+    await waitFor(() => expect(field(CINEMATIC.id).value).toBe(`a wolf, ${CINEMATIC.suffix}`));
+    expect(field(CLICKBAIT.id).value).toBe('a dog on a surfboard');
+  });
+
+  it('🔴 Reset hands the row back to the prompt box, live', async () => {
+    uninstall = installMockMoneyHost({ ...VIEWER });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+    fireEvent.change(screen.getByLabelText(/prompt/i), { target: { value: 'a cat' } });
+    fireEvent.change(field(CLICKBAIT.id), { target: { value: 'a dog on a surfboard' } });
+
+    await user.click(screen.getByTestId(`yt-prompt-reset-${CLICKBAIT.id}`));
+    expect(field(CLICKBAIT.id).value).toBe(`a cat, ${CLICKBAIT.suffix}`);
+    expect(screen.queryByTestId(`yt-prompt-edited-${CLICKBAIT.id}`)).not.toBeInTheDocument();
+
+    // …and it follows the box again, which is what "reset" has to mean.
+    fireEvent.change(screen.getByLabelText(/prompt/i), { target: { value: 'a wolf' } });
+    await waitFor(() => expect(field(CLICKBAIT.id).value).toBe(`a wolf, ${CLICKBAIT.suffix}`));
+  });
+
+  it('🔴 an edit SURVIVES toggling its format off and back on', async () => {
+    // THE OTHER DOCUMENTED DECISION. A format chip is a one-click, easily
+    // mis-hit control; losing a typed paragraph to a mis-click is the worse
+    // failure, so edits are keyed by format id and are not pruned on deselect.
+    uninstall = installMockMoneyHost({ ...VIEWER });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+    // A second format, so the at-least-one invariant lets Clickbait be dropped.
+    await user.click(screen.getByTestId(`yt-format-${CINEMATIC.id}`));
+    await waitFor(() => expect(screen.getAllByTestId('yt-prompt-preview-row')).toHaveLength(2));
+
+    fireEvent.change(field(CLICKBAIT.id), { target: { value: 'a dog on a surfboard' } });
+
+    await user.click(screen.getByTestId(`yt-format-${CLICKBAIT.id}`));
+    await waitFor(() => expect(screen.getAllByTestId('yt-prompt-preview-row')).toHaveLength(1));
+    expect(screen.queryByTestId(`yt-prompt-preview-${CLICKBAIT.id}`)).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId(`yt-format-${CLICKBAIT.id}`));
+    await waitFor(() => expect(screen.getAllByTestId('yt-prompt-preview-row')).toHaveLength(2));
+    expect(field(CLICKBAIT.id).value).toBe('a dog on a surfboard');
+    expect(screen.getByTestId(`yt-prompt-edited-${CLICKBAIT.id}`)).toBeInTheDocument();
+  });
+
+  it('🔴 a row edited to BLANK disables Generate and names itself', async () => {
+    // Otherwise the click would submit `params.prompt: ""` for that format and
+    // be charged for it. Asserted on `.disabled`, never on "a click did nothing".
+    uninstall = installMockMoneyHost({ ...VIEWER });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+    await user.click(screen.getByTestId(`yt-format-${CINEMATIC.id}`));
+    await waitFor(() => expect(screen.getAllByTestId('yt-prompt-preview-row')).toHaveLength(2));
+    expect((screen.getByTestId('pm-generate') as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.change(field(CLICKBAIT.id), { target: { value: '   ' } });
+
+    await waitFor(() =>
+      expect((screen.getByTestId('pm-generate') as HTMLButtonElement).disabled).toBe(true),
+    );
+    expect(screen.getByTestId(`yt-prompt-empty-${CLICKBAIT.id}`)).toBeInTheDocument();
+    // The sibling is fine and says nothing — the negative control for the note.
+    expect(screen.queryByTestId(`yt-prompt-empty-${CINEMATIC.id}`)).not.toBeInTheDocument();
+
+    // And it recovers: typing into the blocked row re-enables the click.
+    fireEvent.change(field(CLICKBAIT.id), { target: { value: 'a dog' } });
+    await waitFor(() =>
+      expect((screen.getByTestId('pm-generate') as HTMLButtonElement).disabled).toBe(false),
+    );
   });
 });
 
