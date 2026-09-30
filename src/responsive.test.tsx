@@ -1,10 +1,12 @@
+import { readFileSync } from 'node:fs';
+
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { resolveBlockTier, type BlockSizeTier } from '@civitai/blocks-react';
 
-import { App, SHELL_PADDING } from './App.js';
+import { App, HERO_BANNER_SRC, SHELL_PADDING } from './App.js';
 import { layoutForTier } from './layout.js';
 import { installMockMoneyHost } from './mock-buzz.js';
 import { palette, parseHex, type Palette } from './palette.js';
@@ -620,16 +622,28 @@ describe.each([
     // (`--civitai-color-primary` → `-primary-hover` → `-surface-2`). Under `skin`
     // its light-theme pair is a separate set of literals, which is precisely the
     // thing that stays invisible until someone opens the other theme.
+    //
+    // 🔴 THIS ASSERTION MOVED FROM `style.background` TO `style.backgroundImage`,
+    // AND THAT IS A SHAPE CHANGE, NOT A WEAKENING. The hero now emits a three-layer
+    // `background-image` plus its own size/position/repeat longhands, and jsdom's
+    // `background` shorthand getter composes those longhands back into a string with
+    // ` right center no-repeat` appended — so the old whole-string `toBe` could only
+    // have been kept by writing the position and repeat into the expectation, which
+    // asserts chrome rather than colour. The claim is unchanged and still whole: the
+    // ENTIRE layer list, in order, pinned as one string. The three-layer design has
+    // its own coverage in "the hero banner image" below.
     setBlockWidth(INSIDE.md);
     uninstall = installMockMoneyHost({ ...VIEWER, theme });
     render(<App />);
     await screen.findByTestId('pm-generate');
 
     const hero = screen.getByTestId('yt-hero');
-    expect(hero.style.background).toBe(
-      `linear-gradient(135deg, ${own.heroFrom} 0%, ${own.heroTo} 100%)`,
+    expect(hero.style.backgroundImage).toBe(
+      `linear-gradient(90deg, ${own.heroTo} 0%, ${own.heroTo} 42%, transparent 82%), ` +
+        `url("/hero-banner.jpg"), ` +
+        `linear-gradient(135deg, ${own.heroFrom} 0%, ${own.heroTo} 100%)`,
     );
-    expect(hero.style.background).not.toContain(other.heroFrom);
+    expect(hero.style.backgroundImage).not.toContain(other.heroFrom);
     expect(hero.style.color).toBe(rgb(own.heroFg));
   });
 
@@ -696,6 +710,201 @@ describe.each([
     const note = screen.getByTestId('yt-format-cost-note');
     expect(note.style.color).toBe(rgb(own.textDim));
     expect(note.style.opacity).toBe('');
+  });
+});
+
+// ===========================================================================
+// THE HERO BANNER — three layers, and the ORDER is the whole guarantee.
+//
+// 🔴 WHY THE ORDER IS A TEST AND NOT A COMMENT. `background-image` paints its FIRST
+// entry on TOP, which is the opposite of how a list of layers reads to most people.
+// Move the photo in front of the scrim and every one of the colour assertions below
+// still passes — the same three strings are present, the same two palette stops are
+// named — while the headline is now sitting on an arbitrary photograph and the
+// already-graded `['heroFg','heroTo']` pair has stopped describing anything a viewer
+// sees. So the order is asserted by INDEX, in both themes, and a reordering goes red.
+//
+// 🔴 AND WHAT THESE CANNOT SEE. jsdom performs no layout, evaluates no gradient and
+// fetches no image. Nothing here observes the scrim's realized width, the crop, or
+// the photo painting at all. Every claim below is about the emitted CSS plus
+// arithmetic — the same standing caveat the rail's sticky bound carries.
+// ===========================================================================
+
+describe.each([
+  ['dark', palette.dark, palette.light],
+  ['light', palette.light, palette.dark],
+] as const)('the hero banner image, %s theme', (theme, own: Palette, other: Palette) => {
+  let uninstall: (() => void) | undefined;
+
+  afterEach(() => {
+    uninstall?.();
+    uninstall = undefined;
+    restoreClientWidth?.();
+    restoreClientWidth = undefined;
+    restoreResizeObserver?.();
+    restoreResizeObserver = undefined;
+  });
+
+  /** One `lg` render, returning the hero's emitted `background-image` list. */
+  async function heroLayers(width: number = INSIDE.lg): Promise<string> {
+    setBlockWidth(width);
+    uninstall = installMockMoneyHost({ ...VIEWER, theme });
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+    return screen.getByTestId('yt-hero').style.backgroundImage;
+  }
+
+  it('the scrim’s OPAQUE run is literally this theme’s heroTo, at both its stops', async () => {
+    // 🔴 THIS IS THE CONTRAST ARGUMENT, AND IT IS THE REASON THE SCRIM IS NOT A
+    // TRANSLUCENT BLACK. `palette.ts` already grades `['heroFg','heroTo']` and
+    // `['heroSubFg','heroTo']` at AA in both themes. Those two pairs stay TRUE
+    // STATEMENTS ABOUT THE SCREEN only while the thing actually painted behind the
+    // text is `heroTo` itself — an `rgba(0,0,0,.55)` scrim would produce a realized
+    // ground that is in no ledger, and the app would be claiming a contrast it no
+    // longer has. Both stops are named, because a scrim that started at `heroTo`
+    // and faded from 0% would leave the headline on the photo immediately.
+    const image = await heroLayers();
+    expect(image).toContain(
+      `linear-gradient(90deg, ${own.heroTo} 0%, ${own.heroTo} 42%, transparent 82%)`,
+    );
+    // The other theme's ground must NOT appear — a hardcoded `palette.dark` would
+    // leave every "contains heroTo" assertion green in exactly one of the two arms.
+    expect(image).not.toContain(other.heroTo);
+    // And the run is OPAQUE where the text is: the fade-out stop is the third one,
+    // never the first or the second.
+    expect(image.indexOf('transparent')).toBeGreaterThan(image.indexOf('42%'));
+  });
+
+  it('the banner image layer is requested, at the path public/ actually serves', async () => {
+    const image = await heroLayers();
+    // jsdom re-quotes `url('…')` to `url("…")`; the literal here is the EMITTED
+    // form, written out rather than derived from `HERO_BANNER_SRC`, so a typo in
+    // the source cannot agree with itself.
+    expect(image).toContain('url("/hero-banner.jpg")');
+  });
+
+  it('the no-bytes FALLBACK gradient survives, with BOTH of this theme’s stops', async () => {
+    // 🔴 THE FALLBACK IS THE REASON THIS CHANGE IS SAFE TO SHIP. Layer 3 is the
+    // gradient the hero had before there was an image: if the banner 404s, is
+    // blocked, or is still in flight, the viewer gets exactly what shipped in PR #7.
+    // Deleting it "because the image covers it" is the silent regression this pins —
+    // and it must be the LAST layer, since anything painted after it hides it.
+    const image = await heroLayers();
+    const fallback = `linear-gradient(135deg, ${own.heroFrom} 0%, ${own.heroTo} 100%)`;
+    expect(image).toContain(fallback);
+    expect(image.endsWith(fallback)).toBe(true);
+    expect(image).not.toContain(other.heroFrom);
+  });
+
+  it('the layers are ordered scrim → photo → fallback, which is front → back', async () => {
+    const image = await heroLayers();
+    const scrim = image.indexOf('linear-gradient(90deg');
+    const photo = image.indexOf('url("/hero-banner.jpg")');
+    const fallback = image.indexOf('linear-gradient(135deg');
+
+    // All three present — otherwise a `-1` from a missing layer would satisfy the
+    // ordering below by accident.
+    expect(scrim).toBeGreaterThanOrEqual(0);
+    expect(photo).toBeGreaterThanOrEqual(0);
+    expect(fallback).toBeGreaterThanOrEqual(0);
+
+    expect(scrim).toBeLessThan(photo);
+    expect(photo).toBeLessThan(fallback);
+
+    // Exactly three layers: two gradients and one url. A fourth would change what
+    // "front" means without moving any index above.
+    expect(image.match(/linear-gradient\(/g)).toHaveLength(2);
+    expect(image.match(/url\(/g)).toHaveLength(1);
+  });
+
+  it('the photo is sized and anchored so the burst on its right survives a crop', async () => {
+    setBlockWidth(INSIDE.lg);
+    uninstall = installMockMoneyHost({ ...VIEWER, theme });
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+
+    const hero = screen.getByTestId('yt-hero');
+    expect(hero.style.backgroundSize).toBe('cover');
+    expect(hero.style.backgroundPosition).toBe('right center');
+    expect(hero.style.backgroundRepeat).toBe('no-repeat');
+  });
+
+  it('the text did not move: same padding, still start-aligned, still left', async () => {
+    // The `minHeight` below creates free space in the grid for the first time, and
+    // grid's DEFAULT `align-content: stretch` inflates auto rows — which would open
+    // a gap between the headline and the sub-line. `start` is what makes "the text
+    // does not move" true rather than merely intended. No `textAlign` and no
+    // `justifyContent`: the hero is a plain left-aligned stack, as before.
+    setBlockWidth(INSIDE.lg);
+    uninstall = installMockMoneyHost({ ...VIEWER, theme });
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+
+    const hero = screen.getByTestId('yt-hero');
+    expect(hero.style.padding).toBe('22px 28px');
+    expect(hero.style.alignContent).toBe('start');
+    expect(hero.style.textAlign).toBe('');
+    expect(hero.style.justifyContent).toBe('');
+  });
+});
+
+describe('the hero has room for the image to read', () => {
+  let uninstall: (() => void) | undefined;
+
+  afterEach(() => {
+    uninstall?.();
+    uninstall = undefined;
+    restoreClientWidth?.();
+    restoreClientWidth = undefined;
+    restoreResizeObserver?.();
+    restoreResizeObserver = undefined;
+  });
+
+  it('the minHeight DIFFERS between the rail and non-rail layouts', async () => {
+    // 🔴 BOTH ARMS, BECAUSE EITHER ALONE PASSES AGAINST A CONSTANT — the same mutant
+    // that survived a green suite for `heroStyle`'s padding. The two fixtures are
+    // 1301 (`lg`, rail on) and 1099 (`md`, rail off): different tiers, opposite sides
+    // of the rail boundary, and neither is any of 480 / 768 / 1024 / 1184 / 1440, so
+    // the comparison is genuinely reachable rather than decided by a boundary.
+    setBlockWidth(INSIDE.lg);
+    uninstall = installMockMoneyHost(VIEWER);
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+
+    const wide = screen.getByTestId('yt-hero');
+    expect(wide.style.minHeight).toBe('132px');
+    // Derived from the layout rather than re-stated, so the two cannot drift.
+    expect(wide.style.minHeight).toBe(`${layoutForTier('lg').heroMinHeight}px`);
+
+    uninstall?.();
+    restoreClientWidth?.();
+    restoreResizeObserver?.();
+    setBlockWidth(INSIDE.md);
+    uninstall = installMockMoneyHost(VIEWER);
+    render(<App />);
+    const narrow = (await screen.findAllByTestId('yt-hero')).at(-1)!;
+    expect(narrow.style.minHeight).toBe('104px');
+    expect(narrow.style.minHeight).not.toBe(wide.style.minHeight);
+  });
+
+  it('the file the hero asks for is really in public/ — the seam neither side owns', async () => {
+    // 🔴 TWO INDEPENDENT CLAIMS, AND THE HERO HIDES THE SECOND ONE FAILING. "the
+    // style requests /hero-banner.jpg" and "a file is at public/hero-banner.jpg" are
+    // separately true or false, and because layer 3 is a working gradient a 404 here
+    // looks EXACTLY like the design working. Nothing on screen, and no other test in
+    // this repo, would ever say so.
+    //
+    // Labelled honestly: this is an INVARIANT GUARD on the public/ side (the asset
+    // was committed before this change, so that half was already true) and genuine
+    // regression coverage on the URL side.
+    const bytes = readFileSync('public/hero-banner.jpg');
+    expect(bytes.byteLength).toBeGreaterThan(0);
+    // A JPEG, not a renamed something-else: SOI marker.
+    expect([bytes[0], bytes[1]]).toEqual([0xff, 0xd8]);
+    expect(HERO_BANNER_SRC).toBe('/hero-banner.jpg');
+    // `public/` is copied verbatim to the output root, so the served path is the
+    // file's path under public/ with a leading slash — and nothing else.
+    expect(`public${HERO_BANNER_SRC}`).toBe('public/hero-banner.jpg');
   });
 });
 

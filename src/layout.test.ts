@@ -64,6 +64,7 @@ const CASES: readonly Case[] = [
       resultColumns: 1,
       rail: false,
       railWidth: 0,
+      heroMinHeight: 104,
       editorSideBySide: false,
       modelRow: 'stacked',
     },
@@ -81,6 +82,7 @@ const CASES: readonly Case[] = [
       resultColumns: 1,
       rail: false,
       railWidth: 0,
+      heroMinHeight: 104,
       editorSideBySide: false,
       modelRow: 'stacked',
     },
@@ -98,6 +100,7 @@ const CASES: readonly Case[] = [
       resultColumns: 2,
       rail: false,
       railWidth: 0,
+      heroMinHeight: 104,
       editorSideBySide: false,
       modelRow: 'row',
     },
@@ -115,6 +118,7 @@ const CASES: readonly Case[] = [
       resultColumns: 2,
       rail: false,
       railWidth: 0,
+      heroMinHeight: 104,
       editorSideBySide: false,
       modelRow: 'row',
     },
@@ -132,6 +136,7 @@ const CASES: readonly Case[] = [
       resultColumns: 3,
       rail: true,
       railWidth: 340,
+      heroMinHeight: 132,
       editorSideBySide: true,
       modelRow: 'row',
     },
@@ -149,6 +154,7 @@ const CASES: readonly Case[] = [
       resultColumns: 3,
       rail: true,
       railWidth: 340,
+      heroMinHeight: 132,
       editorSideBySide: true,
       modelRow: 'row',
     },
@@ -166,6 +172,7 @@ const CASES: readonly Case[] = [
       resultColumns: 4,
       rail: true,
       railWidth: 400,
+      heroMinHeight: 132,
       editorSideBySide: true,
       modelRow: 'row',
     },
@@ -254,6 +261,21 @@ describe('layoutForTier', () => {
 
     it('the editor splits exactly when the rail is on', () => {
       for (const l of all) expect(l.editorSideBySide).toBe(l.rail);
+    });
+
+    it('the hero height floor keys off the rail, and the two values really differ', () => {
+      // 🔴 THE POINT IS THAT IT AGREES WITH THE PADDING. `heroStyle` picks its
+      // padding with `layout.rail ? … : …`; if this field were keyed off anything
+      // else the hero could get the tall floor and the narrow padding at some
+      // tier, which is the kind of disagreement a second open-coded ternary in
+      // `App.tsx` would have produced silently.
+      for (const l of all) expect(l.heroMinHeight).toBe(l.rail ? 132 : 104);
+      // Not a flat ladder: a "keys off rail" check over one repeated value passes
+      // vacuously, and the whole reason the field exists is that it VARIES.
+      expect(new Set(all.map((l) => l.heroMinHeight)).size).toBe(2);
+      // And the floor is a floor, not a cap on the two-line text stack it has to
+      // clear (26px + 13px of type at 1.15, plus 36px of padding ≈ 81px).
+      for (const l of all) expect(l.heroMinHeight).toBeGreaterThan(81);
     });
 
     it('columns and card size never DECREASE as the block gets wider', () => {

@@ -1281,11 +1281,15 @@ export function App() {
   // branches, never the content — which is what stops the two layouts drifting
   // into two different apps.
 
-  // The in-app hero. Pure CSS — a gradient wash plus the app name — so it costs
-  // no bytes and stays sharp at any block width. Under `brandDepth: "skin"` its
-  // colours come from the app's own palette rather than pack tokens, which is why
-  // both gradient stops AND both text colours are asserted in both themes.
-  // (The STORE cover art is a different asset and ships in assets/.)
+  // The in-app hero: the app name over a banner image, with a palette scrim in
+  // front of it and the original gradient wash behind it — see `heroStyle` for why
+  // the ORDER of those three is the legibility guarantee. It is no longer pure CSS,
+  // but it is still correct with zero bytes: layer 3 is the old gradient, so a 404
+  // on the banner degrades to exactly what shipped before. Under
+  // `brandDepth: "skin"` its colours come from the app's own palette rather than
+  // pack tokens, which is why the scrim, both gradient stops AND both text colours
+  // are asserted in both themes.
+  // (The STORE cover art is a different asset and ships in assets/, never bundled.)
   const hero = (
     <div style={heroStyle(pal, layout)} data-testid="yt-hero">
       <strong style={heroTitleStyle(layout)}>YT Thumbnail</strong>
@@ -2159,8 +2163,48 @@ const mainColumnStyle: React.CSSProperties = { minWidth: 0 };
 const titleStyle: React.CSSProperties = { fontSize: 20 };
 
 /**
- * The in-app hero. A gradient wash plus the app name — no bytes, sharp at any
- * width.
+ * The path the hero's banner is fetched from, same-origin.
+ *
+ * `public/` is copied VERBATIM into the build output, so this is a root-relative
+ * URL and not an `import`ed asset: Vite would otherwise hash and inline-or-emit it,
+ * and the point of this one is that it is a plain file the page requests after
+ * first paint. `vite.config.ts` sets `base: '/'`, so the leading slash is the built
+ * app's own root on `https://yt-thumbnail.civit.ai/`.
+ *
+ * Exported so the seam between "the style asks for this path" and "a file is
+ * actually at it" has something to assert on — two claims that are independently
+ * true or false, and a 404 here is invisible on screen because layer 3 below
+ * covers for it.
+ */
+export const HERO_BANNER_SRC = '/hero-banner.jpg';
+
+/**
+ * The in-app hero: THREE background layers, painted front to back.
+ *
+ * 🔴 THE ORDER IS THE LEGIBILITY GUARANTEE, NOT A STYLE CHOICE. CSS paints the
+ * FIRST entry of a `background-image` list on TOP, so the list below reads
+ * scrim → photo → fallback:
+ *
+ *   1. **Scrim.** A horizontal wash that is *literally* `pal.heroTo` — not a
+ *      translucent black, not a tint — from 0% to 42%, fading out by 82%. Its whole
+ *      job is that the headline and the sub-line sit on a REALIZED ground of
+ *      exactly `heroTo`, so `['heroFg','heroTo']` and `['heroSubFg','heroTo']` in
+ *      `palette.ts` — already graded in both themes, already in `TEXT_PAIRS` — stay
+ *      true statements about what a viewer sees rather than about what the app
+ *      would have painted without an image. No new token, no new contrast claim.
+ *   2. **The photo**, `cover`, anchored `right center`. The banner's subject is a
+ *      burst on its RIGHT, and the anchor is chosen for the case where it can
+ *      actually be lost. Arithmetic, since jsdom cannot measure it: the source is
+ *      1216×380, aspect 3.2. `cover` trims the LONG axis of the box, so the crop is
+ *      horizontal exactly while the hero is narrower-per-height than 3.2 — i.e.
+ *      below 333px of hero width at the 104px floor. A `base` block of 361px gives
+ *      the hero 313px (the shell's 24px inset each side), so the phone case is
+ *      precisely where the horizontal crop bites and `right` keeps the burst. Above
+ *      that the crop turns vertical and `center` is what keeps the burst's middle.
+ *   3. **The fallback**, the original `135deg` wash across both palette stops,
+ *      UNCHANGED. It is what a viewer gets if layer 2 404s or is still in flight,
+ *      which is why the hero costs zero bytes to be correct: the image is an
+ *      upgrade on a surface that already worked.
  *
  * 🔴 BOTH GRADIENT STOPS COME FROM THE PALETTE, which is the part `skin` made our
  * problem. The old version read `--civitai-color-primary` → `-primary-hover` →
@@ -2168,16 +2212,34 @@ const titleStyle: React.CSSProperties = { fontSize: 20 };
  * separate pair of literals that a test has to check, because a gradient that
  * only works in dark is invisible until someone opens the other theme.
  *
- * The padding and the headline scale with the block, so the hero is a masthead on
- * a 1600px block rather than a banner that eats the fold.
+ * 🔴 WHAT NO TEST HERE CAN SEE. jsdom performs no layout and fetches no image, so
+ * nothing in this repo observes the crop, the scrim's realized width in px, or the
+ * photo landing at all. What the suite asserts is that the three layers are present
+ * IN THIS ORDER and that the scrim's opaque run is `heroTo` in both themes — the
+ * structural facts the contrast argument rests on. The pixels are a `deferred[]`
+ * item in `taste.json` alongside the rest of the browser check.
+ *
+ * The padding, the headline and now the height floor scale with the block, so the
+ * hero is a masthead on a 1600px block rather than a banner that eats the fold.
+ * `alignContent: 'start'` is what keeps the text where it already was: with a
+ * `minHeight` there is free space for the first time, and grid's default
+ * `stretch` would inflate both auto rows and open a gap between the two lines.
  */
 function heroStyle(pal: Palette, layout: BlockLayout): React.CSSProperties {
+  const scrim = `linear-gradient(90deg, ${pal.heroTo} 0%, ${pal.heroTo} 42%, transparent 82%)`;
+  const photo = `url('${HERO_BANNER_SRC}')`;
+  const fallback = `linear-gradient(135deg, ${pal.heroFrom} 0%, ${pal.heroTo} 100%)`;
   return {
     display: 'grid',
     gap: 2,
+    alignContent: 'start',
     padding: layout.rail ? '22px 28px' : '18px 20px',
+    minHeight: layout.heroMinHeight,
     borderRadius: 12,
-    background: `linear-gradient(135deg, ${pal.heroFrom} 0%, ${pal.heroTo} 100%)`,
+    backgroundImage: `${scrim}, ${photo}, ${fallback}`,
+    backgroundSize: 'cover',
+    backgroundPosition: 'right center',
+    backgroundRepeat: 'no-repeat',
     color: pal.heroFg,
   };
 }
