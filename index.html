@@ -3,66 +3,22 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- DARK FIRST, deliberately. The first thing an iframe paints is the UA
-         canvas, and the host sends this block no theme hint before it boots, so
-         the boot theme is a GUESS and the platform's guess is dark. `light dark`
-         here would default the canvas to LIGHT and flash white. -->
+    <!-- Dark first, deliberately: `light dark` would default the UA canvas to
+         LIGHT and flash white before any theme hint arrives. -->
     <meta name="color-scheme" content="dark light" />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%231971c2'/></svg>" />
     <title>YT Thumbnail — Civitai App</title>
-    <!-- BOOT SKELETON styles. Paired with `"bootSkeleton": true` in
-         block.manifest.json — THE TWO CANNOT BE SEPARATED. When the manifest
-         declares bootSkeleton the Civitai run host stands down its own loading
-         veil (no branded overlay, iframe opaque from mount, no reveal settle),
-         so whatever this document paints IS the loading state. Declare the flag
-         over an empty #root and the viewer stares at a blank iframe for the
-         whole load — strictly worse than not opting in.
+    <!-- BOOT SKELETON. Paired with `"bootSkeleton": true` in
+         block.manifest.json, so this document IS the loading state a viewer
+         sees. Inline and JS-free on purpose.
 
-         INLINE, and no JS: an external stylesheet is a second round-trip, which
-         is exactly the window this exists to cover. These rules must paint
-         before anything is fetched — including before the W6 pack's stylesheet,
-         so the literal colours below are stand-ins for the pack's surface /
-         border tokens rather than `var(--civitai-color-*)` reads, which resolve
-         to nothing this early.
-
-         DARK IS THE BASE. Light lives in a `prefers-color-scheme: light` block
-         and nowhere else. There is deliberately NO `prefers-color-scheme: dark`
-         block: a UA reporting `no-preference`, or one that does not support the
-         query at all, matches neither branch and would fall through to whatever
-         the base rules say — so the base rules have to be the dark ones.
-
-         🔴 EVERY HEX AND EVERY WIDTH BELOW IS A SECOND COPY OF A VALUE THIS APP
-         OWNS IN TYPESCRIPT, AND THAT IS THE HAZARD, NOT THE FIX. This document
-         is static: it cannot import `src/palette.ts` or call `layoutForTier`,
-         so mirroring them here duplicates them. A silently-drifting duplicate
-         is worse than the mismatch it replaces — so
-         `src/boot-skeleton.test.ts` parses THIS `<style>` block and fails when
-         any value here disagrees with its source, including when a hex appears
-         here that no palette token accounts for. Change a value in
-         `palette.ts` or `layout.ts` and that test tells you to change it here.
-
-         🔴 WHY IT HAD TO CHANGE. `block.manifest.json` declares
-         `"bootSkeleton": true`, so the host stands down its own veil and this
-         document IS the loading state. It previously painted the pack's old
-         greys (#101113 / #1a1b1e / #2c2e33) at a 640px cap, which agreed with
-         the app only while the app was also 640px of host greys. Once the app
-         became a full-width `page`-grounded layout with a rail, the boot state
-         jumped BOTH colour and width at mount on the full-page surface — a
-         640px dark-grey card on near-black snapping to a full-width #0B0E14
-         page — which is exactly the surface the layout pass exists to improve.
-
-         🔴 A MEDIA QUERY IS LEGITIMATE HERE, WHERE A CONTAINER QUERY IS NOT.
-         `layout.ts` explains why the app cannot use a container query (a query
-         prelude cannot read `--civitai-bp-*`). The cap ladder below is a
-         VIEWPORT media query instead, and inside the block's sandboxed iframe
-         the viewport IS the box the app measures: `useBlockBreakpoint` observes
-         `document.documentElement`, which its own docs state "inside the
-         sandbox IS the slot the host handed us". So the skeleton and the app
-         change shape at the same widths rather than at two different ones. -->
+         Every hex and every width below is a second copy of a value
+         src/palette.ts and src/layout.ts own. src/boot-skeleton.test.ts parses
+         this <style> block, fails on any drift, and carries the reasoning —
+         read it there rather than here. -->
     <style>
       html {
-        /* The strong guarantee. Unlike `color-scheme` this does not depend on
-           UA support for anything. `palette.dark.page`. */
+        /* palette.dark.page */
         background: #0b0e14;
       }
       body {
@@ -77,11 +33,11 @@
         padding: 24px;
         box-sizing: border-box;
       }
-      /* Attribute selectors, not classes: a class is fair game for CSS-modules
-         hashing or a purge pass, an attribute survives the bundler.
+      /* Attribute selectors, not classes: a class is fair game for a purge or
+         hashing pass, an attribute survives the bundler.
 
-         The cap is `layoutForTier`'s one-column rung; the two media queries
-         below are its other two. `palette.dark.surface` + `.border`. */
+         The cap is `layoutForTier`'s one-column rung. palette.dark.surface +
+         .border. */
       [data-boot-skeleton] [data-boot-shape='card'] {
         width: 100%;
         max-width: 640px;
@@ -91,8 +47,8 @@
         border: 1px solid #2a313d;
         box-sizing: border-box;
       }
-      /* The shimmer blocks stand in for controls inside the panel, so they take
-         the token a control inside a panel takes: `palette.dark.surfaceRaised`. */
+      /* Controls inside a panel take the token a control inside a panel takes:
+         palette.dark.surfaceRaised. */
       [data-boot-skeleton] [data-boot-shape='card'] > [data-boot-shape] {
         background: #1c222b;
         border-radius: 6px;
@@ -112,36 +68,39 @@
         height: 36px;
         margin-bottom: 0;
       }
-      /* The two-column rung: `breakpoints.sm` (768), cap
-         `layoutForTier('sm').maxWidth` (1184). */
-      @media (min-width: 768px) {
+      /* 🔴 THE TWO RUNGS ARE OFFSET BY THE SHELL'S OWN PADDING, AND THE OFFSET
+         IS THE POINT. These are VIEWPORT queries; the app switches tier on the
+         CONTENT box of the padded shell, i.e. the viewport less 2 x 24px. So
+         the viewport width at which the app reaches `sm` is 768 + 48 = 816,
+         and `lg` is 1184 + 48 = 1232. Using the raw breakpoints made the boot
+         card 752px at an 800px viewport where the app settles at 640px.
+         src/boot-skeleton.test.ts derives both numbers from `resolveBlockTier`
+         and sweeps the two ladders for equality. */
+      @media (min-width: 816px) {
         [data-boot-skeleton] [data-boot-shape='card'] {
           max-width: 1184px;
         }
       }
-      /* The rail rung: `breakpoints.lg` (1184), where
-         `layoutForTier('lg').maxWidth` is null — the block fills its width, so
-         the boot card does too. The skeleton does NOT draw a rail: two columns
-         of placeholder shapes would promise a layout the app might not land on
-         (the rail needs `lg` measured on the app's own box, not the viewport),
-         and an uncapped card is the width claim the two surfaces do share. */
-      @media (min-width: 1184px) {
+      /* Uncapped from here, because `layoutForTier('lg').maxWidth` is null. The
+         skeleton draws no rail: two columns of placeholders would promise a
+         layout the app might not land on. */
+      @media (min-width: 1232px) {
         [data-boot-skeleton] [data-boot-shape='card'] {
           max-width: none;
         }
       }
       @media (prefers-color-scheme: light) {
         html {
-          /* `palette.light.page`. */
+          /* palette.light.page */
           background: #f7f9fc;
         }
         [data-boot-skeleton] [data-boot-shape='card'] {
-          /* `palette.light.surface` + `.border`. */
+          /* palette.light.surface + .border */
           background: #ffffff;
           border-color: #d2d9e4;
         }
         [data-boot-skeleton] [data-boot-shape='card'] > [data-boot-shape] {
-          /* `palette.light.surfaceRaised`. */
+          /* palette.light.surfaceRaised */
           background: #edf0f6;
         }
       }
@@ -149,23 +108,11 @@
   </head>
   <body>
     <div id="root">
-      <!-- The skeleton MUST live inside #root. One painted as a sibling of the
-           mount container is never replaced by the app's render and stays on
-           screen after mount.
-
-           NO REMOVAL CODE IS NEEDED HERE, AND THAT IS REACT-SPECIFIC.
-           `createRoot(container).render(...)` in src/main.tsx clears the
-           container's existing children before its first commit, so this
-           skeleton removes itself. A framework that APPENDS instead of clearing
-           (Svelte 5's `mount(App, { target })`, for one) leaves it on screen
-           and needs an explicit
-           `document.querySelector('[data-boot-skeleton]')?.remove()` straight
-           after the mount call. Assume APPEND for anything you have not
-           measured.
-
-           aria-hidden because this is decoration: the host already publishes
-           `aria-busy` on the iframe while the block is loading, and a second
-           announcement in here would just talk over it. -->
+      <!-- MUST live inside #root: React's `createRoot(container).render()`
+           clears the container's children on first commit, which is the only
+           reason no removal code is needed. A skeleton painted as a SIBLING of
+           #root, or mounted by a framework that APPENDS, stays on screen.
+           aria-hidden because the host already publishes `aria-busy`. -->
       <div data-boot-skeleton aria-hidden="true">
         <div data-boot-shape="card">
           <div data-boot-shape="title"></div>
