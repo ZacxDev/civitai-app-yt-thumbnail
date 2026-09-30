@@ -43,6 +43,7 @@ import {
   failedRuns,
   formatCost,
   hasBudgetedScope,
+  hasSubmittablePrompt,
   imageUrlsFrom,
   initRuns,
   isBusyPhase,
@@ -52,6 +53,7 @@ import {
   phaseForError,
   phaseForSnapshot,
   pickDefaultAccount,
+  promptWasTruncated,
   runCandidates,
   spentAccountLabel,
   submitErrorReason,
@@ -107,7 +109,7 @@ import {
   type TextOverlay,
 } from './editor.js';
 import { layoutForTier, type BlockLayout } from './layout.js';
-import { paletteFor, parseHex, type Palette } from './palette.js';
+import { BUZZ_TYPE_COLOR, paletteFor, parseHex, type Palette } from './palette.js';
 import { useUltrawide } from './useUltrawide.js';
 
 /**
@@ -359,6 +361,15 @@ export function App() {
   // The full selectable catalogue, and the formats this click will actually run.
   const availableFormats = allFormats(customFormats, addedPublished);
   const selectedFormats = resolveFormats(selectedFormatIds, availableFormats);
+
+  // 🔴 ONE RULE, ONE PLACE. "Is there anything to send?" is asked in THREE
+  // places — the Generate button's `disabled`, the click handler's own early
+  // return, and the prompt field's validation message — and before this it was
+  // open-coded as `prompt.trim().length === 0` at each of them. Widening only the
+  // `disabled` attribute would have produced an ENABLED button whose handler
+  // still returned immediately: a click that reports success and spends nothing,
+  // which is indistinguishable from a swallowed event. All three now read this.
+  const submittable = hasSubmittablePrompt(prompt, selectedFormats);
 
   // Refetch the balance after a successful generation debits it.
   useEffect(() => {
@@ -1027,8 +1038,10 @@ export function App() {
   // addLora drops it, but we also disable Add at the cap.)
   const loraCapReached = loras.length >= MAX_LORAS;
 
-  const promptError =
-    touched && prompt.trim().length === 0 ? 'Enter a prompt to generate.' : undefined;
+  // Only an error when there is genuinely nothing to send. An empty box beside a
+  // selected format is a valid request, so calling it an error would be the same
+  // false claim the disabled button used to make.
+  const promptError = touched && !submittable ? 'Enter a prompt to generate.' : undefined;
   const busy = isBusyPhase(phase);
   const isRemix = mode === 'remix';
   const remixIncomplete = isRemix && !sourceImage;
@@ -1087,7 +1100,7 @@ export function App() {
   // there's no separate confirm step — consent is the real host-driven gate.
   const onGenerateClick = () => {
     setTouched(true);
-    if (prompt.trim().length === 0) return;
+    if (!submittable) return;
     proceed();
   };
 
@@ -1371,7 +1384,10 @@ export function App() {
       value={prompt}
       minRows={4}
       maxLength={PROMPT_MAX}
-      required
+      // 🔴 NOT `required` ANY MORE, AND THAT IS THE POINT. A selected format's
+      // suffix is a complete prompt on its own, so `aria-required="true"` here
+      // would tell a screen-reader user the field must be filled when it need
+      // not be. `promptError` still fires for the state that IS empty.
       error={promptError}
       onChange={(e) => setPrompt(e.target.value)}
       onBlur={() => setTouched(true)}
@@ -1431,6 +1447,14 @@ export function App() {
         pal={pal}
         minCardPx={layout.formatMinCardPx}
       />
+
+      {/* 🔴 WHAT WILL ACTUALLY BE SENT. A format is a prompt SUFFIX composed at
+          body-build time, deliberately never typed into the prompt box — which
+          is what lets N formats be N different prompts. The cost of that design
+          was that selecting one changed nothing visible. This is the feedback,
+          and it is the REAL string: `composePrompt` is the same function the
+          submit body calls, so the preview cannot drift from the money path. */}
+      <ComposedPromptPreview prompt={prompt} formats={selectedFormats} pal={pal} />
 
       {/* 🔴 The anonymous path, said out loud. `useAppStorage` resolves null on
           read and REJECTS every write for an anonymous viewer, so a "New format"
@@ -1551,10 +1575,16 @@ export function App() {
           Sign in to generate
         </Button>
       ) : (
+        // 🔴 AN EMPTY PROMPT BOX IS NOT AN EMPTY PROMPT. A format IS prompt
+        // text — "show me this look across three models" is a real request — so
+        // the `disabled` gate asks `composePrompt` itself (via
+        // `hasSubmittablePrompt`) whether ANY selected format composes to
+        // something non-empty. It still refuses the one state where a click
+        // would spend on nothing: no formats selected, and nothing typed.
         <Button
           fullWidth
           loading={busy}
-          disabled={prompt.trim().length === 0 || remixIncomplete}
+          disabled={!submittable || remixIncomplete}
           onClick={onGenerateClick}
           data-testid="pm-generate"
         >
@@ -1733,6 +1763,8 @@ export function App() {
           }}
           balance={balance}
           disabled={busy}
+          cost={estimatedCost}
+          costPartial={estimatePartial}
           pal={pal}
         />
       )}
@@ -1884,51 +1916,347 @@ function LoraSelector({
 }
 
 /**
- * Choose which Buzz pool funds the generation. Auto (default) omits `accountType`
- * from the submit body entirely — today's host-chosen behavior. Pools with a 0
- * balance are annotated but stay selectable (the server still preferred-first
- * falls back, and a picked-but-empty pool is harmless).
+ * READ-ONLY preview of the prompt each selected format will actually submit.
+ *
+ * 🔴 IT CALLS `composePrompt`, IT DOES NOT RE-IMPLEMENT IT. A view that pasted
+ * `prompt + ', ' + suffix` together would be a second copy of the composition
+ * rule, and the two would disagree at exactly the moment it matters — the
+ * PROMPT_MAX boundary, where the suffix is reserved and the USER's text is what
+ * gets clamped. Driving the same function the submit body drives means the string
+ * on screen is the string that gets priced and generated, truncation included.
+ *
+ * 🔴 ONE ROW PER SELECTED FORMAT, BECAUSE THAT IS WHAT MULTI-SELECT MEANS. N
+ * formats are N workflows with N different prompts; a single merged preview would
+ * suggest one request carrying all of them, which is the misunderstanding the
+ * per-format cost note exists to prevent. Each row's text box scrolls on its own
+ * so six selected formats stay scannable instead of pushing the picker off screen.
+ *
+ * Not an input: there is nothing to edit here. The prompt box and the format
+ * chips are the two controls, and this is their result.
+ */
+function ComposedPromptPreview({
+  prompt,
+  formats,
+  pal,
+}: {
+  prompt: string;
+  formats: readonly Format[];
+  pal: Palette;
+}) {
+  if (formats.length === 0) return null;
+  return (
+    <div style={fieldStyle} data-testid="yt-prompt-preview">
+      <span style={fieldLabelStyle}>What gets sent</span>
+      <span style={fieldDescStyle(pal)} data-testid="yt-prompt-preview-note">
+        {formats.length === 1
+          ? 'The exact prompt this generation will carry.'
+          : `The exact prompt each of these ${formats.length} generations will carry.`}
+      </span>
+      <div style={previewListStyle}>
+        {formats.map((fmt) => {
+          const composed = composePrompt(prompt, fmt.suffix);
+          const trimmed = promptWasTruncated(prompt, fmt.suffix);
+          return (
+            <div
+              key={fmt.id}
+              style={previewRowStyle(pal)}
+              data-testid="yt-prompt-preview-row"
+              data-format-id={fmt.id}
+            >
+              <span style={previewRowLabelStyle(pal)}>{fmt.label}</span>
+              <span style={previewTextStyle(pal)} data-testid={`yt-prompt-preview-${fmt.id}`}>
+                {composed}
+              </span>
+              {/* The suffix is RESERVED by `composePrompt`, so an overflow always
+                  costs the VIEWER's words. Saying so is the difference between a
+                  trim they chose and one they only discover in the result. */}
+              {trimmed && (
+                <span
+                  style={previewTrimStyle(pal)}
+                  data-testid={`yt-prompt-trimmed-${fmt.id}`}
+                >
+                  Your prompt was trimmed to fit. The format text is kept in full.
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The Buzz bolt.
+ *
+ * 🔴 ONE GLYPH FOR ALL THREE POOLS, COLOURED PER POOL — which is exactly what the
+ * native generator does. `FormFooter.tsx`'s `BuzzTypeSelector` renders tabler's
+ * generic `IconBolt` for every type and varies only the colour; there is no
+ * per-type Buzz icon to import, `@tabler/icons-react` is not a dependency here,
+ * and `@civitai/buzz` is `private: true`. So the path below is inline and the
+ * colour comes from `BUZZ_TYPE_COLOR` (see `palette.ts` for its provenance).
+ *
+ * `auto` is not a Buzz type at all — it is the absence of a preference — so it
+ * gets the palette's own `textDim` rather than borrowing a pool's colour.
+ *
+ * DECORATIVE: `aria-hidden`, and every place it renders it sits beside a text
+ * label naming the same pool, so nothing here is carried by colour alone.
+ */
+function BuzzBolt({
+  choice,
+  pal,
+  testId,
+  size = 14,
+}: {
+  choice: AccountChoice;
+  pal: Palette;
+  testId: string;
+  size?: number;
+}) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill={choice === 'auto' ? pal.textDim : BUZZ_TYPE_COLOR[choice]}
+      aria-hidden="true"
+      focusable="false"
+      data-testid={testId}
+      data-buzz-type={choice}
+      style={previewIconStyle}
+    >
+      <path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z" />
+    </svg>
+  );
+}
+
+/** The trigger's open/closed affordance. Decorative — `aria-expanded` is the claim. */
+function Chevron({ pal }: { pal: Palette }) {
+  return (
+    <svg
+      width={12}
+      height={12}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke={pal.textDim}
+      strokeWidth={2.5}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+      style={previewIconStyle}
+    >
+      <path d="M6 9l6 6 6-6" />
+    </svg>
+  );
+}
+
+/** The menu's element id, shared by `aria-controls` and the popup itself. */
+const ACCOUNT_MENU_ID = 'yt-account-menu';
+/** The description the trigger points `aria-describedby` at. */
+const ACCOUNT_DESC_ID = 'yt-account-desc';
+
+/**
+ * Choose which Buzz pool funds the generation — a trigger showing the current
+ * pool + this click's price, and a popup listing every pool with its balance.
+ *
+ * 🔴 WHY A HAND-BUILT MENU AND NOT THE PACK'S `Select`. `@civitai/blocks-react`'s
+ * `Select` wraps a NATIVE `<select>`: its `SelectOption.label` is typed
+ * `React.ReactNode`, but it renders into an `<option>`, and no browser renders an
+ * SVG or an `<img>` inside one. A per-type Buzz bolt is the whole point of this
+ * control, so the pack's Select structurally cannot deliver it. Buttons can.
+ *
+ * 🔴 THE SEMANTICS ARE UNCHANGED FROM THE RADIO ROW THIS REPLACES. `'auto'` still
+ * omits `accountType` from the submit body ENTIRELY (see `buildWorkflowBody`); a
+ * pick is still only a PREFERENCE that the server clamps, may fall back from, and
+ * can reject outright; zero-balance pools are still SELECTABLE and merely
+ * annotated. Only the presentation moved.
+ *
+ * A11Y MODEL: `aria-haspopup="menu"` + `aria-expanded` + `aria-controls` on the
+ * trigger; `role="menu"` labelled "Pay with" on the popup; `role="menuitemradio"`
+ * + `aria-checked` on each pool — deliberately the menu-radio role rather than
+ * listbox/`aria-selected`, because "exactly one of these is chosen" is what
+ * `aria-checked` says and it is the same state the radio row published. Keyboard:
+ * ArrowDown/ArrowUp open the closed trigger onto the first/last pool; inside the
+ * menu Arrow keys move (wrapping), Home/End jump, Enter/Space choose, Escape
+ * closes and returns focus to the trigger, Tab closes. A pointer press outside the
+ * control dismisses it.
  */
 function AccountPicker({
   value,
   onChange,
   balance,
   disabled,
+  cost,
+  costPartial,
   pal,
 }: {
   value: AccountChoice;
   onChange: (v: AccountChoice) => void;
   balance: { blue: number; green: number; yellow: number } | null;
   disabled: boolean;
+  /** This click's summed estimate, or `null` while nothing has been priced. */
+  cost: number | null;
+  /** True when only SOME formats priced — the figure is a floor, not the bill. */
+  costPartial: boolean;
   pal: Palette;
 }) {
+  const [open, setOpen] = useState(false);
+  const selectedIndex = Math.max(0, ACCOUNT_CHOICES.indexOf(value));
+  const [activeIndex, setActiveIndex] = useState(selectedIndex);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
+
+  // Dismiss on a pointer press anywhere outside the control. `mousedown` rather
+  // than `click` so the menu is gone before the press lands on whatever is under
+  // it — a click-based dismissal swallows that first interaction.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: Event) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [open]);
+
+  // Focus follows the active item while the menu is open, so the roving focus IS
+  // the keyboard position rather than a second piece of state that can disagree.
+  useEffect(() => {
+    if (!open) return;
+    itemRefs.current[activeIndex]?.focus();
+  }, [open, activeIndex]);
+
+  // A picker that goes disabled mid-generation must not leave a popup behind.
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
+
+  const openAt = (index: number) => {
+    setActiveIndex(index);
+    setOpen(true);
+  };
+  const close = () => {
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
+  const choose = (choice: AccountChoice) => {
+    onChange(choice);
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
+
+  const last = ACCOUNT_CHOICES.length - 1;
+  const costText =
+    cost != null ? `${costPartial ? 'from ' : ''}${formatCost(cost)} Buzz` : 'Not priced yet';
+
   return (
     <div style={fieldStyle}>
       <span style={fieldLabelStyle}>Spend from</span>
       {/* Kept short, but the "preference, not a guarantee" half stays: this is
           the control that decides whose Buzz is debited. */}
-      <span style={fieldDescStyle(pal)}>A preference — the server picks the final pool.</span>
-      <div role="radiogroup" aria-label="Buzz account" style={pickerRowStyle}>
-        {ACCOUNT_CHOICES.map((choice) => {
-          const selected = value === choice;
-          const zero = choice !== 'auto' && balance != null && balance[choice] === 0;
-          return (
-            <button
-              key={choice}
-              type="button"
-              role="radio"
-              aria-checked={selected}
-              disabled={disabled}
-              onClick={() => onChange(choice)}
-              data-testid={`pm-account-${choice}`}
-              style={pickerBtnStyle(selected, disabled, pal)}
-              title={zero ? 'You have 0 Buzz in this account' : undefined}
-            >
-              {accountLabel(choice)}
-              {zero ? ' · 0' : ''}
-            </button>
-          );
-        })}
+      <span style={fieldDescStyle(pal)} id={ACCOUNT_DESC_ID}>
+        A preference — the server picks the final pool.
+      </span>
+      <div ref={wrapRef} style={accountWrapStyle}>
+        <button
+          ref={triggerRef}
+          type="button"
+          disabled={disabled}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-controls={open ? ACCOUNT_MENU_ID : undefined}
+          aria-label={`Spend from ${accountLabel(value)}, ${costText}`}
+          aria-describedby={ACCOUNT_DESC_ID}
+          data-testid="pm-account-trigger"
+          onClick={() => (open ? setOpen(false) : openAt(selectedIndex))}
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowDown') {
+              e.preventDefault();
+              openAt(open ? activeIndex : selectedIndex);
+            } else if (e.key === 'ArrowUp') {
+              e.preventDefault();
+              openAt(open ? activeIndex : last);
+            }
+          }}
+          style={accountTriggerStyle(disabled, pal)}
+        >
+          <BuzzBolt choice={value} pal={pal} testId="pm-account-trigger-icon" />
+          <span data-testid="pm-account-trigger-label">{accountLabel(value)}</span>
+          {/* The price, as the native control shows it. It is the SAME summed
+              estimate the Generate button quotes — read off `runs`, never
+              recomputed here — so the two can never disagree. */}
+          <span style={accountCostStyle(pal)} data-testid="pm-account-trigger-cost">
+            {costText}
+          </span>
+          <Chevron pal={pal} />
+        </button>
+
+        {open && (
+          <div
+            id={ACCOUNT_MENU_ID}
+            role="menu"
+            aria-label="Pay with"
+            data-testid="pm-account-menu"
+            style={accountMenuStyle(pal)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                close();
+              } else if (e.key === 'Tab') {
+                setOpen(false);
+              } else if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                setActiveIndex((i) => (i + 1) % ACCOUNT_CHOICES.length);
+              } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                setActiveIndex((i) => (i + last) % ACCOUNT_CHOICES.length);
+              } else if (e.key === 'Home') {
+                e.preventDefault();
+                setActiveIndex(0);
+              } else if (e.key === 'End') {
+                e.preventDefault();
+                setActiveIndex(last);
+              }
+            }}
+          >
+            {ACCOUNT_CHOICES.map((choice, i) => {
+              const selected = value === choice;
+              const have = choice === 'auto' || balance == null ? null : balance[choice];
+              const zero = have === 0;
+              return (
+                <button
+                  key={choice}
+                  ref={(el) => {
+                    itemRefs.current[i] = el;
+                  }}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={selected}
+                  tabIndex={i === activeIndex ? 0 : -1}
+                  onClick={() => choose(choice)}
+                  data-testid={`pm-account-${choice}`}
+                  style={accountItemStyle(selected, pal)}
+                  title={zero ? 'You have 0 Buzz in this account' : undefined}
+                >
+                  <BuzzBolt choice={choice} pal={pal} testId={`pm-account-icon-${choice}`} />
+                  <span>{accountLabel(choice)}</span>
+                  {/* Each pool WITH ITS BALANCE, as the native "Pay with" menu
+                      lists them. `auto` has no pool of its own, so it says what
+                      it does instead. */}
+                  <span style={accountBalanceStyle(pal)}>
+                    {choice === 'auto'
+                      ? 'Host decides'
+                      : have == null
+                        ? ''
+                        : `· ${formatCost(have)}`}
+                  </span>
+                  {selected && <span aria-hidden="true">✓</span>}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -2354,7 +2682,106 @@ function currentModelStyle(pal: Palette): React.CSSProperties {
   };
 }
 
-// The pill chrome (account picker, quantity).
+// The composed-prompt preview. A read-only surface, so it reads as a panel
+// (`surfaceRaised` inside the field) rather than as another input.
+const previewListStyle: React.CSSProperties = { display: 'grid', gap: 6, marginTop: 4 };
+const previewIconStyle: React.CSSProperties = { flex: 'none', display: 'block' };
+function previewRowStyle(pal: Palette): React.CSSProperties {
+  return {
+    display: 'grid',
+    gap: 2,
+    padding: '8px 10px',
+    borderRadius: 8,
+    border: `1px solid ${pal.border}`,
+    background: pal.surfaceRaised,
+  };
+}
+function previewRowLabelStyle(pal: Palette): React.CSSProperties {
+  return { fontSize: 11, fontWeight: 700, letterSpacing: 0.3, color: pal.textDim };
+}
+function previewTextStyle(pal: Palette): React.CSSProperties {
+  return {
+    fontSize: 12,
+    lineHeight: 1.45,
+    color: pal.text,
+    // The whole string, wrapped — never clipped with an ellipsis. A preview that
+    // hides its own tail cannot answer the question it exists to answer.
+    whiteSpace: 'pre-wrap',
+    overflowWrap: 'anywhere',
+    // …but N of them must not push the picker off screen, so a long one scrolls
+    // inside its own box.
+    maxHeight: 108,
+    overflowY: 'auto',
+  };
+}
+function previewTrimStyle(pal: Palette): React.CSSProperties {
+  return { fontSize: 11, fontWeight: 600, color: pal.danger };
+}
+
+// The Buzz-account menu: a trigger + an absolutely positioned popup.
+const accountWrapStyle: React.CSSProperties = { position: 'relative', marginTop: 4 };
+function accountTriggerStyle(disabled: boolean, pal: Palette): React.CSSProperties {
+  return {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    width: '100%',
+    padding: '8px 12px',
+    borderRadius: 8,
+    border: `1px solid ${pal.border}`,
+    background: pal.surface,
+    color: pal.text,
+    fontSize: 13,
+    fontWeight: 600,
+    textAlign: 'left',
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    opacity: disabled ? 0.6 : 1,
+  };
+}
+function accountCostStyle(pal: Palette): React.CSSProperties {
+  return { marginLeft: 'auto', fontSize: 12, fontWeight: 500, color: pal.textDim };
+}
+function accountMenuStyle(pal: Palette): React.CSSProperties {
+  return {
+    position: 'absolute',
+    zIndex: 20,
+    top: 'calc(100% + 4px)',
+    left: 0,
+    right: 0,
+    display: 'grid',
+    gap: 2,
+    padding: 4,
+    borderRadius: 8,
+    border: `1px solid ${pal.borderStrong}`,
+    background: pal.surface,
+    boxShadow: `0 8px 24px ${withAlpha(pal.page, 0.55)}`,
+  };
+}
+function accountItemStyle(selected: boolean, pal: Palette): React.CSSProperties {
+  return {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    width: '100%',
+    padding: '8px 10px',
+    borderRadius: 6,
+    // 🔴 THE SELECTED STATE IS NOT CARRIED BY COLOUR ALONE. `aria-checked`, the
+    // heavier weight and the ✓ all say it too — the tint is the fourth signal,
+    // not the only one.
+    border: `1px solid ${selected ? pal.brandTintBorder : 'transparent'}`,
+    background: selected ? pal.brandTint : pal.surfaceRaised,
+    color: pal.text,
+    fontSize: 13,
+    fontWeight: selected ? 700 : 500,
+    textAlign: 'left',
+    cursor: 'pointer',
+  };
+}
+function accountBalanceStyle(pal: Palette): React.CSSProperties {
+  return { marginLeft: 'auto', fontSize: 12, fontWeight: 500, color: pal.textDim };
+}
+
+// The pill chrome (the quantity row — the Buzz account moved to the menu above).
 const pickerRowStyle: React.CSSProperties = {
   display: 'flex',
   flexWrap: 'wrap',
