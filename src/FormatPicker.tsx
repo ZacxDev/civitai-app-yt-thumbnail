@@ -7,6 +7,7 @@ import {
   type Format,
   type PublishedFormat,
 } from './formats.js';
+import type { Palette } from './palette.js';
 
 /**
  * The FORMAT picker — a multi-select grid of thumbnail looks.
@@ -30,6 +31,8 @@ export function FormatPicker({
   onPublish,
   busyId,
   disabled,
+  pal,
+  minCardPx,
 }: {
   formats: readonly Format[];
   selectedIds: readonly string[];
@@ -40,17 +43,31 @@ export function FormatPicker({
   /** Id of a format with a storage/publish request in flight. */
   busyId: string | null;
   disabled: boolean;
+  /** The app-owned palette for the current theme (`brandDepth: skin`). */
+  pal: Palette;
+  /**
+   * Minimum card width, from `layoutForTier(...).formatMinCardPx`. The grid is
+   * `auto-fill`, so this is what decides how big a preview gets — see the field's
+   * own note in `layout.ts` for why this is a size and not a column count.
+   */
+  minCardPx: number;
 }) {
   const selected = new Set(selectedIds);
   const lastOne = selectedIds.length <= 1;
 
   return (
-    <div style={gridStyle} role="group" aria-label="Thumbnail formats">
+    <div
+      style={gridStyle(minCardPx)}
+      role="group"
+      aria-label="Thumbnail formats"
+      data-testid="yt-format-grid"
+      data-min-card={minCardPx}
+    >
       {formats.map((fmt) => {
         const isOn = selected.has(fmt.id);
         const custom = isCustomId(fmt.id);
         return (
-          <div key={fmt.id} style={cardStyle(isOn)} data-testid="yt-format-card">
+          <div key={fmt.id} style={cardStyle(isOn, pal)} data-testid="yt-format-card">
             <button
               type="button"
               role="checkbox"
@@ -60,20 +77,25 @@ export function FormatPicker({
               // of swallowing the click silently.
               disabled={disabled || (isOn && lastOne)}
               onClick={() => onToggle(fmt.id)}
-              style={cardButtonStyle}
+              style={cardButtonStyle(pal)}
               data-testid={`yt-format-${fmt.id}`}
               title={fmt.suffix}
             >
-              <span style={previewWrapStyle}>
+              <span style={previewWrapStyle(pal)}>
                 {fmt.preview ? (
                   <img src={fmt.preview} alt="" loading="lazy" style={previewImgStyle} />
                 ) : (
-                  <span style={previewPlaceholderStyle} aria-hidden="true">
+                  <span style={previewPlaceholderStyle(pal)} aria-hidden="true">
                     {fmt.label.slice(0, 1).toUpperCase()}
                   </span>
                 )}
+                {/* 🔴 NOT DECORATION — the non-colour half of the selected state.
+                    The tint behind a selected card is a ~1.1:1 shift on a light
+                    ground, well under WCAG 1.4.11, so the state has to be carried
+                    by something else: this badge (brandFg on brand, 6.55:1 dark /
+                    4.90:1 light) plus `aria-checked` above. */}
                 {isOn && (
-                  <span style={checkStyle} aria-hidden="true">
+                  <span style={checkStyle(pal)} aria-hidden="true">
                     ✓
                   </span>
                 )}
@@ -137,6 +159,7 @@ export function FormatEditor({
   onChange,
   onSave,
   onCancel,
+  pal,
 }: {
   draft: { id: string | null; label: string; suffix: string };
   error: string | null;
@@ -144,9 +167,10 @@ export function FormatEditor({
   onChange: (next: { id: string | null; label: string; suffix: string }) => void;
   onSave: () => void;
   onCancel: () => void;
+  pal: Palette;
 }) {
   return (
-    <div style={editorStyle} data-testid="yt-format-editor">
+    <div style={editorStyle(pal)} data-testid="yt-format-editor">
       <Stack gap={10}>
         <strong style={{ fontSize: 14 }}>
           {draft.id ? 'Edit format' : 'New format'}
@@ -159,7 +183,7 @@ export function FormatEditor({
             maxLength={LABEL_MAX}
             placeholder="Retro VHS"
             onChange={(e) => onChange({ ...draft, label: e.target.value })}
-            style={inputStyle}
+            style={inputStyle(pal)}
             data-testid="yt-format-label"
             aria-label="Format name"
           />
@@ -168,7 +192,7 @@ export function FormatEditor({
         <label style={labelStyle}>
           <span>
             Look — added to your prompt{' '}
-            <span style={counterStyle}>
+            <span style={counterStyle(pal)}>
               {draft.suffix.length}/{SUFFIX_MAX}
             </span>
           </span>
@@ -178,14 +202,14 @@ export function FormatEditor({
             rows={3}
             placeholder="analog vhs grain, chromatic aberration, 1987 camcorder"
             onChange={(e) => onChange({ ...draft, suffix: e.target.value })}
-            style={{ ...inputStyle, resize: 'vertical' }}
+            style={{ ...inputStyle(pal), resize: 'vertical' }}
             data-testid="yt-format-suffix"
             aria-label="Format look"
           />
         </label>
 
         {error && (
-          <span style={errorStyle} data-testid="yt-format-error">
+          <span style={errorStyle(pal)} data-testid="yt-format-error">
             {error}
           </span>
         )}
@@ -221,6 +245,7 @@ export function PublishedBoard({
   onVote,
   onReport,
   onRefresh,
+  pal,
 }: {
   items: readonly PublishedFormat[];
   loading: boolean;
@@ -231,9 +256,10 @@ export function PublishedBoard({
   onVote: (fmt: PublishedFormat) => void;
   onReport: (fmt: PublishedFormat) => void;
   onRefresh: () => void;
+  pal: Palette;
 }) {
   return (
-    <div style={boardStyle} data-testid="yt-published-board">
+    <div style={boardStyle(pal)} data-testid="yt-published-board">
       <div style={boardHeadStyle}>
         <strong style={{ fontSize: 14 }}>Published formats</strong>
         <Button variant="subtle" size="sm" loading={loading} onClick={onRefresh}>
@@ -242,20 +268,20 @@ export function PublishedBoard({
       </div>
 
       {error && (
-        <span style={errorStyle} data-testid="yt-published-error">
+        <span style={errorStyle(pal)} data-testid="yt-published-error">
           {error}
         </span>
       )}
 
       {!loading && !error && items.length === 0 && (
-        <span style={dimStyle} data-testid="yt-published-empty">
+        <span style={dimStyle(pal)} data-testid="yt-published-empty">
           Nothing published yet. Make a format and hit Publish to be the first.
         </span>
       )}
 
       <Stack gap={8}>
         {items.map((fmt) => (
-          <div key={fmt.sharedKey} style={boardRowStyle} data-testid="yt-published-row">
+          <div key={fmt.sharedKey} style={boardRowStyle(pal)} data-testid="yt-published-row">
             <div style={{ minWidth: 0, flex: 1 }}>
               <div style={boardTitleStyle}>
                 {fmt.label}{' '}
@@ -263,7 +289,7 @@ export function PublishedBoard({
                   ▲ {fmt.votes}
                 </Badge>
               </div>
-              <div style={boardSuffixStyle}>{fmt.suffix}</div>
+              <div style={boardSuffixStyle(pal)}>{fmt.suffix}</div>
             </div>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
               <Button
@@ -304,49 +330,64 @@ export function PublishedBoard({
 }
 
 // ---------------------------------------------------------------------------
-// Styles. Every colour reads a `--civitai-color-*` token published by the W6
-// pack, so the whole control follows the host between light and dark with no
-// second palette of our own to keep in sync.
+// Styles.
+//
+// 🔴 THESE USED TO READ `--civitai-color-*` — the pack's tokens — and no longer
+// do. `brandDepth: "skin"` means the app owns its own palette, so every colour
+// below comes from `palette.ts`, keyed by the theme the host reports. That moved
+// light/dark correctness for these surfaces from the platform onto us, which is
+// why `palette.test.ts` asserts every pair in BOTH themes.
+//
+// The pack's own components (Button, Badge, Stack) still theme themselves, from
+// the same `data-theme` on the block root — they are not restyled here.
 // ---------------------------------------------------------------------------
 
-const gridStyle: React.CSSProperties = {
-  display: 'grid',
-  gridTemplateColumns: 'repeat(auto-fill, minmax(124px, 1fr))',
-  gap: 8,
-};
+function gridStyle(minCardPx: number): React.CSSProperties {
+  return {
+    display: 'grid',
+    // `auto-fill` with a MINIMUM, not a fixed count — see `formatMinCardPx` in
+    // `layout.ts` for why the format grid is sized and the results grid counted.
+    gridTemplateColumns: `repeat(auto-fill, minmax(${minCardPx}px, 1fr))`,
+    gap: 8,
+  };
+}
 
-function cardStyle(selected: boolean): React.CSSProperties {
+function cardStyle(selected: boolean, pal: Palette): React.CSSProperties {
   return {
     display: 'grid',
     gap: 4,
     padding: 4,
     borderRadius: 10,
-    border: `1px solid ${selected ? 'var(--civitai-color-primary)' : 'var(--civitai-color-border)'}`,
-    background: selected ? 'var(--civitai-color-primary-light)' : 'var(--civitai-color-surface)',
+    border: `1px solid ${selected ? pal.brandTintBorder : pal.border}`,
+    background: selected ? pal.brandTint : pal.surface,
   };
 }
 
-const cardButtonStyle: React.CSSProperties = {
-  display: 'grid',
-  gap: 4,
-  padding: 0,
-  border: 'none',
-  background: 'none',
-  color: 'var(--civitai-color-text)',
-  cursor: 'pointer',
-  textAlign: 'left',
-  font: 'inherit',
-};
+function cardButtonStyle(pal: Palette): React.CSSProperties {
+  return {
+    display: 'grid',
+    gap: 4,
+    padding: 0,
+    border: 'none',
+    background: 'none',
+    color: pal.text,
+    cursor: 'pointer',
+    textAlign: 'left',
+    font: 'inherit',
+  };
+}
 
-const previewWrapStyle: React.CSSProperties = {
-  position: 'relative',
-  display: 'block',
-  width: '100%',
-  aspectRatio: '16 / 9',
-  borderRadius: 6,
-  overflow: 'hidden',
-  background: 'var(--civitai-color-surface-2)',
-};
+function previewWrapStyle(pal: Palette): React.CSSProperties {
+  return {
+    position: 'relative',
+    display: 'block',
+    width: '100%',
+    aspectRatio: '16 / 9',
+    borderRadius: 6,
+    overflow: 'hidden',
+    background: pal.surfaceRaised,
+  };
+}
 
 const previewImgStyle: React.CSSProperties = {
   width: '100%',
@@ -355,32 +396,36 @@ const previewImgStyle: React.CSSProperties = {
   display: 'block',
 };
 
-const previewPlaceholderStyle: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  width: '100%',
-  height: '100%',
-  fontSize: 22,
-  fontWeight: 700,
-  color: 'var(--civitai-color-text-dimmed)',
-};
+function previewPlaceholderStyle(pal: Palette): React.CSSProperties {
+  return {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '100%',
+    height: '100%',
+    fontSize: 22,
+    fontWeight: 700,
+    color: pal.textDim,
+  };
+}
 
-const checkStyle: React.CSSProperties = {
-  position: 'absolute',
-  top: 4,
-  right: 4,
-  width: 20,
-  height: 20,
-  borderRadius: 999,
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  fontSize: 12,
-  fontWeight: 700,
-  background: 'var(--civitai-color-primary)',
-  color: 'var(--civitai-color-primary-fg, #fff)',
-};
+function checkStyle(pal: Palette): React.CSSProperties {
+  return {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    width: 20,
+    height: 20,
+    borderRadius: 999,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: 12,
+    fontWeight: 700,
+    background: pal.brand,
+    color: pal.brandFg,
+  };
+}
 
 const cardLabelStyle: React.CSSProperties = {
   fontSize: 12,
@@ -398,12 +443,14 @@ const cardActionsStyle: React.CSSProperties = {
   padding: '0 2px 2px',
 };
 
-const editorStyle: React.CSSProperties = {
-  padding: 12,
-  borderRadius: 10,
-  border: '1px solid var(--civitai-color-border)',
-  background: 'var(--civitai-color-surface)',
-};
+function editorStyle(pal: Palette): React.CSSProperties {
+  return {
+    padding: 12,
+    borderRadius: 10,
+    border: `1px solid ${pal.border}`,
+    background: pal.surface,
+  };
+}
 
 const labelStyle: React.CSSProperties = {
   display: 'grid',
@@ -412,41 +459,42 @@ const labelStyle: React.CSSProperties = {
   fontWeight: 600,
 };
 
-const inputStyle: React.CSSProperties = {
-  width: '100%',
-  padding: '8px 10px',
-  borderRadius: 8,
-  border: '1px solid var(--civitai-color-border)',
-  background: 'var(--civitai-color-surface-2)',
-  color: 'var(--civitai-color-text)',
-  font: 'inherit',
-  fontSize: 13,
-  fontWeight: 400,
-};
+function inputStyle(pal: Palette): React.CSSProperties {
+  return {
+    width: '100%',
+    padding: '8px 10px',
+    borderRadius: 8,
+    border: `1px solid ${pal.border}`,
+    background: pal.surfaceRaised,
+    color: pal.text,
+    font: 'inherit',
+    fontSize: 13,
+    fontWeight: 400,
+  };
+}
 
-const counterStyle: React.CSSProperties = {
-  fontWeight: 400,
-  color: 'var(--civitai-color-text-dimmed)',
-};
+function counterStyle(pal: Palette): React.CSSProperties {
+  return { fontWeight: 400, color: pal.textDim };
+}
 
-const errorStyle: React.CSSProperties = {
-  fontSize: 12,
-  color: 'var(--civitai-color-error)',
-};
+function errorStyle(pal: Palette): React.CSSProperties {
+  return { fontSize: 12, color: pal.danger };
+}
 
-const dimStyle: React.CSSProperties = {
-  fontSize: 12,
-  color: 'var(--civitai-color-text-dimmed)',
-};
+function dimStyle(pal: Palette): React.CSSProperties {
+  return { fontSize: 12, color: pal.textDim };
+}
 
-const boardStyle: React.CSSProperties = {
-  display: 'grid',
-  gap: 8,
-  padding: 12,
-  borderRadius: 10,
-  border: '1px solid var(--civitai-color-border)',
-  background: 'var(--civitai-color-surface)',
-};
+function boardStyle(pal: Palette): React.CSSProperties {
+  return {
+    display: 'grid',
+    gap: 8,
+    padding: 12,
+    borderRadius: 10,
+    border: `1px solid ${pal.border}`,
+    background: pal.surface,
+  };
+}
 
 const boardHeadStyle: React.CSSProperties = {
   display: 'flex',
@@ -455,16 +503,18 @@ const boardHeadStyle: React.CSSProperties = {
   gap: 8,
 };
 
-const boardRowStyle: React.CSSProperties = {
-  display: 'flex',
-  gap: 8,
-  alignItems: 'flex-start',
-  justifyContent: 'space-between',
-  padding: '8px 10px',
-  borderRadius: 8,
-  border: '1px solid var(--civitai-color-border)',
-  background: 'var(--civitai-color-surface-2)',
-};
+function boardRowStyle(pal: Palette): React.CSSProperties {
+  return {
+    display: 'flex',
+    gap: 8,
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    padding: '8px 10px',
+    borderRadius: 8,
+    border: `1px solid ${pal.border}`,
+    background: pal.surfaceRaised,
+  };
+}
 
 const boardTitleStyle: React.CSSProperties = {
   fontSize: 13,
@@ -474,12 +524,14 @@ const boardTitleStyle: React.CSSProperties = {
   gap: 6,
 };
 
-const boardSuffixStyle: React.CSSProperties = {
-  fontSize: 12,
-  color: 'var(--civitai-color-text-dimmed)',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  display: '-webkit-box',
-  WebkitLineClamp: 2,
-  WebkitBoxOrient: 'vertical',
-};
+function boardSuffixStyle(pal: Palette): React.CSSProperties {
+  return {
+    fontSize: 12,
+    color: pal.textDim,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    display: '-webkit-box',
+    WebkitLineClamp: 2,
+    WebkitBoxOrient: 'vertical',
+  };
+}

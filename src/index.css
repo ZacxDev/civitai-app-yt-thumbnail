@@ -24,13 +24,40 @@ body {
 }
 
 /* Focus affordance for any raw textarea/button (the W6 /ui pack styles its own
-   controls). Use the pack's brand accent so the outline matches, not a clashing
-   gold; --civitai-color-primary is defined by the stylesheet
-   @civitai/blocks-react/ui injects. Every --civitai-color-* token referenced
-   anywhere under templates/ is checked against that pack's published token set
-   by internal/scaffold/design_tokens_guard_test.go — see its testdata ledger. */
+   controls).
+
+   🔴 THIS USED TO PAINT THE RING IN --civitai-color-primary — THE HOST'S ACCENT,
+   WHICH IS NOT THIS APP'S. That was right while brandDepth was "accent" and the app
+   borrowed the host's hue. Under "skin" the app owns its palette and is magenta, so
+   a host-accent ring was the one piece of chrome the skin did not reach: a keyboard
+   user saw an outline in a colour appearing nowhere else on the block.
+
+   The value comes from `--yt-focus-ring`, which `App.tsx`'s `shellStyle` sets
+   INLINE on the block root from `palette[theme].brand` — so it is theme-correct by
+   construction rather than by a second copy of the hex here, and there is no
+   @media (prefers-color-scheme) branch to keep in step with the host's own
+   `data-theme`. Custom properties inherit, and the block root is the ancestor of
+   everything this app renders, so one declaration covers every control.
+
+   The fallback is `currentColor`: the only way to reach this rule without the
+   property is to render a focusable control OUTSIDE the block root, and there
+   "inherit the text colour" is visible in both themes where a hardcoded hex would
+   not be.
+
+   The rule is REACHABLE, not decorative. The app draws four raw controls itself: the
+   format card's checkbox button and the look-suffix <textarea> (FormatPicker.tsx),
+   and the images-per-format and Buzz-account radio buttons (App.tsx). Whether this
+   outline also wins over the W6 pack's own focus styling on the PACK's components is
+   not measured — jsdom performs no cascade — and is not claimed here.
+
+   Graded, not eyeballed: `brand` against each of the five app-drawn grounds a ring
+   can land on (page / surface / surfaceRaised / railBg / brandTint) is 4.20:1 at
+   worst across both themes, over WCAG 1.4.11's 3:1 for a focus indicator. Asserted
+   in palette.test.ts. Not exhaustive over every adjacency: with `outline-offset: 2px`
+   a ring in a pill row also sits 2px from its NEIGHBOUR, and a selected neighbour is
+   itself `brand`. */
 textarea:focus-visible,
 button:focus-visible {
-  outline: 2px solid var(--civitai-color-primary);
+  outline: 2px solid var(--yt-focus-ring, currentColor);
   outline-offset: 2px;
 }
