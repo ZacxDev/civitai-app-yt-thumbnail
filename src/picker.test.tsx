@@ -108,6 +108,7 @@ vi.mock('@civitai/blocks-react', () => ({
 }));
 
 const { App } = await import('./App.js');
+const { DEFAULT_CHECKPOINT, familyHasLoras } = await import('./models.js');
 
 const optsFor = (type: string) =>
   resourcePickerOpen.mock.calls.map((c) => c[0]).find((o) => o?.resourceType === type);
@@ -138,8 +139,9 @@ describe('host resource pickers', () => {
     const user = userEvent.setup();
     render(<App />);
 
-    // Starts on the curated SDXL default...
-    expect(await screen.findByTestId('pm-model-label')).toHaveTextContent(/SD XL 1\.0/);
+    // Starts on the curated default... read off DEFAULT_CHECKPOINT rather than
+    // hard-coded, so moving the default cannot silently un-test this transition.
+    expect(await screen.findByTestId('pm-model-label')).toHaveTextContent(DEFAULT_CHECKPOINT.label);
     await user.click(screen.getByTestId('pm-change-model'));
 
     // ...and lands on a Flux pick. Under the old family-locked picker this
@@ -147,14 +149,69 @@ describe('host resource pickers', () => {
     await expect(screen.findByText(/FLUX\.1 \[dev\]/)).resolves.toBeInTheDocument();
   });
 
-  it('KEEPS the LoRA picker filtered to the checkpoint family', async () => {
+  /**
+   * 🔴 THIS TEST CHANGED SHAPE WITH THE OPENAI DEFAULT, AND THE CLAIM GOT
+   * STRONGER RATHER THAN WEAKER.
+   *
+   * It used to click Add LoRA straight off the SDXL default and assert the
+   * browse carried `baseModelGroup: 'SDXL 1.0'`. That sequence is no longer
+   * reachable: the default is now `OpenAI`, a family with no LoRAs, so the
+   * button is disabled and the picker is never opened. Deleting the assertion
+   * would have thrown away the guard against a future "just drop every
+   * baseModelGroup" edit — the thing the whole file exists for.
+   *
+   * So the test now walks the path a user walks: switch to a LoRA-capable
+   * checkpoint, THEN add a LoRA, and assert the filter is the family of the
+   * checkpoint actually held. That covers the original claim (the filter is
+   * kept) plus one it never made (the filter FOLLOWS the current checkpoint
+   * rather than being pinned to whatever the default happens to be) — a Flux
+   * pick must produce a Flux-filtered LoRA browse, which a hard-coded
+   * 'SDXL 1.0' expectation could never have caught.
+   */
+  it('KEEPS the LoRA picker filtered to the family of the CURRENT checkpoint', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    // Move off the default (no LoRAs) onto Flux, which has them.
+    resourcePickerOpen.mockResolvedValue(checkpointPick);
+    await user.click(await screen.findByTestId('pm-change-model'));
+    await screen.findByText(/FLUX\.1 \[dev\]/);
+
+    resourcePickerOpen.mockResolvedValue(loraPick);
+    await user.click(screen.getByTestId('pm-lora-add'));
+
+    // The browse is constrained to the family now held — NOT to the default's.
+    expect(optsFor('LORA')).toEqual({ resourceType: 'LORA', baseModelGroup: 'Flux.1 D' });
+  });
+
+  /**
+   * The collateral effect of the OpenAI default, pinned as BEHAVIOUR rather than
+   * as copy: on a family with no LoRAs the control is disabled and the picker is
+   * never opened. RED at bec8894 — there the default was SDXL, the button was
+   * enabled, and clicking it DID call the picker.
+   *
+   * 🔴 Asserted on the picker CALL, not on the button's `disabled` attribute
+   * alone. A disabled attribute is what the user sees; whether a spend-adjacent
+   * host modal was opened is what actually matters, and the two can disagree
+   * (a click handler wired past a cosmetic disable).
+   */
+  it('does not open the LoRA picker on a checkpoint family that has no LoRAs', async () => {
     resourcePickerOpen.mockResolvedValue(loraPick);
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(await screen.findByTestId('pm-lora-add'));
+    // The shipped default IS such a family — asserted, not assumed.
+    expect(familyHasLoras(DEFAULT_CHECKPOINT.baseModel)).toBe(false);
 
-    // DEFAULT_CHECKPOINT is SDXL 1.0, so the LoRA browse is constrained to it.
-    expect(optsFor('LORA')).toEqual({ resourceType: 'LORA', baseModelGroup: 'SDXL 1.0' });
+    const add = await screen.findByTestId('pm-lora-add');
+    await user.click(add);
+
+    expect(optsFor('LORA')).toBeUndefined();
+    expect(add).toBeDisabled();
+    // ...and the reason is on screen, naming the family, rather than a dead
+    // button with no explanation.
+    expect(screen.getByTestId('pm-lora-unsupported')).toHaveTextContent(
+      DEFAULT_CHECKPOINT.baseModel,
+    );
   });
 });

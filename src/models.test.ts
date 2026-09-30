@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DEFAULT_CHECKPOINT,
+  LORA_FREE_BASE_MODELS,
   MAX_LORAS,
   addLora,
   checkpointFromPick,
   clampLoraWeight,
+  familyHasLoras,
   loraFromPick,
   loraOption,
   pickedCheckpointLabel,
@@ -20,9 +22,66 @@ import {
 // + generation-covered + SFW base), so it's asserted here.
 
 describe('default checkpoint', () => {
-  it('ships the verified SD XL 1.0 base as the initial state', () => {
-    expect(DEFAULT_CHECKPOINT).toMatchObject({ versionId: 128078, modelId: 101055 });
-    expect(DEFAULT_CHECKPOINT.baseModel).toBe('SDXL 1.0');
+  /**
+   * 🔴 RED AT bec8894 — this is regression coverage, not an invariant guard.
+   * At base `DEFAULT_CHECKPOINT` was SD XL 1.0 (versionId 128078 / modelId
+   * 101055 / baseModel 'SDXL 1.0'), on which `params.width`/`height` are inert
+   * (every request comes back 1216x832, ~3:2). The whole ID TRIPLE is pinned
+   * because the wire carries `modelId` AND `modelVersionId` and the app routes
+   * the family filter off `baseModel` — a change to any one of the three is a
+   * different generation at a different price.
+   */
+  it('ships ChatGPT Images (OpenAI) as the initial state — the aspect-honouring default', () => {
+    expect(DEFAULT_CHECKPOINT).toMatchObject({ versionId: 2880272, modelId: 2563220 });
+    expect(DEFAULT_CHECKPOINT.baseModel).toBe('OpenAI');
+    expect(DEFAULT_CHECKPOINT.label).toBe('ChatGPT Images');
+  });
+});
+
+describe('familyHasLoras', () => {
+  /**
+   * 🔴 RED AT bec8894 — `familyHasLoras` did not exist there, so the whole
+   * describe fails to import. That makes it regression coverage for the OpenAI
+   * default's collateral effect, but note the shape of the red: an import
+   * failure, not an assertion. The BEHAVIOURAL claim underneath it — that the
+   * default's own family is the one being excluded — is the first case below,
+   * and it is written against DEFAULT_CHECKPOINT rather than the literal
+   * 'OpenAI' so it cannot pass while the default moves somewhere unmeasured.
+   */
+  it('reports the shipped default as a family with no LoRAs', () => {
+    expect(familyHasLoras(DEFAULT_CHECKPOINT.baseModel)).toBe(false);
+  });
+
+  it('reports the SD-family base models as LoRA-capable', () => {
+    expect(familyHasLoras('SDXL 1.0')).toBe(true);
+    expect(familyHasLoras('SD 1.5')).toBe(true);
+    expect(familyHasLoras('Pony')).toBe(true);
+    expect(familyHasLoras('Flux.1 D')).toBe(true);
+    expect(familyHasLoras('Illustrious')).toBe(true);
+  });
+
+  it('matches case- and punctuation-insensitively, so a host label spelling cannot walk it', () => {
+    // A guard on the WORD 'OpenAI' would pass for a pick labelled 'open ai'.
+    expect(familyHasLoras('openai')).toBe(false);
+    expect(familyHasLoras('Open AI')).toBe(false);
+    expect(familyHasLoras('OPEN-AI')).toBe(false);
+  });
+
+  it('defaults an unknown or absent family to LoRA-capable', () => {
+    // The set is a measured exception list, NOT an allowlist: defaulting the
+    // other way would disable a working control for every unmeasured family.
+    expect(familyHasLoras('Some Future Ecosystem')).toBe(true);
+    expect(familyHasLoras('')).toBe(true);
+    expect(familyHasLoras(null)).toBe(true);
+    expect(familyHasLoras(undefined)).toBe(true);
+  });
+
+  it('keeps the deny-set to families measured with BOTH catalogue controls', () => {
+    // Pinned as a SET so adding an entry is a deliberate act that has to come
+    // with its measurement. 'Flux1' and 'Z Image' both returned 0 LoRAs in the
+    // same survey and are deliberately ABSENT: they also returned 0 checkpoints,
+    // so their zero is an unusable-filter-value result, not a product fact.
+    expect([...LORA_FREE_BASE_MODELS].sort()).toEqual(['OpenAI']);
   });
 });
 

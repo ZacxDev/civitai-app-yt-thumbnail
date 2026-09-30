@@ -97,6 +97,7 @@ import {
   MAX_LORAS,
   addLora,
   checkpointFromPick,
+  familyHasLoras,
   loraFromPick,
   removeLora,
   setLoraWeight,
@@ -1035,6 +1036,13 @@ export function App() {
   // Open the host's resource picker filtered to LoRAs, in the checkpoint's
   // base-model family. Append the pick (deduped + MAX_LORAS-capped via addLora).
   // A dismissal (`null`) is a no-op.
+  //
+  // 🔴 THE FAMILY FILTER STAYS — a LoRA really must match its checkpoint's base
+  // model, and the server enforces that before any spend. The consequence of the
+  // OpenAI default is therefore NOT "loosen the filter" but "there are no LoRAs
+  // in that family", which `familyHasLoras` reports and the selector explains
+  // rather than offering a control that can only produce a rejection. See
+  // models.ts LORA_FREE_BASE_MODELS for the two measured controls behind it.
   const onAddLora = useCallback(async () => {
     setPickerBusy(true);
     try {
@@ -1411,14 +1419,28 @@ export function App() {
     </>
   );
 
-  // 🔴 The description deliberately does NOT claim a generation size. Measured
-  // 2026-09-28: the platform IGNORES params.width/height — 1280x720 and 1344x768
-  // requests, on SD XL 1.0 and on FLUX.1 [dev], all came back 1216x832. The old
-  // string "It is generated at 1280×720 (16:9)" was therefore FALSE. What IS true
-  // is the export: the canvas editor cover-crops to exactly 1280x720 on
-  // download — which the hero states and the download button repeats, so the crop
-  // no longer needs restating here (phase 2: delete copy that explains what the
-  // UI already shows).
+  // 🔴 The description deliberately does NOT claim a generation size, and the
+  // reason has CHANGED SHAPE — read this before restoring one.
+  //
+  // Measured 2026-09-28: SD XL 1.0 and FLUX.1 [dev] IGNORE params.width/height —
+  // 1280x720 and 1344x768 both came back 1216x832 (~3:2). The old string "It is
+  // generated at 1280×720 (16:9)" was FALSE on those.
+  //
+  // Measured 2026-09-30 on the NEW default (ChatGPT Images / baseModel OpenAI),
+  // through this block's own route: a 1280x720 request came back 1536x864 —
+  // exactly 16:9. So on OpenAI the ASPECT is honoured and only the exact PIXELS
+  // are not; the free estimate moves 209 -> 287 when the requested shape goes
+  // 16:9 -> 1:1, which is the control proving the fields are read rather than
+  // dropped (see models.ts DEFAULT_CHECKPOINT for both arms).
+  //
+  // Net: "1280×720" is STILL not a true claim about a generation on ANY of them,
+  // because nothing delivers those literal pixels — so the copy stays out. What
+  // IS true on every checkpoint is the EXPORT: the canvas editor cover-crops to
+  // exactly 1280x720 on download, which the hero states and the download button
+  // repeats. That crop wording is also still honest on the new default even
+  // though a 1536x864 source is already 16:9 and therefore loses nothing to the
+  // crop: "cover-crop to 1280x720" describes what the canvas does, and the user
+  // can still pick a 3:2 SD-family checkpoint where it genuinely crops.
   const promptBlock = (
     <Textarea
       label="Prompt"
@@ -1796,6 +1818,8 @@ export function App() {
       <LoraSelector
         selected={loras}
         capReached={loraCapReached}
+        familyHasLoras={familyHasLoras(checkpoint.baseModel)}
+        baseModel={checkpoint.baseModel}
         pickerBusy={pickerBusy}
         onAdd={() => void onAddLora()}
         onRemove={onRemoveLora}
@@ -1891,6 +1915,8 @@ export function App() {
 function LoraSelector({
   selected,
   capReached,
+  familyHasLoras: familySupported,
+  baseModel,
   pickerBusy,
   onAdd,
   onRemove,
@@ -1899,6 +1925,10 @@ function LoraSelector({
 }: {
   selected: readonly LoraOption[];
   capReached: boolean;
+  /** Does the current checkpoint's base-model family have ANY LoRAs? */
+  familyHasLoras: boolean;
+  /** The current checkpoint's base-model family, named in the explanation. */
+  baseModel: string;
   pickerBusy: boolean;
   onAdd: () => void;
   onRemove: (versionId: number) => void;
@@ -1949,19 +1979,31 @@ function LoraSelector({
         </Stack>
       )}
 
-      {/* Add a LoRA — opens the host's resource picker filtered to LoRAs. */}
+      {/* Add a LoRA — opens the host's resource picker filtered to LoRAs.
+          🔴 DISABLED, WITH A REASON, ON A FAMILY THAT HAS NONE. The alternative
+          is a button that opens a grid of LoRAs from OTHER families (the catalog
+          widens the browse rather than showing an empty result), every one of
+          which the server rejects as incompatible after the viewer has picked
+          it. An explained dead control beats a live one that can only fail. */}
       <span style={loraAddWrapStyle}>
         <Button
           variant="light"
           size="sm"
-          disabled={capReached}
+          disabled={capReached || !familySupported}
           loading={pickerBusy}
           onClick={onAdd}
           data-testid="pm-lora-add"
         >
           + Add LoRA
         </Button>
-        {capReached && <span style={fieldDescStyle(pal)}>Max {MAX_LORAS} LoRAs selected.</span>}
+        {!familySupported && (
+          <span style={fieldDescStyle(pal)} data-testid="pm-lora-unsupported">
+            {baseModel} models don&apos;t take LoRAs. Switch to another model above to add them.
+          </span>
+        )}
+        {familySupported && capReached && (
+          <span style={fieldDescStyle(pal)}>Max {MAX_LORAS} LoRAs selected.</span>
+        )}
       </span>
     </div>
   );
