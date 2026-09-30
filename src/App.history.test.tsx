@@ -269,16 +269,24 @@ describe('history — an EXPIRED generation', () => {
     );
     expect(screen.getByTestId('pm-model-label')).toHaveTextContent('ChatGPT Images');
     // quantity 2, the value the record carries — distinct from the app's default 1,
-    // so this cannot pass by coincidence.
-    expect(screen.getByTestId('pm-quantity-2')).toHaveAttribute('aria-checked', 'true');
+    // so this cannot pass by coincidence. Read off the <select>'s VALUE now that the
+    // control is a dropdown rather than a row of `aria-checked` pills.
+    expect(screen.getByTestId('pm-quantity')).toHaveValue('2');
   });
 
-  it('🔴 RESUME DOES NOT SUBMIT — no estimate, no submit, no Buzz', async () => {
+  it('🔴 RESUME DOES NOT SUBMIT — no submit, no Buzz', async () => {
     /**
      * The operator's decision, pinned as BEHAVIOUR at the money hooks rather than
      * as a label. At 209 Buzz an image, a one-click re-run on a history row is
      * exactly how Buzz gets spent by accident; a "Resume" that auto-submitted
      * would look identical on screen and cost real money.
+     *
+     * 🔴 THE `estimate` HALF OF THIS CASE WAS REMOVED ON PURPOSE, and its removal is
+     * not a weakening. `estimate()` is a READ: it prices a body and spends nothing.
+     * The app now prices the form whenever it changes, so a resume — which changes
+     * the checkpoint, the quantity and the formats — is SUPPOSED to produce an
+     * estimate, and a resumed form arriving unpriced would be the defect. `submit()`
+     * is the only call that can debit a viewer, so it is what this pins.
      */
     const user = userEvent.setup();
     render(<App />);
@@ -287,9 +295,14 @@ describe('history — an EXPIRED generation', () => {
 
     await waitFor(() => expect(screen.getByLabelText(/prompt/i)).toHaveValue('a red bicycle'));
     expect(submitWorkflow).not.toHaveBeenCalled();
-    expect(estimateWorkflow).not.toHaveBeenCalled();
     // The Generate button is there, priced-or-not, waiting for a deliberate click.
     expect(screen.getByTestId('pm-generate')).toBeInTheDocument();
+    // Give the live preview's debounce room to fire and confirm it STILL has not
+    // submitted. Without this the case cannot tell "never submits" from "had not
+    // submitted yet at the moment we looked".
+    estimateWorkflow.mockResolvedValue({ workflowId: 'e', status: 'pending', cost: { total: 418 } });
+    await waitFor(() => expect(estimateWorkflow).toHaveBeenCalled(), { timeout: 3000 });
+    expect(submitWorkflow).not.toHaveBeenCalled();
   });
 
   it('offers NO cancel for a terminal batch', async () => {
@@ -413,7 +426,7 @@ describe('🔴 the record WRITTEN at submit time', () => {
 
     await user.click(await screen.findByTestId(`yt-format-${CINEMATIC.id}`));
     await user.type(screen.getByLabelText(/prompt/i), 'a cat on a skateboard');
-    await user.click(screen.getByTestId('pm-quantity-3'));
+    await user.selectOptions(screen.getByTestId('pm-quantity'), '3');
     await user.click(screen.getByTestId('pm-generate'));
 
     await waitFor(() => expect(submitWorkflow).toHaveBeenCalledTimes(2));
@@ -476,11 +489,17 @@ describe('🔴 the record WRITTEN at submit time', () => {
     await user.type(await screen.findByLabelText(/prompt/i), 'a cat');
     await user.click(screen.getByTestId('pm-generate'));
 
-    // The images are shown and the spend is reported, exactly as on a clean run.
-    expect(await screen.findByTestId('pm-result-img')).toBeInTheDocument();
+    // 🔴 THE IMAGES ARE STILL SHOWN, and this is much harder to get right than it was.
+    // The images used to live in a candidate grid that knew nothing about storage; they
+    // now live in the history row, so a rejected write reaches the very surface that
+    // renders them. Two things make it hold and both are load-bearing: the record is
+    // inserted into the list BEFORE the round trip, and `denied` renders as a BANNER
+    // OVER the rows rather than instead of them.
+    expect(await screen.findByTestId('yt-history-img')).toBeInTheDocument();
     expect(screen.getByTestId('pm-spent')).toHaveTextContent('209');
     // The storage problem is reported SEPARATELY, and names the grant.
     expect(await screen.findByTestId('yt-history-note')).toHaveTextContent(/storage access/i);
+    expect(await screen.findByTestId('yt-history-denied')).toBeInTheDocument();
     // ...and NOT as a failed generation.
     expect(screen.queryByTestId('pm-failed')).not.toBeInTheDocument();
   });
