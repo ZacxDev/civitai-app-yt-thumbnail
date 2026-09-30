@@ -119,8 +119,8 @@ const CARD = "[data-boot-skeleton] [data-boot-shape='card']";
 const SHAPE = `${CARD} > [data-boot-shape]`;
 const LIGHT = '(prefers-color-scheme: light)';
 
-function find(selector: string, prop: string, media: string | null): Decl {
-  const hit = DECLS.filter(
+function find(selector: string, prop: string, media: string | null, decls: readonly Decl[] = DECLS): Decl {
+  const hit = decls.filter(
     (d) =>
       d.selector === selector &&
       d.prop === prop &&
@@ -151,17 +151,37 @@ function hexOf(value: string): string {
 }
 
 /**
- * Does this property paint a colour? Wide on purpose — the closing check below is
- * only as closed as this predicate, so anything that can carry a colour counts,
- * and `border-radius` / `box-sizing` deliberately do not.
+ * Properties that CANNOT carry a colour. Everything else can, and counts.
+ *
+ * 🔴 A DENYLIST, BECAUSE AN ALLOWLIST CANNOT BE "WIDE ON PURPOSE". The previous
+ * version of this was an allowlist whose docstring claimed "anything that can carry
+ * a colour counts" while the pattern named eleven properties. DEMONSTRATED: adding
+ * `border-image: linear-gradient(#ff0000, #00ff00) 1` to the boot card ships two
+ * off-palette colours with the whole suite green, and `filter: drop-shadow(...)`,
+ * `border-inline-start`, `border-block`, `-webkit-text-stroke` and `caret-color`
+ * were all equally invisible. Enumerating the colour-bearing half of CSS is not a
+ * thing anyone finishes; enumerating the 12 of this stylesheet's 15 distinct
+ * properties that cannot paint is, and it fails in the safe direction — one nobody has
+ * classified reads as a paint and has to be either put in the ledger or declared
+ * here, which is a deliberate act either way.
  */
+const CARRIES_NO_COLOUR: readonly string[] = [
+  'align-items',
+  'border-radius',
+  'box-sizing',
+  'display',
+  'height',
+  'justify-content',
+  'margin',
+  'margin-bottom',
+  'max-width',
+  'min-height',
+  'padding',
+  'width',
+];
+
 function paintsAColour(prop: string): boolean {
-  return (
-    /color$/.test(prop) ||
-    /^(background(-image)?|border(-(top|right|bottom|left))?|outline|box-shadow|text-shadow|column-rule|text-decoration|fill|stroke)$/.test(
-      prop,
-    )
-  );
+  return !CARRIES_NO_COLOUR.includes(prop);
 }
 
 /**
@@ -193,6 +213,16 @@ const COLOUR_LEDGER: readonly {
 const declKey = (media: string | null, selector: string, prop: string) =>
   `${media ?? '<top level>'} | ${selector} | ${prop}`;
 
+/** The closing check's own read, as a function of the declarations, so it can be
+ * fed a mutated stylesheet by the control below. */
+function unledgeredPaints(decls: readonly Decl[]): string[] {
+  const expected = COLOUR_LEDGER.map((r) => declKey(r.media, r.selector, r.prop));
+  return decls
+    .filter((d) => paintsAColour(d.prop))
+    .map((d) => declKey(d.media, d.selector, d.prop))
+    .filter((k) => !expected.includes(k));
+}
+
 describe('the boot skeleton mirrors the app it precedes', () => {
   it('the manifest still declares bootSkeleton — the whole argument rests on it', () => {
     // 🔴 WITHOUT THIS FLAG THIS FILE IS GRADING THE WRONG THING. If the host puts
@@ -216,19 +246,73 @@ describe('the boot skeleton mirrors the app it precedes', () => {
     // see the file header for why the value scan this replaces was walkable by
     // `background: white` and by `rgb(255, 0, 0)`. A paint on a selector the ledger
     // does not name now fails on its PROPERTY, before its value is ever read.
+    expect(
+      unledgeredPaints(DECLS),
+      `index.html paints a colour the ledger does not account for. Add it to ` +
+        `COLOUR_LEDGER (and to the palette), take it out of the stylesheet, or — if the ` +
+        `property genuinely cannot carry a colour — add it to CARRIES_NO_COLOUR. An ` +
+        `unlisted paint is the drift this guard exists to prevent.`,
+    ).toEqual([]);
+
+    // And the other direction, so a ledger row cannot outlive the rule it describes.
     const inSheet = DECLS.filter((d) => paintsAColour(d.prop)).map((d) =>
       declKey(d.media, d.selector, d.prop),
     );
     const expected = COLOUR_LEDGER.map((r) => declKey(r.media, r.selector, r.prop));
-
     expect(
-      inSheet.filter((k) => !expected.includes(k)),
-      `index.html paints a colour the ledger does not account for. Add it to ` +
-        `COLOUR_LEDGER (and to the palette) or take it out of the stylesheet — an ` +
-        `unlisted paint is the drift this guard exists to prevent.`,
+      expected.filter((k) => !inSheet.includes(k)),
+      `a ledger row names no rule in the stylesheet.\n` +
+        `🔴 IF THE MISSING ROW IS A \`dark\` ONE, DO NOT REPAIR IT BY GIVING THAT ROW A ` +
+        `MEDIA CONDITION. The dark rules are the BASE rules on purpose — there is ` +
+        `deliberately no \`prefers-color-scheme: dark\` block, and light is the only ` +
+        `override — because a UA that reports \`no-preference\` matches NEITHER \`dark\` ` +
+        `NOR \`light\`, so a sheet with one block per theme and no base paint leaves that ` +
+        `viewer on the browser's own default: an unstyled flash on the surface this file ` +
+        `exists to keep steady. Move the RULE back to top level, not the ledger row into ` +
+        `a media query.`,
     ).toEqual([]);
-    // And the other direction, so a ledger row cannot outlive the rule it describes.
-    expect(expected.filter((k) => !inSheet.includes(k)), 'a ledger row names no rule').toEqual([]);
+  });
+
+  it('there is deliberately NO `prefers-color-scheme: dark` block', () => {
+    // 🔴 THE REASONING THAT USED TO LIVE IN `index.html` AND MUST NOT GO BACK THERE:
+    // the built document ships to every viewer, so the argument lives here while the
+    // invariant is pinned mechanically. `prefers-color-scheme` has THREE states, not
+    // two — `dark`, `light`, and `no-preference` — and a UA reporting the third
+    // matches neither media query. So the dark theme is the unconditional base and
+    // `light` is the only override; symmetrising the sheet into two blocks would
+    // leave a `no-preference` viewer with no paint at all.
+    //
+    // Pinned in both shapes it can be broken: the condition appearing at all, and a
+    // dark ledger row acquiring a media condition (which is what the sibling check's
+    // failure message warns against).
+    expect(styleSheet(), 'the boot stylesheet grew a dark media block').not.toMatch(
+      /prefers-color-scheme\s*:\s*dark/,
+    );
+    expect(
+      COLOUR_LEDGER.filter((r) => r.theme === 'dark').map((r) => r.media),
+      'a dark ledger row moved under a media condition',
+    ).toEqual([null, null, null, null]);
+  });
+
+  it('a property outside CARRIES_NO_COLOUR is read as a paint — positive control', () => {
+    // 🔴 WITHOUT THIS THE ZERO ABOVE IS A CLAIM ABOUT ELEVEN PROPERTY NAMES. Both of
+    // these ship two off-palette colours each and were invisible to the allowlist
+    // this replaced; `filter` is the one that is not even spelled like a colour.
+    const mutated = parseCss(
+      `${CARD} { border-image: linear-gradient(#ff0000, #00ff00) 1; filter: drop-shadow(0 0 2px #ff00ff); }`,
+    );
+    expect(unledgeredPaints(mutated)).toEqual([
+      declKey(null, CARD, 'border-image'),
+      declKey(null, CARD, 'filter'),
+    ]);
+  });
+
+  it('CARRIES_NO_COLOUR names only properties the stylesheet actually uses', () => {
+    // A denylist is the safe direction only while it stays a record of THIS
+    // stylesheet. An entry for a property no rule declares is either dead weight or
+    // someone widening the exemption ahead of the paint it will excuse.
+    const used = new Set(DECLS.map((d) => d.prop));
+    expect(CARRIES_NO_COLOUR.filter((p) => !used.has(p))).toEqual([]);
   });
 
   it('expands shorthand hex, so `#fff` is not reported as drift', () => {
@@ -315,34 +399,65 @@ describe('the boot skeleton mirrors the SHELL, not a guessed inset', () => {
  * rungs by this inset takes the disagreement to zero across 300–2600px, which is
  * the sweep below.
  *
- * One frame of disagreement remains and is not papered over: the SEED taken right
- * after `observe()` reads `el.clientWidth`, the PADDING box, so an unsettled app
- * resolves its tier from the raw viewport for one frame. That is
- * `useBlockBreakpoint`'s own seed/steady split (see `ULTRAWIDE_MIN`), and the
- * skeleton is matched to the width the viewer ends up looking at.
+ * TWO frames of disagreement remain, and the earlier of the two was left out of the
+ * previous version of this note. Neither is changed here: this file grades the
+ * stylesheet, the app's mount sequence is `useBlockBreakpoint`'s, and there is no
+ * browser driver in this suite to observe either frame — so they are DISCLOSED, not
+ * fixed, and not claimed to have been seen.
+ *
+ *   1. `useBlockBreakpoint` holds its tier in `useState(null)` and seeds inside
+ *      `useEffect`, i.e. after the first commit. So the app's FIRST paint resolves no
+ *      tier at all and falls back to `base` — a 640px column at every viewport width,
+ *      including the ones where the skeleton has just drawn a full-width card.
+ *   2. The seed itself then reads `el.clientWidth`, the PADDING box, so the second
+ *      frame resolves the tier from the raw viewport rather than the content box —
+ *      `useBlockBreakpoint`'s own seed/steady split, as `ULTRAWIDE_MIN` describes.
+ *
+ * At a 1000px viewport that is: skeleton 952 → 640 → 952 → 952. The steady state is
+ * the width the viewer ends up looking at, and it is the one the sweep below pins.
  */
 const SHELL_INSET = SHELL_PADDING * 2;
 
-/** The cap the stylesheet declares at each viewport rung, narrowest first. */
-function declaredRungs(): { at: number; cap: number | null }[] {
+interface Ladder {
+  /** The cap the stylesheet declares at each viewport rung, narrowest first. */
+  rungs: { at: number; cap: number | null }[];
+  /** Media conditions capping the card that this reader cannot express as a rung. */
+  unreadable: string[];
+}
+
+/**
+ * The card's declared width ladder.
+ *
+ * 🔴 IT COLLECTS EVERY MEDIA-SCOPED `max-width` ON THE CARD AND REPORTS THE ONES IT
+ * CANNOT READ, rather than FILTERING for `min-width` and walking past the rest. The
+ * filter was the bug: a `@media (max-width: 500px)` cap on the card was invisible to
+ * this reader, so it escaped the sweep AND the "exactly three rungs" guard at once —
+ * DEMONSTRATED green with a fourth rung that put the card at a width the app never
+ * settles on below 500px. Returned rather than asserted on the spot, because this
+ * runs at module scope: a throw here fails COLLECTION, which reports as "no tests"
+ * and reads like a broken suite instead of a named finding.
+ */
+function declaredLadder(decls: readonly Decl[] = DECLS): Ladder {
   const capOf = (value: string): number | null => {
     if (value === 'none') return null;
     const m = value.match(/^(\d+)px$/);
     expect(m, `unreadable max-width \`${value}\``).not.toBeNull();
     return Number(m![1]);
   };
-  const rungs = [{ at: 0, cap: capOf(find(CARD, 'max-width', null).value) }];
-  for (const d of DECLS.filter(
-    (d) => d.selector === CARD && d.prop === 'max-width' && d.media?.includes('min-width'),
+  const rungs = [{ at: 0, cap: capOf(find(CARD, 'max-width', null, decls).value) }];
+  const unreadable: string[] = [];
+  for (const d of decls.filter(
+    (d) => d.selector === CARD && d.prop === 'max-width' && d.media !== null,
   )) {
-    const m = d.media!.match(/min-width:\s*(\d+)px/);
-    expect(m, `unreadable media condition \`${d.media}\``).not.toBeNull();
-    rungs.push({ at: Number(m![1]), cap: capOf(d.value) });
+    const m = d.media!.match(/^\(\s*min-width:\s*(\d+)px\s*\)$/);
+    if (m) rungs.push({ at: Number(m[1]), cap: capOf(d.value) });
+    else unreadable.push(d.media!);
   }
-  return rungs.sort((a, b) => a.at - b.at);
+  return { rungs: rungs.sort((a, b) => a.at - b.at), unreadable };
 }
 
-const RUNGS = declaredRungs();
+const LADDER = declaredLadder();
+const RUNGS = LADDER.rungs;
 
 /** Border-box width of the boot card at `viewport`, from the parsed stylesheet. */
 function skeletonCardWidth(viewport: number, rungs = RUNGS): number {
@@ -396,6 +511,35 @@ describe('the boot skeleton width ladder is the app’s own, offset by the shell
     // A fourth would be a shape the app does not change at, and would escape the
     // two assertions above without failing either of them.
     expect(RUNGS).toHaveLength(3);
+  });
+
+  it('every rung the stylesheet declares is one this reader can express', () => {
+    expect(
+      LADDER.unreadable,
+      `index.html caps the boot card inside a media condition this file cannot read as ` +
+        `a rung. Every rung must be a bare \`(min-width: Npx)\`, because that is the only ` +
+        `shape the sweep and the rung count can grade — a \`max-width\` or compound ` +
+        `condition used to be SKIPPED here, which is how a fourth rung escaped both of ` +
+        `them. Rewrite it as a min-width rung or teach this reader the new shape; do not ` +
+        `delete this assertion.`,
+    ).toEqual([]);
+  });
+
+  it('a `max-width` rung is SEEN, not skipped — positive control', () => {
+    // 🔴 THE HOLE THE `min-width` FILTER LEFT, AS THE SHAPE THAT WALKED IT. A fourth
+    // rung written as a max-width query was skipped by the reader, so `RUNGS` still
+    // had three entries, the count guard passed, and the sweep compared a ladder the
+    // stylesheet does not actually declare. Both halves are asserted: that it is
+    // reported, and that the report NAMES the condition rather than only counting it.
+    const fourth = parseCss(`@media (max-width: 500px) { ${CARD} { max-width: 300px; } }`);
+    expect(fourth).toHaveLength(1);
+
+    const withFourth = declaredLadder([...DECLS, ...fourth]);
+    expect(withFourth.unreadable).toEqual(['(max-width: 500px)']);
+    // And the three real rungs are still read without complaint, so the insistence is
+    // on the SHAPE and not on there being no media queries at all.
+    expect(withFourth.rungs).toHaveLength(3);
+    expect(declaredLadder([...DECLS]).unreadable).toEqual([]);
   });
 
   it('the two ladders coincide at every viewport from 300 to 2600px', () => {
