@@ -74,19 +74,102 @@ export function roundLoraWeight(weight: number): number {
 }
 
 /**
- * The default checkpoint a fresh session starts on — a foundational,
- * multi-million-generation public base verified Public + generation-covered +
- * SFW: SD XL 1.0 (VAE fix) (versionId 128078 / modelId 101055). It's the initial
+ * The default checkpoint a fresh session starts on: ChatGPT Images v2.0
+ * (versionId 2880272 / modelId 2563220), baseModel `OpenAI`. It's the initial
  * state so Generate works at first paint, before the user opens the picker. The
- * user replaces it via the host's checkpoint picker (`useCheckpointPicker`).
- * DISCOVERY ONLY — the server re-validates + re-prices it like any pick.
+ * user replaces it via the host's resource picker. DISCOVERY ONLY — the server
+ * re-validates + re-prices it like any pick.
+ *
+ * 🔴 WHY THIS ONE AND NOT SD XL 1.0 (the 0.1.5 default, versionId 128078):
+ * BECAUSE THE ASPECT RATIO ACTUALLY LANDS. Measured 2026-09-30 against the live
+ * backend through THIS BLOCK'S OWN ROUTE — `POST /api/trpc/blocks.submitWorkflow`
+ * with the exact body `buildWorkflowBody` emits, which is the route
+ * `createLiveHost` drives in `npm run dev:live`:
+ *
+ *   requested params 1280x720 (16:9)  ->  delivered 1536x864 (16:9), cost 209
+ *   (two agreeing reads: `magick identify` = 1536x864, and the JPEG SOF marker
+ *   parsed straight out of the bytes = 1536x864)
+ *
+ * The EXACT PIXELS are not honoured — the server snaps to the ecosystem's own
+ * supported size — but the ASPECT is. Contrast SD XL 1.0 / FLUX.1 [dev], where a
+ * 1280x720 AND a 1344x768 request both came back 1216x832 (~3:2): on those the
+ * requested shape is inert and a 16:9 thumbnail has to be cropped out of a
+ * 3:2 frame.
+ *
+ * 🔴 THE DISCRIMINATING CONTROL, because "it came back 16:9" alone cannot tell
+ * "the aspect was honoured" from "this model always returns 16:9".
+ * `blocks.estimateWorkflow` is FREE and the OpenAI ecosystem PRICES BY SHAPE, so
+ * the estimate is a signal that moves only if `params.width`/`height` reach the
+ * request. Measured the same day, same route:
+ *
+ *   ChatGPT Images  1280x720 -> 209 · 1024x1024 -> 287 · 720x1280 -> 209
+ *   SD XL 1.0       1280x720 ->   3 · 1024x1024 ->   3 · 720x1280 ->   3
+ *
+ * The number MOVES on OpenAI and is FLAT on SD XL — i.e. a positive arm and a
+ * negative arm, which is what makes this a measurement rather than a story.
+ *
+ * COST: 209 Buzz/image at a non-square aspect (287 at 1:1) versus 3 on SD XL.
+ * That is why `page.buzzBudgetPerGen` had to go 300 -> 900; see block.manifest.json.
  */
 export const DEFAULT_CHECKPOINT: CheckpointOption = {
-  versionId: 128078,
-  modelId: 101055,
-  label: 'SD XL 1.0',
-  baseModel: 'SDXL 1.0',
+  versionId: 2880272,
+  modelId: 2563220,
+  label: 'ChatGPT Images',
+  baseModel: 'OpenAI',
 };
+
+/**
+ * Base-model families with NO LoRAs in the catalogue at all, so the LoRA picker
+ * cannot do its job on them.
+ *
+ * 🔴 WHY A SET AND NOT A GUESS. The LoRA picker deliberately keeps its
+ * `baseModelGroup` family filter (a LoRA must match its checkpoint's base model,
+ * and the SERVER enforces that at estimate/submit). With the OpenAI default that
+ * filter matches nothing — measured 2026-09-30 against the same catalogue
+ * endpoint the host picker serves, `/api/v1/blocks/models`:
+ *
+ *   types=LORA       & baseModels=OpenAI  -> 0 items
+ *   types=Checkpoint & baseModels=OpenAI  -> 2 items   <- POSITIVE CONTROL
+ *   types=LORA       & (no baseModels)    -> non-empty <- POSITIVE CONTROL
+ *
+ * Both controls matter. The unfiltered LoRA read proves the query CAN return
+ * LoRAs, so the 0 is not a dead request. The Checkpoint read proves `OpenAI` is a
+ * real `baseModels` VALUE the filter understands, so the 0 is "this family has no
+ * LoRAs" and not "that string isn't a base-model name" — which is exactly the
+ * mistake the same survey caught elsewhere: `baseModels=Flux1` also returns 0
+ * LoRAs, but only because `Flux1` is an ECOSYSTEM KEY; the base-model NAME
+ * `Flux.1 D` returns plenty. Entries go in this set ONLY when BOTH controls have
+ * been run — otherwise a naming mismatch gets recorded as a product fact.
+ *
+ * 🔴 WHAT THIS PREVENTS, which is worse than an empty grid. The dev-shim catalog
+ * (`blocks-react/internal/catalog.js`) does NOT show an empty result for an
+ * unmatched family: `filterCardsByFamily` falls back to the FULL card set when
+ * nothing matched, and `fetchCatalog` retries once with `baseModels` cleared. So
+ * an un-annotated Add LoRA button on an OpenAI checkpoint offers a grid of
+ * SD-family LoRAs that are all incompatible — a control that looks like it
+ * works, and whose failure only arrives server-side after the viewer has
+ * committed to a pick.
+ */
+export const LORA_FREE_BASE_MODELS: ReadonlySet<string> = new Set(['OpenAI']);
+
+/**
+ * Can this base-model family take LoRAs at all? Drives whether the LoRA control
+ * is offered or explained. Case/punctuation-insensitive so `OpenAI`, `openai`
+ * and `Open AI` all resolve the same way — the label comes from a host pick and
+ * this must not turn into a spelling contest.
+ *
+ * TRUE for an unknown/absent family, deliberately: this set is a measured
+ * exception list, not an allowlist, and defaulting to "no LoRAs" would silently
+ * disable a working control for every family nobody has measured yet.
+ */
+export function familyHasLoras(baseModel: string | null | undefined): boolean {
+  const key = (baseModel ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (key === '') return true;
+  for (const denied of LORA_FREE_BASE_MODELS) {
+    if (denied.toLowerCase().replace(/[^a-z0-9]/g, '') === key) return false;
+  }
+  return true;
+}
 
 // ---------------------------------------------------------------------------
 // Pick → option helpers.

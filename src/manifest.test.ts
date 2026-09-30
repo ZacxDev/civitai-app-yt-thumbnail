@@ -57,6 +57,40 @@ describe('block.manifest.json', () => {
     expect((description as string).length).toBeLessThanOrEqual(2000);
   });
 
+  /**
+   * 🔴 THE PER-GENERATION BUZZ CEILING. RED AT bec8894 (it declared 300).
+   *
+   * This is a MONEY control and it is enforced PER WORKFLOW by the server, which
+   * reads the MANIFEST value at mint — not `PAGE_BUZZ_BUDGET`, which is only a
+   * mirror. A generation is REFUSED OUTRIGHT once the recipe's ceiling exceeds
+   * the budget, and the refusal names the ceiling rather than the budget, so the
+   * failure does not read as "your budget is too low".
+   *
+   * 900 is the operator's explicit choice for the ChatGPT Images default at
+   * 209 Buzz/image (measured 2026-09-30): 300 admits quantity 1 and refuses
+   * every quantity above it, 900 keeps the whole 1..4 range usable. Asserted as
+   * the LITERAL, because "greater than 300" would pass for a number far above
+   * what was authorised — this is a spend ceiling, and the point of pinning it
+   * is that raising it again is a deliberate, reviewed act.
+   */
+  it('🔴 declares the operator-chosen buzzBudgetPerGen of 900', () => {
+    const page = (manifest.page ?? {}) as Record<string, unknown>;
+    expect(page.buzzBudgetPerGen).toBe(900);
+  });
+
+  /**
+   * The mirror in `generation.ts` must agree with the manifest, or the constant
+   * documents a ceiling the server is not enforcing. INVARIANT GUARD in
+   * principle — both read 300 at base, so it was green there — but it only
+   * exists because this change moved the pair, and moving one of the two is
+   * exactly the drift it catches next time.
+   */
+  it('keeps PAGE_BUZZ_BUDGET in lockstep with the manifest value', async () => {
+    const { PAGE_BUZZ_BUDGET } = await import('./generation.js');
+    const page = (manifest.page ?? {}) as Record<string, unknown>;
+    expect(PAGE_BUZZ_BUDGET).toBe(page.buzzBudgetPerGen);
+  });
+
   // The schema's `category` enum, kept server-side in lockstep with
   // MARKETPLACE_CATEGORIES. An off-enum value is refused at approve.
   it('declares a category the marketplace enum actually contains', () => {
@@ -103,6 +137,80 @@ describe('block.manifest.json', () => {
  * is dropped from the token until they consent. The runtime side of that is the
  * App's problem, not this file's.
  */
+/**
+ * IFRAME SANDBOX guards.
+ *
+ * 🔴 WHY THIS EXISTS, AND WHY IT PINS THE *ABSENCE* OF `allow-downloads`.
+ *
+ * The editor's "Download 1280×720 JPG" button uses the classic `<a download>` +
+ * `a.click()` pattern. That click is INERT inside a sandboxed iframe that does
+ * not carry `allow-downloads` — silently inert: no throw, no console error,
+ * nothing for the app to catch. 0.1.0–0.1.5 shipped `allow-scripts allow-forms`,
+ * so the button has never produced a file in production and the whole suite
+ * stayed green the entire time.
+ *
+ * The obvious fix — add `allow-downloads` — IS NOT AVAILABLE TO THIS APP, and
+ * that is the fact this block records so nobody spends another session
+ * rediscovering it. `civitai app validate .` refuses the token outright:
+ *
+ *   sandbox token "allow-downloads" is not allowed for unverified blocks
+ *   (trustTier is server-forced to unverified at submit; only allow-scripts and
+ *   allow-forms are permitted)
+ *
+ * and the CLI's own bundled schema says the same: "Unverified tier allows only:
+ * allow-scripts, allow-forms". `trustTier` is a server-owned field, and a
+ * submitted block is always unverified — so there is no manifest edit that gets
+ * the token. Adding it does not make the download work; it makes `submit` fail.
+ *
+ * Hence: the guard fails if `allow-downloads` APPEARS (a future session
+ * "fixing" the button would break every submit) and fails if either shippable
+ * token DISAPPEARS. When this block is granted a verified tier, this is the one
+ * place to change, and the comment above is the checklist.
+ *
+ * 🔴 ASSERTED AS SET MEMBERSHIP, NOT AS A STRING. `sandbox` is a
+ * whitespace-separated token list; pinning the whole literal would fail on a
+ * harmless reorder. The token is what the browser reads, so the token is what
+ * is pinned.
+ */
+describe('block.manifest.json iframe sandbox', () => {
+  const iframe = (manifest.iframe ?? {}) as Record<string, unknown>;
+  const raw = typeof iframe.sandbox === 'string' ? iframe.sandbox : '';
+  const tokens = new Set(raw.split(/\s+/).filter((t) => t.length > 0));
+
+  // The unverified-tier allowlist, transcribed from the CLI's bundled
+  // app-block schema (`civitai` 2026-09-29 build, `sandboxChecks`).
+  const UNVERIFIED_TIER_ALLOWLIST = ['allow-scripts', 'allow-forms'];
+
+  it('🔴 declares NO token outside the unverified-tier allowlist — `submit` refuses them', () => {
+    // RED at base? No — GREEN at base, deliberately. This is an INVARIANT GUARD
+    // against a change nobody has made yet: the natural "fix" for the inert
+    // Download button is `allow-downloads`, which `civitai app validate` rejects
+    // and the server force-strips. See this block's header.
+    for (const t of tokens) expect(UNVERIFIED_TIER_ALLOWLIST).toContain(t);
+    expect(tokens.has('allow-downloads')).toBe(false);
+  });
+
+  it('still declares the tokens the app actually depends on', () => {
+    // INVARIANT GUARD. Both have always been present; this is here so an edit
+    // that rewrites the sandbox string cannot quietly drop one.
+    expect(tokens.has('allow-scripts')).toBe(true);
+    expect(tokens.has('allow-forms')).toBe(true);
+  });
+
+  it('never combines allow-same-origin with allow-scripts (sandbox escape)', () => {
+    // INVARIANT GUARD, and the one sandbox rule that is a SECURITY rule rather
+    // than a tier rule — the CLI refuses the combination outright.
+    expect(tokens.has('allow-same-origin') && tokens.has('allow-scripts')).toBe(false);
+  });
+
+  it('spells every sandbox entry as a real `allow-*` token', () => {
+    // INVARIANT GUARD. An unknown token is dropped by the browser in silence —
+    // the same class of failure as the missing one this block is named for.
+    expect(tokens.size).toBeGreaterThan(0);
+    for (const t of tokens) expect(t).toMatch(/^allow-[a-z-]+$/);
+  });
+});
+
 describe('block.manifest.json scopes', () => {
   const scopes = manifest.scopes as string[];
   const justifications = manifest.scopeJustifications as Record<string, string>;

@@ -76,6 +76,21 @@ vi.mock('@civitai/blocks-react', () => ({
   useRequestSignIn: () => ({ requestSignIn: vi.fn() }),
   useResourcePicker: () => ({ open: vi.fn().mockResolvedValue(null) }),
   useImageUpload: () => ({ open: vi.fn().mockResolvedValue(null) }),
+  // History's two hooks. `useAppWorkflows` is the LIVE half of the join (this
+  // app's own generations for this viewer) and `useSaveImage` is the host-side
+  // download bridge. Stubbed empty/no-op here: these suites are about other
+  // surfaces, and a hook App imports but this mock omits fails with "No <name>
+  // export is defined on the mock" — a FAILURE indistinguishable at a glance
+  // from a broken assertion (see the note below).
+  useAppWorkflows: () => ({
+    workflows: [],
+    cursor: null,
+    loading: false,
+    error: null,
+    refetch: vi.fn(),
+    cancel: vi.fn().mockResolvedValue(undefined),
+  }),
+  useSaveImage: () => ({ saveImage: vi.fn().mockResolvedValue(undefined) }),
   useAppStorage: () => ({
     get: storageGet,
     set: storageSet,

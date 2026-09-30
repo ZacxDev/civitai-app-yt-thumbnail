@@ -47,6 +47,21 @@ vi.mock('@civitai/blocks-react', () => ({
   // The generationSource upload bridge (remix mode) — inert here too; a resolved
   // null is a dismissed modal.
   useImageUpload: () => ({ open: vi.fn().mockResolvedValue(null) }),
+  // History's two hooks. `useAppWorkflows` is the LIVE half of the join (this
+  // app's own generations for this viewer) and `useSaveImage` is the host-side
+  // download bridge. Stubbed empty/no-op here: these suites are about other
+  // surfaces, and a hook App imports but this mock omits fails with "No <name>
+  // export is defined on the mock" — a FAILURE indistinguishable at a glance
+  // from a broken assertion (see the note below).
+  useAppWorkflows: () => ({
+    workflows: [],
+    cursor: null,
+    loading: false,
+    error: null,
+    refetch: vi.fn(),
+    cancel: vi.fn().mockResolvedValue(undefined),
+  }),
+  useSaveImage: () => ({ saveImage: vi.fn().mockResolvedValue(undefined) }),
   // 🔴 EVERY hook App imports must be listed here. A missing one fails with
   // "No <name> export is defined on the mock" — which vitest reports as a test
   // FAILURE, indistinguishable at a glance from a broken assertion. A prior

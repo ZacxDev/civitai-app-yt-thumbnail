@@ -80,6 +80,21 @@ vi.mock('@civitai/blocks-react', () => ({
   useRequestSignIn: () => ({ requestSignIn: vi.fn() }),
   useResourcePicker: () => ({ open: resourcePickerOpen }),
   useImageUpload: () => ({ open: vi.fn().mockResolvedValue(null) }),
+  // History's two hooks. `useAppWorkflows` is the LIVE half of the join (this
+  // app's own generations for this viewer) and `useSaveImage` is the host-side
+  // download bridge. Stubbed empty/no-op here: these suites are about other
+  // surfaces, and a hook App imports but this mock omits fails with "No <name>
+  // export is defined on the mock" — a FAILURE indistinguishable at a glance
+  // from a broken assertion (see the note below).
+  useAppWorkflows: () => ({
+    workflows: [],
+    cursor: null,
+    loading: false,
+    error: null,
+    refetch: vi.fn(),
+    cancel: vi.fn().mockResolvedValue(undefined),
+  }),
+  useSaveImage: () => ({ saveImage: vi.fn().mockResolvedValue(undefined) }),
   // 🔴 EVERY hook App imports must be listed here. A missing one fails with
   // "No <name> export is defined on the mock" — which vitest reports as a test
   // FAILURE, indistinguishable at a glance from a broken assertion. A prior
@@ -108,6 +123,11 @@ vi.mock('@civitai/blocks-react', () => ({
 }));
 
 const { App } = await import('./App.js');
+// 🔴 `DEFAULT_CHECKPOINT` is imported at the top because it EXISTS at bec8894;
+// `familyHasLoras` does NOT, so importing it here would make every case in this
+// file fail to import at base — a vacuous red that would hide the one case whose
+// red is real. It is imported lazily inside the single test that needs it.
+const { DEFAULT_CHECKPOINT } = await import('./models.js');
 
 const optsFor = (type: string) =>
   resourcePickerOpen.mock.calls.map((c) => c[0]).find((o) => o?.resourceType === type);
@@ -138,8 +158,9 @@ describe('host resource pickers', () => {
     const user = userEvent.setup();
     render(<App />);
 
-    // Starts on the curated SDXL default...
-    expect(await screen.findByTestId('pm-model-label')).toHaveTextContent(/SD XL 1\.0/);
+    // Starts on the curated default... read off DEFAULT_CHECKPOINT rather than
+    // hard-coded, so moving the default cannot silently un-test this transition.
+    expect(await screen.findByTestId('pm-model-label')).toHaveTextContent(DEFAULT_CHECKPOINT.label);
     await user.click(screen.getByTestId('pm-change-model'));
 
     // ...and lands on a Flux pick. Under the old family-locked picker this
@@ -147,14 +168,83 @@ describe('host resource pickers', () => {
     await expect(screen.findByText(/FLUX\.1 \[dev\]/)).resolves.toBeInTheDocument();
   });
 
-  it('KEEPS the LoRA picker filtered to the checkpoint family', async () => {
+  /**
+   * 🔴 THIS TEST CHANGED SHAPE WITH THE OPENAI DEFAULT, AND THE CLAIM GOT
+   * STRONGER RATHER THAN WEAKER.
+   *
+   * It used to click Add LoRA straight off the SDXL default and assert the
+   * browse carried `baseModelGroup: 'SDXL 1.0'`. That sequence is no longer
+   * reachable: the default is now `OpenAI`, a family with no LoRAs, so the
+   * button is disabled and the picker is never opened. Deleting the assertion
+   * would have thrown away the guard against a future "just drop every
+   * baseModelGroup" edit — the thing the whole file exists for.
+   *
+   * So the test now walks the path a user walks: switch to a LoRA-capable
+   * checkpoint, THEN add a LoRA, and assert the filter is the family of the
+   * checkpoint actually held. That covers the original claim (the filter is
+   * kept) plus one it never made (the filter FOLLOWS the current checkpoint
+   * rather than being pinned to whatever the default happens to be) — a Flux
+   * pick must produce a Flux-filtered LoRA browse, which a hard-coded
+   * 'SDXL 1.0' expectation could never have caught.
+   */
+  it('KEEPS the LoRA picker filtered to the family of the CURRENT checkpoint', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    // Move off the default (no LoRAs) onto Flux, which has them.
+    resourcePickerOpen.mockResolvedValue(checkpointPick);
+    await user.click(await screen.findByTestId('pm-change-model'));
+    await screen.findByText(/FLUX\.1 \[dev\]/);
+
+    resourcePickerOpen.mockResolvedValue(loraPick);
+    await user.click(screen.getByTestId('pm-lora-add'));
+
+    // The browse is constrained to the family now held — NOT to the default's.
+    expect(optsFor('LORA')).toEqual({ resourceType: 'LORA', baseModelGroup: 'Flux.1 D' });
+  });
+
+  /**
+   * The collateral effect of the OpenAI default, pinned as BEHAVIOUR rather than
+   * as copy: on a family with no LoRAs the control is disabled and the picker is
+   * never opened. RED at bec8894 — there the default was SDXL, the button was
+   * enabled, and clicking it DID call the picker.
+   *
+   * 🔴 Asserted on the picker CALL, not on the button's `disabled` attribute
+   * alone. A disabled attribute is what the user sees; whether a spend-adjacent
+   * host modal was opened is what actually matters, and the two can disagree
+   * (a click handler wired past a cosmetic disable).
+   */
+  it('does not open the LoRA picker on a checkpoint family that has no LoRAs', async () => {
+    // 🔴 DELIBERATELY FREE OF ANY IMPORT THAT DOES NOT EXIST AT bec8894, so its
+    // red there is a REAL ASSERTION failure about the button, not a missing
+    // export. Measured at base with App.tsx + models.ts reverted: the default
+    // was SDXL, Add LoRA was enabled, clicking it DID open the picker, and this
+    // fails on `expect(optsFor('LORA')).toBeUndefined()`.
     resourcePickerOpen.mockResolvedValue(loraPick);
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(await screen.findByTestId('pm-lora-add'));
+    const add = await screen.findByTestId('pm-lora-add');
+    await user.click(add);
 
-    // DEFAULT_CHECKPOINT is SDXL 1.0, so the LoRA browse is constrained to it.
-    expect(optsFor('LORA')).toEqual({ resourceType: 'LORA', baseModelGroup: 'SDXL 1.0' });
+    // The picker was never opened — asserted on the CALL, not on the `disabled`
+    // attribute alone. A disabled attribute is what the user sees; whether a
+    // spend-adjacent host modal was opened is what actually matters, and a click
+    // handler wired past a cosmetic disable makes the two disagree.
+    expect(optsFor('LORA')).toBeUndefined();
+    expect(add).toBeDisabled();
+    // ...and the reason is on screen, naming the family, rather than a dead
+    // button with no explanation.
+    expect(screen.getByTestId('pm-lora-unsupported')).toHaveTextContent(
+      DEFAULT_CHECKPOINT.baseModel,
+    );
+  });
+
+  it('the shipped default IS a family with no LoRAs — asserted, not assumed', async () => {
+    // The premise the case above rests on, separated so that case can stay
+    // import-clean at base. VACUOUS red at bec8894 (`familyHasLoras` does not
+    // exist there); its real evidence is models.test.ts's measured deny-set.
+    const { familyHasLoras } = await import('./models.js');
+    expect(familyHasLoras(DEFAULT_CHECKPOINT.baseModel)).toBe(false);
   });
 });

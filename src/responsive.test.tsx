@@ -9,6 +9,7 @@ import { resolveBlockTier, type BlockSizeTier } from '@civitai/blocks-react';
 import { App, HERO_BANNER_SRC, SHELL_PADDING } from './App.js';
 import { layoutForTier } from './layout.js';
 import { installMockMoneyHost } from './mock-buzz.js';
+import { DEFAULT_CHECKPOINT } from './models.js';
 import { palette, parseHex, type Palette } from './palette.js';
 
 // The width-adaptive layout, tested at its actual widths.
@@ -115,7 +116,7 @@ describe('width-adaptive layout', () => {
     render(<App />);
 
     expect(await screen.findByTestId('pm-change-model')).toBeInTheDocument();
-    expect(screen.getByTestId('pm-model-label')).toHaveTextContent(/SD XL 1\.0/);
+    expect(screen.getByTestId('pm-model-label')).toHaveTextContent(DEFAULT_CHECKPOINT.label);
   });
 });
 

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 
 import {
   useAppStorage,
+  useAppWorkflows,
   useBlockBreakpoint,
   useBlockContext,
   useBlockResize,
@@ -13,6 +14,7 @@ import {
   useRequestConsent,
   useRequestSignIn,
   useResourcePicker,
+  useSaveImage,
   useSharedStorage,
 } from '@civitai/blocks-react';
 import {
@@ -38,30 +40,34 @@ import {
   accountLabel,
   aggregateEstimate,
   aggregateSpend,
-  buildWorkflowBody,
   clampQuantity,
-  composePrompt,
+  clearPromptEdit,
+  effectivePrompt,
   failedRuns,
   formatCost,
   hasBudgetedScope,
-  hasSubmittablePrompt,
   imageUrlsFrom,
   initRuns,
   isBusyPhase,
   isPartialFailure,
+  isPromptEdited,
   overallPhase,
   patchRun,
   phaseForError,
   phaseForSnapshot,
   pickDefaultAccount,
+  promptFieldValue,
   promptWasTruncated,
+  promptsReadyToSubmit,
   runCandidates,
+  setPromptEdit,
   spentAccountLabel,
   submitErrorReason,
   isTerminalStatus,
   type AccountChoice,
   type FormatRun,
   type GenPhase,
+  type PromptEdits,
   type SourceImage,
 } from './generation.js';
 import {
@@ -92,6 +98,7 @@ import {
   MAX_LORAS,
   addLora,
   checkpointFromPick,
+  familyHasLoras,
   loraFromPick,
   removeLora,
   setLoraWeight,
@@ -109,6 +116,23 @@ import {
   thumbnailFileName,
   type TextOverlay,
 } from './editor.js';
+import {
+  HISTORY_PAGE_SIZE,
+  HISTORY_PREFIX,
+  batchBodies,
+  batchStatusColor,
+  batchStatusLabel,
+  candidateFileName,
+  historyKey,
+  joinHistory,
+  oldestWorkflowTime,
+  orphanedKeys,
+  parseRecord,
+  recordFits,
+  type GenerationForm,
+  type GenerationRecord,
+  type HistoryEntry,
+} from './history.js';
 import { layoutForTier, type BlockLayout } from './layout.js';
 import { BUZZ_TYPE_COLOR, paletteFor, parseHex, type Palette } from './palette.js';
 import { useUltrawide } from './useUltrawide.js';
@@ -210,8 +234,33 @@ export function App() {
   const storage = useAppStorage();
   // The app-wide, votable, MODERATED board of published formats.
   const shared = useSharedStorage();
+  // 🔴 THE ONLY WAY A PAID OUTPUT CAN BE SAVED. This block's iframe is sandboxed
+  // WITHOUT `allow-downloads` and cannot ask for it (an unverified block is
+  // refused the token at submit — see manifest.test.ts), so an `<a download>`
+  // click is silently inert. `saveImage` asks the HOST to fetch the blob in its
+  // unsandboxed top frame and trigger the browser's own Save As. It works for a
+  // url on the civitai image/blob CDN, which the orchestration URLs of our own
+  // candidates are — and NOT for the editor's composited export, which is a
+  // local canvas `blob:` the host's https-only allowlist explicitly drops.
+  const { saveImage } = useSaveImage();
+  // THE LIVE HALF OF HISTORY. Token-bound + tag-forced host-side: this app's own
+  // generations for this viewer, newest-first. It carries status/images/cost and
+  // a `cancel`, and DELIBERATELY carries no prompts or params — which is why the
+  // other half lives in `useAppStorage`. See history.ts for the join.
+  const {
+    workflows,
+    loading: historyLoading,
+    error: historyError,
+    refetch: refetchWorkflows,
+    cancel: cancelWorkflow,
+  } = useAppWorkflows({ limit: HISTORY_PAGE_SIZE });
 
   const anon = ready && !viewer;
+  // The viewer's identity as a PRIMITIVE. `useBlockContext()` can hand back a
+  // fresh `viewer` OBJECT on a render where nothing about the viewer changed, so
+  // anything keying a callback or an effect on "which viewer is this" must read
+  // this — see `loadHistory` for what depending on the object actually cost.
+  const viewerId = viewer?.id ?? null;
   const granted = hasBudgetedScope(token.scopes);
 
   const rootRef = useRef<HTMLDivElement>(null);
@@ -260,6 +309,18 @@ export function App() {
 
   const [mode, setMode] = useState<GenMode>('generate');
   const [prompt, setPrompt] = useState('');
+  /**
+   * Per-format overrides of the composed prompt (see `generation.ts`'s
+   * PromptEdits). Keyed by format id, session-only, never persisted.
+   *
+   * 🔴 DELIBERATELY NOT PRUNED ON DESELECT, and that is the persistence answer:
+   * toggling a format's chip off and on again brings the row back with the
+   * viewer's text intact. A chip is a one-click, easily mis-hit control; losing
+   * a paragraph to a mis-click is a worse failure than carrying a few strings
+   * nothing currently reads. `effectivePrompt` only ever looks up the formats
+   * that are SELECTED, so a stale entry for a deleted format is inert.
+   */
+  const [promptEdits, setPromptEdits] = useState<PromptEdits>({});
   const [touched, setTouched] = useState(false);
   const [account, setAccount] = useState<AccountChoice>('auto');
   const [quantity, setQuantity] = useState(1);
@@ -285,6 +346,26 @@ export function App() {
     'loading',
   );
   const [storageNote, setStorageNote] = useState<string | null>(null);
+
+  // --- Thumbnail history ---
+  // The STORED half: batch records read back from useAppStorage, newest-first
+  // (the key encodes an inverted timestamp precisely so the listing IS that
+  // order — see history.ts historyKey).
+  const [historyRecords, setHistoryRecords] = useState<
+    Array<{ key: string; record: GenerationRecord }>
+  >([]);
+  // 🔴 A FIRST-CLASS STATE, NOT A SWALLOWED REJECTION. The apps:storage scopes
+  // have never been consented in production — history is the first surface to
+  // touch them — so a scope-denied read/write is a REALISTIC first run, not an
+  // edge. It gets its own state and its own message rather than an empty panel
+  // that looks like "you have no history".
+  const [historyState, setHistoryState] = useState<
+    'loading' | 'ready' | 'anon' | 'denied' | 'error'
+  >('loading');
+  const [historyNote, setHistoryNote] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyBusyKey, setHistoryBusyKey] = useState<string | null>(null);
+  const [saveNote, setSaveNote] = useState<string | null>(null);
 
   // --- The published board ---
   const [boardOpen, setBoardOpen] = useState(false);
@@ -342,6 +423,30 @@ export function App() {
   const pollRef = useRef(poll);
   pollRef.current = poll;
 
+  /**
+   * 🔴 THE STORAGE HANDLE, HELD IN A REF SO NOTHING DEPENDS ON ITS IDENTITY.
+   *
+   * `useAppStorage()` documents itself as "stable across renders", and the
+   * shipped hook is. That promise is NOT a property of the seam, only of one
+   * implementation of it: a mocked host (`useAppStorage: () => ({ … })`, which is
+   * how three suites here wire it) hands back a FRESH object on every render, and
+   * so could any future host build.
+   *
+   * An effect that lists `storage` in its dependency array then re-runs on every
+   * render. If that effect sets state — which a load effect must, to show
+   * "loading" — each run schedules a render, which changes the identity again.
+   * The result is not a slow render or a warning: it is an unbounded async spin
+   * that allocates on every cycle, and it took a test worker to an
+   * out-of-memory KILL rather than to a failed assertion. It was already latent
+   * in the formats loader below; adding a second storage-backed effect (history)
+   * doubled the per-cycle allocation and made it fatal.
+   *
+   * A ref is read at CALL time and never appears in a dependency array, so the
+   * whole class is gone regardless of what the host hands back.
+   */
+  const storageRef = useRef(storage);
+  storageRef.current = storage;
+
   useEffect(() => {
     return () => {
       if (pollCancelRef.current) pollCancelRef.current.cancelled = true;
@@ -370,7 +475,11 @@ export function App() {
   // `disabled` attribute would have produced an ENABLED button whose handler
   // still returned immediately: a click that reports success and spends nothing,
   // which is indistinguishable from a swallowed event. All three now read this.
-  const submittable = hasSubmittablePrompt(prompt, selectedFormats);
+  //
+  // It is EDIT-AWARE: `promptsReadyToSubmit` also refuses a click in which any
+  // selected row has been edited to blank, which would otherwise submit an empty
+  // `params.prompt` for that format and charge for it.
+  const submittable = promptsReadyToSubmit(prompt, selectedFormats, promptEdits);
 
   // Refetch the balance after a successful generation debits it.
   useEffect(() => {
@@ -391,7 +500,7 @@ export function App() {
     }
     let alive = true;
     setStorageState('loading');
-    storage
+    storageRef.current
       .get(CUSTOM_FORMATS_KEY)
       .then((raw) => {
         if (!alive) return;
@@ -407,7 +516,11 @@ export function App() {
     return () => {
       alive = false;
     };
-  }, [ready, viewer, storage]);
+    // 🔴 `storage` is deliberately ABSENT from these deps and read through
+    // `storageRef` instead — see the ref's own comment. Keyed on `viewerId` (a
+    // primitive) rather than the `viewer` object for the same reason.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, viewerId]);
 
   // Keep the selection pointing only at formats that still exist, and keep the
   // at-least-one invariant, after a delete / withdraw / failed load.
@@ -462,6 +575,30 @@ export function App() {
     canvas.height = YT_H;
     drawThumbnail(ctx, editorImage, overlay);
   }, [editorImage, overlay]);
+
+  /**
+   * Classify a storage rejection. `useAppStorage` rejects an anonymous write and
+   * a scope-denied call with the host's free-text error, and those are DIFFERENT
+   * problems with different fixes — "sign in" versus "grant this app storage
+   * access" — so they must not collapse into one "couldn't save".
+   *
+   * 🔴 THIS IS A SUBSTRING HEURISTIC OVER FREE TEXT and it is labelled as one.
+   * There is no structured error code on this bridge, so the honest fallback is
+   * `'error'` — a generic, still-actionable message — rather than guessing.
+   * Defined HERE, above `runGeneration`, because that callback lists it as a
+   * dependency: a `const` referenced in a dependency array declared later in the
+   * body is a TDZ ReferenceError at first render, not a lint nit.
+   */
+  const classifyStorageError = useCallback((err: unknown): 'anon' | 'denied' | 'error' => {
+    const msg = (err instanceof Error ? err.message : String(err ?? '')).toLowerCase();
+    if (msg.includes('anon') || msg.includes('sign in') || msg.includes('not signed in')) {
+      return 'anon';
+    }
+    if (msg.includes('scope') || msg.includes('forbidden') || msg.includes('denied')) {
+      return 'denied';
+    }
+    return 'error';
+  }, []);
 
   // The server rejected the picked pool for this app's content-rating domain.
   // Surface a friendly note and fall back to Auto so the retry just works.
@@ -618,11 +755,37 @@ export function App() {
     // uploaded sourceImage (img2img); generate does not. The FORMAT's difference
     // is the composed prompt — that is what makes these N requests rather than
     // one with a bigger quantity.
-    const bodyFor = (fmt: Format, acct: AccountChoice) =>
-      buildWorkflowBody(composePrompt(prompt, fmt.suffix), checkpoint, loras, acct, {
-        quantity,
-        sourceImage: mode === 'remix' ? sourceImage : null,
-      });
+    //
+    // 🔴 `effectivePrompt` IS THE SAME FUNCTION THE EDITABLE PREVIEW READS. It
+    // returns the viewer's edited text for a row they took over, and
+    // `composePrompt` byte-for-byte for a row they did not. There is no second
+    // path by which a prompt can reach this body, which is what stops the field
+    // and the wire from disagreeing about the string being paid for.
+    //
+    // 🔴 ONE RULE, ONE PLACE — AND IT IS WHAT MAKES RESUME EXACT. The form
+    // snapshot below is not a parallel description of the click for history's
+    // benefit; it IS the thing the bodies are built from. `bodyFor` asks
+    // `batchBodies` for one format's body, the history record stores the same
+    // snapshot, and a resume rebuilds bodies from that stored snapshot with the
+    // same function. A second body-builder written "for history" is precisely
+    // how a resume ends up reproducing something the original never sent.
+    const formSnapshot = (fmts: readonly Format[], acct: AccountChoice): GenerationForm => ({
+      mode,
+      prompt,
+      promptEdits: { ...promptEdits },
+      formats: fmts.map((f) => ({
+        id: f.id,
+        label: f.label,
+        suffix: f.suffix,
+        prompt: effectivePrompt(prompt, f, promptEdits),
+      })),
+      checkpoint,
+      loras: [...loras],
+      quantity: clampQuantity(quantity),
+      account: acct,
+      sourceImage: mode === 'remix' ? sourceImage : null,
+    });
+    const bodyFor = (fmt: Format, acct: AccountChoice) => batchBodies(formSnapshot([fmt], acct))[0];
 
     setRuns(initRuns(formats).map((r) => ({ ...r, phase: 'estimating' as GenPhase })));
 
@@ -679,6 +842,13 @@ export function App() {
       cur.map((r) => (r.phase === 'estimating' ? { ...r, phase: 'submitting' as GenPhase } : r)),
     );
 
+    // 🔴 THE GROUPING HAS TO BE COLLECTED HERE. The host drops `tags` from the
+    // AppWorkflow projection, so nothing on the live side ties one click's N
+    // workflows together — if we do not write down which ids this click
+    // produced, a 3-format run reappears in history as three unrelated rows at
+    // three unrelated prices. See history.ts's header.
+    const submittedIds: string[] = [];
+
     await Promise.all(
       viable.map(async (r) => {
         const fmt = formats.find((f) => f.id === r.formatId);
@@ -697,6 +867,7 @@ export function App() {
           return;
         }
         if (tok.cancelled) return;
+        if (snap.workflowId) submittedIds.push(snap.workflowId);
         // A host can return an instant terminal snapshot (cached / instant-fail).
         applySnapshotToRun(fmt.id, snap);
         if (!isTerminalStatus(snap.status) && snap.workflowId) {
@@ -704,9 +875,60 @@ export function App() {
         }
       }),
     );
+
+    // ---- Write the history record ----
+    // Only once something actually submitted: a record with no workflowIds is a
+    // row nothing can ever join to, and `orphanedKeys` would delete it on the
+    // next render anyway.
+    if (submittedIds.length > 0) {
+      const createdAt = Date.now();
+      const record: GenerationRecord = {
+        v: 1,
+        batchId: `${createdAt.toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        createdAt,
+        workflowIds: submittedIds,
+        // THE SAME SNAPSHOT the bodies above were built from, under the pool
+        // ACTUALLY submitted with (`acct`, not `account` — which may still hold
+        // the picker's pre-default value). Only the formats that actually
+        // submitted are recorded, so resuming a partially-failed batch reproduces
+        // what ran, not what was attempted.
+        form: formSnapshot(
+          formats.filter((f) => viable.some((r) => r.formatId === f.id)),
+          acct,
+        ),
+      };
+      const key = historyKey(createdAt, record.batchId);
+      if (!recordFits(record)) {
+        // Refused BEFORE the round trip, so the message names the cause rather
+        // than surfacing an opaque PAYLOAD_TOO_LARGE. The generation itself is
+        // unaffected — only its resume record is lost.
+        setHistoryNote('This run was too large to save to history; it still generated normally.');
+      } else {
+        try {
+          await storageRef.current.set(key, record);
+          setHistoryRecords((cur) => [{ key, record }, ...cur]);
+          setHistoryState('ready');
+        } catch (err) {
+          // A storage failure must NEVER look like a generation failure — the
+          // Buzz is already spent and the images are already on screen.
+          const kind = classifyStorageError(err);
+          setHistoryState(kind);
+          setHistoryNote(
+            kind === 'denied'
+              ? "This app doesn't have storage access yet, so this run wasn't saved to history. Your images are above."
+              : kind === 'anon'
+                ? "Sign in to keep a history of your generations. This run's images are above."
+                : "Couldn't save this run to history. Your images are above.",
+          );
+        }
+      }
+      // The live half needs re-reading before the new workflows can be joined.
+      refetchWorkflows();
+    }
   }, [
     mode,
     prompt,
+    promptEdits,
     checkpoint,
     loras,
     account,
@@ -720,6 +942,8 @@ export function App() {
     applySnapshotToRun,
     runPollLoop,
     handleAccountRejected,
+    refetchWorkflows,
+    classifyStorageError,
   ]);
 
   // The actual gate: sign-in -> consent -> generate. Wired straight to the
@@ -794,7 +1018,7 @@ export function App() {
       setCustomFormats(next);
       setStorageNote(null);
       try {
-        await storage.set(CUSTOM_FORMATS_KEY, serializeCustomFormats(next));
+        await storageRef.current.set(CUSTOM_FORMATS_KEY, serializeCustomFormats(next));
         return true;
       } catch (err) {
         setCustomFormats(previous);
@@ -806,7 +1030,7 @@ export function App() {
         return false;
       }
     },
-    [storage],
+    [],
   );
 
   const onToggleFormat = useCallback((id: string) => {
@@ -967,6 +1191,199 @@ export function App() {
     [shared],
   );
 
+  // --- Thumbnail history: the stored half, the join, and the prune ---
+
+  /**
+   * Load the stored half of history: one `list()` for the keys (cheap — keys and
+   * `updatedAt` only), then a `get()` per key for the values.
+   *
+   * The listing is already newest-first because the key encodes an INVERTED
+   * timestamp; there is no sort option on `list()` and there does not need to be.
+   * Rows that don't parse are dropped rather than rendered half-formed.
+   */
+  const loadHistory = useCallback(async () => {
+    if (viewerId == null) {
+      setHistoryState('anon');
+      setHistoryRecords([]);
+      return;
+    }
+    setHistoryState('loading');
+    try {
+      const store = storageRef.current;
+      const { keys } = await store.list({ prefix: HISTORY_PREFIX, limit: HISTORY_PAGE_SIZE });
+      const loaded = await Promise.all(
+        keys.map(async (k) => {
+          try {
+            return { key: k.key, record: parseRecord(await store.get(k.key)) };
+          } catch {
+            return { key: k.key, record: null };
+          }
+        }),
+      );
+      setHistoryRecords(
+        loaded.filter((e): e is { key: string; record: GenerationRecord } => e.record !== null),
+      );
+      setHistoryState('ready');
+    } catch (err) {
+      setHistoryState(classifyStorageError(err));
+    }
+    // \U0001f534 KEYED ON THE VIEWER *ID*, A PRIMITIVE \u2014 NOT ON THE `viewer`
+    // OBJECT. `useBlockContext()` hands back a fresh object on some renders, so
+    // depending on it makes this callback change identity every render, which
+    // makes the mount effect below re-run every render, which calls
+    // `setHistoryState('loading')`, which renders again. That is not a slow
+    // render, it is an unbounded loop: it took the e2e suite's worker to an
+    // out-of-memory kill rather than to a failed assertion. `storage` is
+    // documented stable across renders and `classifyStorageError` is a
+    // dependency-free useCallback, so with a primitive here the whole chain is
+    // stable and the effect runs on mount and on a real viewer change only.
+  }, [viewerId, classifyStorageError]);
+
+  useEffect(() => {
+    if (!ready) return;
+    void loadHistory();
+  }, [ready, loadHistory]);
+
+  /**
+   * THE JOIN (history.ts `joinHistory`): stored records × the live workflow page.
+   * Recomputed on render rather than stored, so the two halves can never be left
+   * disagreeing by a missed update.
+   */
+  const historyEntries = joinHistory(historyRecords, workflows);
+
+  /**
+   * Prune storage rows no live workflow matches, so the halves cannot drift.
+   *
+   * 🔴 BOUNDED BY THE OLDEST WORKFLOW WE ACTUALLY FETCHED — see
+   * `orphanedKeys`. Without that bound this deletes every record past the first
+   * page on the first render. A failed delete is deliberately silent: it is
+   * hygiene, not a user-facing operation, and a noisy toast about it would be
+   * worse than the stale row.
+   */
+  useEffect(() => {
+    if (historyState !== 'ready' || historyLoading || workflows.length === 0) return;
+    const stale = orphanedKeys(historyRecords, workflows, oldestWorkflowTime(workflows));
+    if (stale.length === 0) return;
+    let alive = true;
+    void Promise.all(
+      stale.map((k) => storageRef.current.delete(k).catch(() => undefined)),
+    ).then(() => {
+      if (!alive) return;
+      setHistoryRecords((cur) => cur.filter((e) => !stale.includes(e.key)));
+    });
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historyState, historyLoading, workflows, historyRecords]);
+
+  /**
+   * 🔴 SAVE A RAW CANDIDATE — the real download, and the ONLY one this block has.
+   * The host fetches the blob in its unsandboxed top frame; the block never
+   * handles the bytes. Rejects on a disallowed origin / withheld image / oversize
+   * blob, and that rejection is SHOWN: a save that silently did nothing is the
+   * exact failure #15 shipped an honest right-click note for.
+   */
+  const onSaveCandidate = useCallback(
+    async (url: string, index: number, label?: string) => {
+      setSaveNote(null);
+      try {
+        await saveImage({ url, filename: candidateFileName(index, label) });
+        setSaveNote('Saved — check your downloads.');
+      } catch (err) {
+        setSaveNote(
+          err instanceof Error && err.message
+            ? `Couldn't save that image: ${err.message}`
+            : "Couldn't save that image.",
+        );
+      }
+    },
+    [saveImage],
+  );
+
+  /**
+   * RESUME: refill the form from a stored record and STOP.
+   *
+   * 🔴 IT DOES NOT SUBMIT, AND THAT IS A DELIBERATE PRODUCT DECISION, not an
+   * omission. At 209 Buzz an image, a one-click re-run on a money control is
+   * exactly how Buzz gets spent by accident. Resume leaves a filled form with the
+   * cost preview showing and the viewer's finger on the same Generate button
+   * every other generation goes through.
+   *
+   * It restores EVERYTHING the record carries — prompt, per-format edited
+   * prompts, selected formats, checkpoint, LoRAs, quantity, spend-from, and the
+   * remix source — and it works for an `unavailable` entry too, because the form
+   * half is OURS and does not expire with the images.
+   */
+  const onResume = useCallback(
+    (entry: HistoryEntry) => {
+      const f = entry.record.form;
+      if (pollCancelRef.current) pollCancelRef.current.cancelled = true;
+      consentPendingRef.current = false;
+      setRuns([]);
+      setError(null);
+      setEditing(null);
+      setMode(f.mode);
+      setPrompt(f.prompt);
+      setPromptEdits({ ...f.promptEdits });
+      setCheckpoint(f.checkpoint);
+      setLoras([...f.loras]);
+      setQuantity(clampQuantity(f.quantity));
+      setSourceImage(f.sourceImage ?? null);
+      // A restored pool is the viewer's own past choice, so it must not be
+      // silently reassigned by the blue -> green -> yellow default on the next
+      // estimate — the same rule as a manual pick.
+      accountTouchedRef.current = true;
+      setAccount(f.account);
+      // Formats the viewer no longer has (a deleted custom one, a withdrawn
+      // published one) are carried back in as session formats so the selection
+      // resolves and the prompts recompose exactly as they did.
+      setAddedPublished((cur) => {
+        const have = new Set([
+          ...cur.map((x) => x.id),
+          ...customFormats.map((x) => x.id),
+          ...allFormats([], []).map((x) => x.id),
+        ]);
+        const missing = f.formats
+          .filter((x) => !have.has(x.id))
+          .map((x) => ({
+            id: x.id,
+            label: x.label,
+            suffix: x.suffix,
+            sharedKey: `resumed:${x.id}`,
+            votes: 0,
+            viewerVoted: false,
+          })) as PublishedFormat[];
+        return missing.length === 0 ? cur : [...cur, ...missing];
+      });
+      setSelectedFormatIds(f.formats.map((x) => x.id));
+      setHistoryOpen(false);
+      setHistoryNote('Form restored. Nothing was submitted — press Generate when you are ready.');
+    },
+    [customFormats],
+  );
+
+  /** Cancel one still-running workflow. A real money control at this price. */
+  const onCancelWorkflow = useCallback(
+    async (entry: HistoryEntry) => {
+      setHistoryBusyKey(entry.key);
+      setHistoryNote(null);
+      try {
+        await Promise.all(entry.cancellableIds.map((id) => cancelWorkflow(id)));
+        setHistoryNote('Cancel requested.');
+      } catch (err) {
+        setHistoryNote(
+          err instanceof Error && err.message
+            ? `Couldn't cancel: ${err.message}`
+            : "Couldn't cancel that generation.",
+        );
+      } finally {
+        setHistoryBusyKey(null);
+      }
+    },
+    [cancelWorkflow],
+  );
+
   // --- Host pickers (checkpoint + LoRA + source upload) ---
   //
   // All three open the HOST's native modal via the SDK hooks. The block never
@@ -1007,6 +1424,13 @@ export function App() {
   // Open the host's resource picker filtered to LoRAs, in the checkpoint's
   // base-model family. Append the pick (deduped + MAX_LORAS-capped via addLora).
   // A dismissal (`null`) is a no-op.
+  //
+  // 🔴 THE FAMILY FILTER STAYS — a LoRA really must match its checkpoint's base
+  // model, and the server enforces that before any spend. The consequence of the
+  // OpenAI default is therefore NOT "loosen the filter" but "there are no LoRAs
+  // in that family", which `familyHasLoras` reports and the selector explains
+  // rather than offering a control that can only produce a rejection. See
+  // models.ts LORA_FREE_BASE_MODELS for the two measured controls behind it.
   const onAddLora = useCallback(async () => {
     setPickerBusy(true);
     try {
@@ -1264,10 +1688,24 @@ export function App() {
                             .then((res) => {
                               downloadBlob(res.blob, thumbnailFileName(downloadCount + 1));
                               setDownloadCount((n) => n + 1);
+                              // 🔴 THIS PATH CANNOT SEE WHETHER A FILE ARRIVED,
+                              // and on civitai.com it almost certainly did not.
+                              // `downloadBlob` fires an <a download> click and
+                              // returns; a sandboxed iframe without
+                              // `allow-downloads` drops it in silence, and this
+                              // block cannot request that token (an unverified
+                              // block is refused it at submit — see
+                              // `manifest.test.ts`). So the note reports only
+                              // what was MEASURED — the encode, its size, its
+                              // quality — and names the fallback that does not
+                              // depend on the sandbox at all: the browser's own
+                              // context menu on the canvas, which is user-agent
+                              // UI rather than a page-initiated download. It
+                              // must not say "Saved".
                               setExportNote(
                                 res.oversized
-                                  ? `Saved, but ${Math.round(res.bytes / 1024)} KB is over YouTube's 2 MB cap — trim the image.`
-                                  : `Saved · ${Math.round(res.bytes / 1024)} KB · quality ${Math.round(res.quality * 100)}%`,
+                                  ? `Exported · ${Math.round(res.bytes / 1024)} KB — over YouTube's 2 MB cap even at the lowest quality; trim the image. If no file appeared, right-click the preview above and choose "Save image as…".`
+                                  : `Exported · ${Math.round(res.bytes / 1024)} KB · quality ${Math.round(res.quality * 100)}%. If no file appeared, right-click the preview above and choose "Save image as…".`,
                               );
                             })
                             .catch(() => setExportNote('Export failed — try again.'));
@@ -1369,14 +1807,28 @@ export function App() {
     </>
   );
 
-  // 🔴 The description deliberately does NOT claim a generation size. Measured
-  // 2026-09-28: the platform IGNORES params.width/height — 1280x720 and 1344x768
-  // requests, on SD XL 1.0 and on FLUX.1 [dev], all came back 1216x832. The old
-  // string "It is generated at 1280×720 (16:9)" was therefore FALSE. What IS true
-  // is the export: the canvas editor cover-crops to exactly 1280x720 on
-  // download — which the hero states and the download button repeats, so the crop
-  // no longer needs restating here (phase 2: delete copy that explains what the
-  // UI already shows).
+  // 🔴 The description deliberately does NOT claim a generation size, and the
+  // reason has CHANGED SHAPE — read this before restoring one.
+  //
+  // Measured 2026-09-28: SD XL 1.0 and FLUX.1 [dev] IGNORE params.width/height —
+  // 1280x720 and 1344x768 both came back 1216x832 (~3:2). The old string "It is
+  // generated at 1280×720 (16:9)" was FALSE on those.
+  //
+  // Measured 2026-09-30 on the NEW default (ChatGPT Images / baseModel OpenAI),
+  // through this block's own route: a 1280x720 request came back 1536x864 —
+  // exactly 16:9. So on OpenAI the ASPECT is honoured and only the exact PIXELS
+  // are not; the free estimate moves 209 -> 287 when the requested shape goes
+  // 16:9 -> 1:1, which is the control proving the fields are read rather than
+  // dropped (see models.ts DEFAULT_CHECKPOINT for both arms).
+  //
+  // Net: "1280×720" is STILL not a true claim about a generation on ANY of them,
+  // because nothing delivers those literal pixels — so the copy stays out. What
+  // IS true on every checkpoint is the EXPORT: the canvas editor cover-crops to
+  // exactly 1280x720 on download, which the hero states and the download button
+  // repeats. That crop wording is also still honest on the new default even
+  // though a 1536x864 source is already 16:9 and therefore loses nothing to the
+  // crop: "cover-crop to 1280x720" describes what the canvas does, and the user
+  // can still pick a 3:2 SD-family checkpoint where it genuinely crops.
   const promptBlock = (
     <Textarea
       label="Prompt"
@@ -1449,13 +1901,21 @@ export function App() {
         minCardPx={layout.formatMinCardPx}
       />
 
-      {/* 🔴 WHAT WILL ACTUALLY BE SENT. A format is a prompt SUFFIX composed at
-          body-build time, deliberately never typed into the prompt box — which
-          is what lets N formats be N different prompts. The cost of that design
-          was that selecting one changed nothing visible. This is the feedback,
-          and it is the REAL string: `composePrompt` is the same function the
-          submit body calls, so the preview cannot drift from the money path. */}
-      <ComposedPromptPreview prompt={prompt} formats={selectedFormats} pal={pal} />
+      {/* 🔴 WHAT WILL ACTUALLY BE SENT, AND NOW ALSO WHERE YOU CHANGE IT. A
+          format is a prompt SUFFIX composed at body-build time, deliberately
+          never typed into the prompt box — which is what lets N formats be N
+          different prompts. These boxes hold the REAL strings: `effectivePrompt`
+          is the same function `bodyFor` calls, so the field cannot drift from
+          the money path, and an edit stays scoped to its own workflow. */}
+      <ComposedPromptPreview
+        prompt={prompt}
+        formats={selectedFormats}
+        edits={promptEdits}
+        disabled={busy}
+        onEdit={(id, text) => setPromptEdits((cur) => setPromptEdit(cur, id, text))}
+        onReset={(id) => setPromptEdits((cur) => clearPromptEdit(cur, id))}
+        pal={pal}
+      />
 
       {/* 🔴 The anonymous path, said out loud. `useAppStorage` resolves null on
           read and REJECTS every write for an anonymous viewer, so a "New format"
@@ -1712,20 +2172,102 @@ export function App() {
                     {c.formatLabel}
                   </span>
                 </div>
-                <Button
-                  size="sm"
-                  variant="light"
-                  onClick={() => setEditing(c.url)}
-                  data-testid={`pm-edit-${i}`}
-                >
-                  Edit &amp; download
-                </Button>
+                {/* 🔴 TWO BUTTONS THAT DO GENUINELY DIFFERENT THINGS, LABELLED
+                    SO. "Save image" is the RAW candidate going through the
+                    host's SAVE_IMAGE bridge — a real file, every time. "Add
+                    text" opens the canvas editor, whose export is a local
+                    `blob:` the same bridge refuses (https-only allowlist), so
+                    that path still ends in the honest right-click note. Two
+                    buttons that looked alike and behaved differently is exactly
+                    what #15 was cleaning up; this keeps them distinguishable. */}
+                <Group gap={6} wrap={false}>
+                  <Button
+                    size="sm"
+                    onClick={() => void onSaveCandidate(c.url, i + 1, c.formatLabel)}
+                    data-testid={`pm-save-${i}`}
+                  >
+                    Save image
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="light"
+                    onClick={() => setEditing(c.url)}
+                    data-testid={`pm-edit-${i}`}
+                  >
+                    Add text
+                  </Button>
+                </Group>
               </div>
             ))}
           </div>
+          {saveNote && (
+            <span style={fieldDescStyle(pal)} data-testid="pm-save-note">
+              {saveNote}
+            </span>
+          )}
         </Stack>
       )}
     </>
+  );
+
+  // THUMBNAIL HISTORY — past generations, their realized cost, a real save, and
+  // Resume. Collapsed by default: it is a returning-visit surface, and expanding
+  // it by default would push the generate form down for the common first run.
+  const historyBlock = (
+    <div style={fieldStyle} data-testid="yt-history">
+      <Group justify="space-between" align="center" gap={8}>
+        <span style={fieldLabelStyle}>
+          History{' '}
+          <Badge color="info" variant="light">
+            {historyEntries.length}
+          </Badge>
+        </span>
+        <Group gap={6}>
+          <Button
+            variant="subtle"
+            size="sm"
+            onClick={() => {
+              setHistoryOpen((open) => {
+                if (!open) {
+                  void loadHistory();
+                  refetchWorkflows();
+                }
+                return !open;
+              });
+            }}
+            data-testid="yt-history-toggle"
+          >
+            {historyOpen ? 'Hide' : 'Show'}
+          </Button>
+        </Group>
+      </Group>
+
+      {historyNote && (
+        <span style={fieldDescStyle(pal)} data-testid="yt-history-note">
+          {historyNote}
+        </span>
+      )}
+
+      {historyOpen && (
+        <HistoryPanel
+          entries={historyEntries}
+          state={historyState}
+          loading={historyLoading}
+          liveError={historyError}
+          busyKey={historyBusyKey}
+          onResume={onResume}
+          onCancel={(e) => void onCancelWorkflow(e)}
+          onSave={(url, i, label) => void onSaveCandidate(url, i, label)}
+          onSignIn={() => requestSignIn()}
+          onRefresh={() => {
+            void loadHistory();
+            refetchWorkflows();
+          }}
+          pal={pal}
+          layout={layout}
+        />
+      )}
+    </div>
   );
 
   // The inputs, in two halves. 🔴 SPLIT RATHER THAN ONE `controls` CONSTANT
@@ -1746,6 +2288,8 @@ export function App() {
       <LoraSelector
         selected={loras}
         capReached={loraCapReached}
+        familyHasLoras={familyHasLoras(checkpoint.baseModel)}
+        baseModel={checkpoint.baseModel}
         pickerBusy={pickerBusy}
         onAdd={() => void onAddLora()}
         onRemove={onRemoveLora}
@@ -1803,6 +2347,7 @@ export function App() {
                 <Stack gap={16}>
                   {resultsBlock}
                   {formatsBlock}
+                  {historyBlock}
                 </Stack>
               </main>
             </div>
@@ -1825,10 +2370,205 @@ export function App() {
             {inputsBeforeFormats}
             {formatsBlock}
             {inputsAfterFormats}
+            {historyBlock}
           </Stack>
         </Card>
       </div>
     </div>
+  );
+}
+
+/**
+ * THUMBNAIL HISTORY — the rendered join.
+ *
+ * 🔴 EVERY NON-READY STATE IS EXPLICIT, because each has a DIFFERENT fix and
+ * three of them would otherwise render as the same empty grid:
+ *
+ *   'anon'    `useAppWorkflows` ERRORS for an anonymous viewer and `useAppStorage`
+ *             REJECTS their writes, so there is no history and there never could
+ *             be one. That is a sign-in prompt, not an empty list — an
+ *             empty-looking grid here reads as "you have no generations", which
+ *             is a false statement about someone who may have plenty.
+ *   'denied'  The apps:storage scopes are consent-gated and have NEVER been
+ *             consented in production — this feature is the first thing to touch
+ *             them — so "the app was not granted storage" is a realistic FIRST
+ *             RUN, not an edge case. It gets its own message naming the grant.
+ *   'error'   Everything else, still actionable (a retry).
+ *
+ * An `unavailable` ROW is none of those: it is a real past generation whose
+ * images have aged out of the orchestrator. It STAYS VISIBLE, says so plainly,
+ * and Resume still works — the form half is ours and does not expire.
+ */
+function HistoryPanel({
+  entries,
+  state,
+  loading,
+  liveError,
+  busyKey,
+  onResume,
+  onCancel,
+  onSave,
+  onSignIn,
+  onRefresh,
+  pal,
+  layout,
+}: {
+  entries: readonly HistoryEntry[];
+  state: 'loading' | 'ready' | 'anon' | 'denied' | 'error';
+  loading: boolean;
+  liveError: Error | null;
+  busyKey: string | null;
+  onResume: (entry: HistoryEntry) => void;
+  onCancel: (entry: HistoryEntry) => void;
+  onSave: (url: string, index: number, label?: string) => void;
+  onSignIn: () => void;
+  onRefresh: () => void;
+  pal: Palette;
+  layout: BlockLayout;
+}) {
+  if (state === 'anon') {
+    return (
+      <Stack gap={8} data-testid="yt-history-anon">
+        <span style={fieldDescStyle(pal)}>
+          Sign in to see your past generations, save their images and reuse their settings.
+        </span>
+        <Button variant="light" size="sm" onClick={onSignIn} data-testid="yt-history-signin">
+          Sign in
+        </Button>
+      </Stack>
+    );
+  }
+
+  if (state === 'denied') {
+    return (
+      <Alert color="warning" title="History needs storage access" data-testid="yt-history-denied">
+        This app hasn&apos;t been granted storage access, so it can&apos;t keep a record of your
+        generations. Grant it from the Civitai permissions dialog and reopen this panel.
+      </Alert>
+    );
+  }
+
+  if (state === 'error') {
+    return (
+      <Stack gap={8}>
+        <Alert color="warning" title="Couldn't load your history" data-testid="yt-history-error">
+          Your generations still ran and were still charged — this is only the record of them.
+        </Alert>
+        <Button variant="light" size="sm" onClick={onRefresh}>
+          Try again
+        </Button>
+      </Stack>
+    );
+  }
+
+  if (state === 'loading' || loading) {
+    return (
+      <span style={fieldDescStyle(pal)} data-testid="yt-history-loading">
+        Loading your generations…
+      </span>
+    );
+  }
+
+  return (
+    <Stack gap={12}>
+      {/* The LIVE half failing is reported SEPARATELY from the stored half. The
+          rows below are still rendered from storage, and Resume still works on
+          every one of them — saying "history is broken" would be false. */}
+      {liveError && (
+        <Alert color="warning" title="Couldn't reach the generation queue" data-testid="yt-history-live-error">
+          Statuses, images and costs below may be missing or out of date. Resume still works.
+        </Alert>
+      )}
+
+      {entries.length === 0 ? (
+        <span style={fieldDescStyle(pal)} data-testid="yt-history-empty">
+          Nothing here yet. Your generations will be listed here once you run one.
+        </span>
+      ) : (
+        entries.map((entry) => (
+          <div key={entry.key} style={loraRowStyle(pal)} data-testid="yt-history-row">
+            <Group justify="space-between" align="center" gap={8}>
+              <Group gap={6} align="center">
+                <Badge color={batchStatusColor(entry.status)} variant="light">
+                  {batchStatusLabel(entry.status)}
+                </Badge>
+                <span style={fieldDescStyle(pal)} data-testid="yt-history-when">
+                  {new Date(entry.record.createdAt).toLocaleString()}
+                </span>
+              </Group>
+              {/* 🔴 REALIZED COST, the server's number for the workflows that
+                  reported one — never the estimate. At 209 Buzz an image this
+                  is the figure people actually want from a history list. */}
+              <span style={fieldDescStyle(pal)} data-testid="yt-history-cost">
+                {entry.cost == null ? '—' : `${formatCost(entry.cost)} Buzz`}
+              </span>
+            </Group>
+
+            <span style={fieldDescStyle(pal)} data-testid="yt-history-formats">
+              {entry.record.form.formats.map((f) => f.label).join(' · ')} ·{' '}
+              {entry.record.form.checkpoint.label} · {entry.record.form.quantity}×
+            </span>
+
+            {entry.unavailable && (
+              <span style={fieldDescStyle(pal)} data-testid="yt-history-unavailable">
+                These images are no longer available, but the settings are — Resume refills the
+                form.
+              </span>
+            )}
+
+            {entry.imageUrls.length > 0 && (
+              <div style={galleryStyle(layout)} data-testid="yt-history-images">
+                {entry.imageUrls.map((url, i) => (
+                  <div key={url} style={galleryItemStyle}>
+                    <img
+                      src={url}
+                      alt={`Past generation ${i + 1}`}
+                      style={imageStyle}
+                      data-testid="yt-history-img"
+                    />
+                    <Button
+                      size="sm"
+                      variant="light"
+                      onClick={() => onSave(url, i + 1, entry.record.form.formats[0]?.label)}
+                      data-testid="yt-history-save"
+                    >
+                      Save image
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <Group gap={6}>
+              {/* 🔴 RESUME DOES NOT SUBMIT. It refills the form and stops, with
+                  the cost preview showing — see the App's `onResume`. The label
+                  says "Reuse settings" rather than "Run again" for exactly that
+                  reason: a money control must not read like a re-run button. */}
+              <Button
+                size="sm"
+                variant="light"
+                onClick={() => onResume(entry)}
+                data-testid="yt-history-resume"
+              >
+                Reuse settings
+              </Button>
+              {entry.cancellableIds.length > 0 && (
+                <Button
+                  size="sm"
+                  variant="subtle"
+                  color="error"
+                  loading={busyKey === entry.key}
+                  onClick={() => onCancel(entry)}
+                  data-testid="yt-history-cancel"
+                >
+                  Cancel
+                </Button>
+              )}
+            </Group>
+          </div>
+        ))
+      )}
+    </Stack>
   );
 }
 
@@ -1841,6 +2581,8 @@ export function App() {
 function LoraSelector({
   selected,
   capReached,
+  familyHasLoras: familySupported,
+  baseModel,
   pickerBusy,
   onAdd,
   onRemove,
@@ -1849,6 +2591,10 @@ function LoraSelector({
 }: {
   selected: readonly LoraOption[];
   capReached: boolean;
+  /** Does the current checkpoint's base-model family have ANY LoRAs? */
+  familyHasLoras: boolean;
+  /** The current checkpoint's base-model family, named in the explanation. */
+  baseModel: string;
   pickerBusy: boolean;
   onAdd: () => void;
   onRemove: (versionId: number) => void;
@@ -1899,50 +2645,78 @@ function LoraSelector({
         </Stack>
       )}
 
-      {/* Add a LoRA — opens the host's resource picker filtered to LoRAs. */}
+      {/* Add a LoRA — opens the host's resource picker filtered to LoRAs.
+          🔴 DISABLED, WITH A REASON, ON A FAMILY THAT HAS NONE. The alternative
+          is a button that opens a grid of LoRAs from OTHER families (the catalog
+          widens the browse rather than showing an empty result), every one of
+          which the server rejects as incompatible after the viewer has picked
+          it. An explained dead control beats a live one that can only fail. */}
       <span style={loraAddWrapStyle}>
         <Button
           variant="light"
           size="sm"
-          disabled={capReached}
+          disabled={capReached || !familySupported}
           loading={pickerBusy}
           onClick={onAdd}
           data-testid="pm-lora-add"
         >
           + Add LoRA
         </Button>
-        {capReached && <span style={fieldDescStyle(pal)}>Max {MAX_LORAS} LoRAs selected.</span>}
+        {!familySupported && (
+          <span style={fieldDescStyle(pal)} data-testid="pm-lora-unsupported">
+            {baseModel} models don&apos;t take LoRAs. Switch to another model above to add them.
+          </span>
+        )}
+        {familySupported && capReached && (
+          <span style={fieldDescStyle(pal)}>Max {MAX_LORAS} LoRAs selected.</span>
+        )}
       </span>
     </div>
   );
 }
 
 /**
- * READ-ONLY preview of the prompt each selected format will actually submit.
+ * The prompt each selected format will actually submit — EDITABLE.
  *
- * 🔴 IT CALLS `composePrompt`, IT DOES NOT RE-IMPLEMENT IT. A view that pasted
- * `prompt + ', ' + suffix` together would be a second copy of the composition
- * rule, and the two would disagree at exactly the moment it matters — the
- * PROMPT_MAX boundary, where the suffix is reserved and the USER's text is what
- * gets clamped. Driving the same function the submit body drives means the string
- * on screen is the string that gets priced and generated, truncation included.
+ * 🔴 IT CALLS `promptFieldValue` / `effectivePrompt`, IT DOES NOT RE-IMPLEMENT
+ * THEM. A view that pasted `prompt + ', ' + suffix` together would be a second
+ * copy of the composition rule, and the two would disagree at exactly the moment
+ * it matters — the PROMPT_MAX boundary, where the suffix is reserved and the
+ * USER's text is what gets clamped. Driving the same functions the submit body
+ * drives means the string in the box is the string that gets priced and
+ * generated, truncation included.
  *
  * 🔴 ONE ROW PER SELECTED FORMAT, BECAUSE THAT IS WHAT MULTI-SELECT MEANS. N
- * formats are N workflows with N different prompts; a single merged preview would
- * suggest one request carrying all of them, which is the misunderstanding the
- * per-format cost note exists to prevent. Each row's text box scrolls on its own
- * so six selected formats stay scannable instead of pushing the picker off screen.
+ * formats are N workflows with N different prompts; a single merged editor would
+ * suggest one request carrying all of them — and would collapse the batch, which
+ * is the one thing an edit must never do. Editing row A cannot touch row B.
  *
- * Not an input: there is nothing to edit here. The prompt box and the format
- * chips are the two controls, and this is their result.
+ * 🔴 EDITING DETACHES THE ROW FROM THE PROMPT BOX, PERMANENTLY AND VISIBLY.
+ * Once a row carries an edit it stops recomposing: typing more into the prompt
+ * box above leaves it alone. The alternative — rebasing the edit onto the new
+ * base prompt — has no non-arbitrary definition and would silently overwrite
+ * words the viewer is about to pay for. So the row wears an "Edited" badge and a
+ * Reset control, and Reset is the only way back to following the box.
+ *
+ * The cap is enforced on the way in (`setPromptEdit` clamps, the field carries
+ * `maxLength`, the count is live), so an over-long edit is never silently
+ * truncated somewhere between here and the wire.
  */
 function ComposedPromptPreview({
   prompt,
   formats,
+  edits,
+  disabled,
+  onEdit,
+  onReset,
   pal,
 }: {
   prompt: string;
   formats: readonly Format[];
+  edits: PromptEdits;
+  disabled: boolean;
+  onEdit: (formatId: string, text: string) => void;
+  onReset: (formatId: string) => void;
   pal: Palette;
 }) {
   if (formats.length === 0) return null;
@@ -1951,23 +2725,64 @@ function ComposedPromptPreview({
       <span style={fieldLabelStyle}>What gets sent</span>
       <span style={fieldDescStyle(pal)} data-testid="yt-prompt-preview-note">
         {formats.length === 1
-          ? 'The exact prompt this generation will carry.'
-          : `The exact prompt each of these ${formats.length} generations will carry.`}
+          ? 'The exact prompt this generation will carry — edit it here before you generate.'
+          : `The exact prompt each of these ${formats.length} generations will carry — edit any of them before you generate.`}
       </span>
       <div style={previewListStyle}>
         {formats.map((fmt) => {
-          const composed = composePrompt(prompt, fmt.suffix);
-          const trimmed = promptWasTruncated(prompt, fmt.suffix);
+          const edited = isPromptEdited(edits, fmt.id);
+          const value = promptFieldValue(prompt, fmt, edits);
+          // The TRIM note belongs to composition only: an edited row has no
+          // reserved suffix left to protect, it is simply the viewer's string.
+          const trimmed = !edited && promptWasTruncated(prompt, fmt.suffix);
+          const blank = edited && effectivePrompt(prompt, fmt, edits) === '';
           return (
             <div
               key={fmt.id}
               style={previewRowStyle(pal)}
               data-testid="yt-prompt-preview-row"
               data-format-id={fmt.id}
+              data-edited={edited ? 'true' : 'false'}
             >
-              <span style={previewRowLabelStyle(pal)}>{fmt.label}</span>
-              <span style={previewTextStyle(pal)} data-testid={`yt-prompt-preview-${fmt.id}`}>
-                {composed}
+              <Group justify="space-between" align="center" gap={8} wrap={false}>
+                <span style={previewRowLabelStyle(pal)}>{fmt.label}</span>
+                {edited && (
+                  <Group gap={6} align="center" wrap={false}>
+                    <span
+                      style={previewEditedStyle(pal)}
+                      data-testid={`yt-prompt-edited-${fmt.id}`}
+                    >
+                      Edited — no longer following the prompt box
+                    </span>
+                    <Button
+                      variant="subtle"
+                      size="sm"
+                      disabled={disabled}
+                      onClick={() => onReset(fmt.id)}
+                      data-testid={`yt-prompt-reset-${fmt.id}`}
+                    >
+                      Reset
+                    </Button>
+                  </Group>
+                )}
+              </Group>
+              <textarea
+                style={previewTextStyle(pal)}
+                data-testid={`yt-prompt-preview-${fmt.id}`}
+                // Deliberately does NOT contain the word "prompt": the page's
+                // own Prompt field is queried by accessible name across the
+                // suite, and N more fields answering to /prompt/i would make
+                // that query ambiguous everywhere. The section heading above
+                // ("What gets sent") supplies the context this name continues.
+                aria-label={`Text sent for ${fmt.label}`}
+                value={value}
+                disabled={disabled}
+                maxLength={PROMPT_MAX}
+                rows={3}
+                onChange={(e) => onEdit(fmt.id, e.target.value)}
+              />
+              <span style={previewCountStyle(pal)} data-testid={`yt-prompt-count-${fmt.id}`}>
+                {value.length} / {PROMPT_MAX}
               </span>
               {/* The suffix is RESERVED by `composePrompt`, so an overflow always
                   costs the VIEWER's words. Saying so is the difference between a
@@ -1978,6 +2793,14 @@ function ComposedPromptPreview({
                   data-testid={`yt-prompt-trimmed-${fmt.id}`}
                 >
                   Your prompt was trimmed to fit. The format text is kept in full.
+                </span>
+              )}
+              {/* An emptied row would submit `params.prompt: ""` and be charged
+                  for it, so `promptsReadyToSubmit` blocks the whole click. Name
+                  the row that is blocking it. */}
+              {blank && (
+                <span style={previewTrimStyle(pal)} data-testid={`yt-prompt-empty-${fmt.id}`}>
+                  This prompt is empty. Write something, or Reset it.
                 </span>
               )}
             </div>
@@ -2815,8 +3638,8 @@ function currentModelStyle(pal: Palette): React.CSSProperties {
   };
 }
 
-// The composed-prompt preview. A read-only surface, so it reads as a panel
-// (`surfaceRaised` inside the field) rather than as another input.
+// The composed-prompt editor. A panel (`surfaceRaised` inside the field) holding
+// one editable box per selected format.
 const previewListStyle: React.CSSProperties = { display: 'grid', gap: 6, marginTop: 4 };
 const previewIconStyle: React.CSSProperties = { flex: 'none', display: 'block' };
 function previewRowStyle(pal: Palette): React.CSSProperties {
@@ -2834,21 +3657,36 @@ function previewRowLabelStyle(pal: Palette): React.CSSProperties {
 }
 function previewTextStyle(pal: Palette): React.CSSProperties {
   return {
+    // A real <textarea>: the string here IS the string submitted, so it is the
+    // control, not a rendering of one.
+    width: '100%',
+    boxSizing: 'border-box',
+    resize: 'vertical',
+    padding: '6px 8px',
+    borderRadius: 6,
+    border: `1px solid ${pal.border}`,
+    background: pal.surface,
+    fontFamily: 'inherit',
     fontSize: 12,
     lineHeight: 1.45,
     color: pal.text,
-    // The whole string, wrapped — never clipped with an ellipsis. A preview that
+    // The whole string, wrapped — never clipped with an ellipsis. A field that
     // hides its own tail cannot answer the question it exists to answer.
-    whiteSpace: 'pre-wrap',
     overflowWrap: 'anywhere',
     // …but N of them must not push the picker off screen, so a long one scrolls
     // inside its own box.
-    maxHeight: 108,
+    maxHeight: 160,
     overflowY: 'auto',
   };
 }
 function previewTrimStyle(pal: Palette): React.CSSProperties {
   return { fontSize: 11, fontWeight: 600, color: pal.danger };
+}
+function previewEditedStyle(pal: Palette): React.CSSProperties {
+  return { fontSize: 10, fontWeight: 700, letterSpacing: 0.2, color: pal.textDim };
+}
+function previewCountStyle(pal: Palette): React.CSSProperties {
+  return { fontSize: 10, color: pal.textDim, justifySelf: 'end' };
 }
 
 // The Buzz-account menu: a trigger + an absolutely positioned popup.
