@@ -10,24 +10,22 @@ Ordinary for a brand-new repo — register the scope or ignore until content exi
 
 ## Goal
 Ship **YT Thumbnail** — a Civitai page-money app that generates YouTube thumbnails: txt2img + img2img remix + multi-format generation + a canvas text-overlay editor with a YouTube-capped export.
-- **closing-condition: check** — **ARC 4 (ship 0.1.5 + the new listing media)**, opened 2026-09-30 by operator direction. MET when BOTH land: (a) `civitai app status yt-thumbnail` reports 0.1.5 `approved` + `live` AND the served bundle greps `pm-account-trigger` ≥1 (it is **0** in the live 0.1.4 bundle — a true discriminator, not a restatement) alongside `hero-banner` ≥1 as positive control and `pm-comfy-beta` 0 as negative; and (b) the listing revision `alpr_01M3SMGWAM0WEMF2GZDAWXECST` RESOLVES **and the served `iconUrl` differs from the baseline below and the image is LOOKED AT** — status alone cannot tell approved from rejected. Commands in *How to verify*. **NOT YET MET — both are sitting in the moderator queue.**
-- **Arc 3 was MET 2026-09-30** (0.1.4 approved 10:42, live 10:48; bundle moved `BrzuzOdM`→`DNhq8XQB`, `hero-banner` 1 with three positive controls and a zero negative, asset `content-type: image/jpeg` sha256-identical to the committed file). FROZEN — CLOSED.
-- **Arc 2 MET 2026-09-29, re-verified 2026-09-30.** FROZEN. **Arc 1 MET 2026-09-27.** FROZEN.
+- **closing-condition: check** — **ARC 4 (ship 0.1.5 + the new listing media)**. MET when (a) 0.1.5 is `approved`+`live` and the served bundle greps `pm-account-trigger` ≥1 with controls, and (b) the listing revision resolves with the served `iconUrl` moved off its baseline **and the image looked at**.
+- 🔴 **MET 2026-09-30 17:32Z — THIS ARC IS CLOSED.** Both legs measured against ARTIFACTS, never a self-report. **(a)** 0.1.5 `approved`+`live`; served bundle moved `assets/index-DNhq8XQB.js` → **`assets/index-CgPV9KyL.js`**; discriminators that are **0** on 0.1.4 now present — `pm-account-trigger` **4**, `pm-account-menu` **1**, `yt-prompt-preview` **4** — with `hero-banner` **1** positive control and `pm-comfy-beta` **0** negative; served `hero-banner.jpg` and `formats/clickbait.webp` **sha256-identical** to the committed bytes (`a7d9ee3a…`, `28041f7d…`); `content-type: image/jpeg` against a cannot-exist control returning `text/html`. **(b)** listing revision `alpr_01M3SMGWAM0WEMF2GZDAWXECST` **APPROVED** — `iconUrl` and `coverUrl` both moved off the pre-revision baseline, `updatedAt` 15:42:24Z → **17:29:42Z**, and both images were DOWNLOADED AND VIEWED: the new ray icon and the new cover are serving. **FROZEN at round 1** — anything outstanding is a NEW arc.
+- **Arc 3 MET 2026-09-30** (0.1.4 live). **Arc 2 MET 2026-09-29.** **Arc 1 MET 2026-09-27.** All FROZEN, kept as history.
 
 ## State now
 - **No clawgate task.** `clawgate_handoff.sh resolve` exited **5** (NOTHING RESOLVED); an unknown session id also answers 200/empty, so that is not a clean bill of health. No field written.
-- 🔴 **TWO THINGS ARE IN THE MODERATOR QUEUE AND NEITHER HAS MOVED.**
-  - **App 0.1.5** — `pubreq_01M3SMFASYVB73050CKV9BJMFG`, source `4183965`, submitted 2026-09-30 12:05 CDT. **Still `pending`**, deploy state `-`, after 40 polls over ~19 minutes.
-  - **Listing media revision** — `alpr_01M3SMGWAM0WEMF2GZDAWXECST`, carrying the new icon AND cover (they batched into ONE revision). `civitai app listing status` prints "A revision is currently under moderator review" — so it is genuinely SUBMITTED, not merely staged, and `submit-revision` would be a no-op.
-- 🔴 **THE LIVE APP IS STILL 0.1.4** (bundle `assets/index-DNhq8XQB.js`) and the live listing still shows the OLD icon and cover. Nothing from this session's work is visible to a viewer.
-- ⚠ **Do NOT expect a 6-minute review.** 0.1.4 went submit→approved in 6 min and approved→live in 6 more, and that single observation was nearly treated as a rate. 0.1.5 has now been pending three times that with no movement. Moderation is human-paced; one sample is not a cadence.
-- **`main` is `4183965`**, clean, ↑0↓0, all worktrees removed, base clone synced. No open PRs. Claim `yt-thumbnail-1` released.
-- **Six PRs merged this session, each verified by CONTENT not ancestry:** **#8 → `b11523a`** (hero candidates + ledger) · **#9 → `566dd73`** (hero wired into `App.tsx`) · **#10 → `dfc0112`** (0.1.4 bump) · **#11 → `8060bc2`** (composed-prompt preview, empty-prompt submit, Buzz-pool dropdown, clip fix) · **#12 → `1b9a8a7`** (icon/cover/hero/6 format previews on ChatGPT Images v2.0) · **#13 → `4183965`** (0.1.5 bump).
-- **Verified at `4183965` on the INTEGRATED tree** (both feature PRs merged into one branch off main, not either branch alone): `tsc --noEmit` rc 0 · **617 passed / 24 files** · `npm run build` rc 0 with every regenerated `public/` asset byte-identical in `dist/` by `cmp` · `civitai app validate .` rc 0.
-- **Buzz spent this session: 4,492** across ten workflows (3,918 for the nine-asset pass + 574 for the icon retry). Every one `--dry-run` first; estimate == realized on all ten. ⚠ Unreconciled: the nine first-pass workflow debits sum to 3,918 but the wallet moved 3,911 — a **7 Buzz** gap nothing local can decompose, because `civitai buzz` reports a balance, not a history. Not chased.
+- 🔴 **0.1.5 IS LIVE AND SO IS THE NEW LISTING ART.** Submitted 12:05 CDT, a second request appeared at 12:29, deploy `live` 12:31. Everything this session produced is now what a viewer sees: the new icon, cover, hero and six format previews, plus the composed-prompt preview, empty-prompt submit and the Buzz-pool dropdown.
+- 🔴 **TWO 0.1.5 PUBLISH REQUESTS EXIST, BOTH `approved`+`live`** — `pubreq_01M3SMFASYVB73050CKV9BJMFG` (source `4183965`, submitted 12:05, MINE) and `pubreq_01M3SNTH8GKJY6656SCXBP05WQ` (**no source commit**, submitted 12:29, NOT created by this session). `civitai app status yt-thumbnail` reports only the newer one, which therefore shows **no source commit at all**. The artifact check above is what settles which code serves — and it is 0.1.5's. **Leading hypothesis, from ONE coincidence and NOT established:** approving a listing-media revision creates a fresh app publish request (12:29 CDT == the revision's `updatedAt` 17:29:42Z, to the minute). Do not restate this as fact; if it recurs, that is the second observation that would make it one.
+- **`main` is `df01ecb`+**, clean, ↑0↓0, no worktrees, no open PRs. Claim `yt-thumbnail-1` released.
+- **Six PRs merged this session, each verified by CONTENT not ancestry:** #8 `b11523a` · #9 `566dd73` · #10 `dfc0112` · #11 `8060bc2` · #12 `1b9a8a7` · #13 `4183965`.
+- **Verified at `4183965` on the INTEGRATED tree** (both feature PRs merged into one branch off main, not either alone): `tsc --noEmit` rc 0 · **617 passed / 24 files** · build rc 0 with every regenerated `public/` asset byte-identical in `dist/` by `cmp` · `civitai app validate .` rc 0.
+- **Buzz spent this session: 4,492** across ten workflows, `--dry-run` first on every one, estimate == realized on all ten. ⚠ Unreconciled: nine first-pass debits sum to 3,918 while the wallet moved 3,911 — a **7 Buzz** gap nothing local can decompose (`civitai buzz` reports a balance, not a history). Not chased.
+- **CARRIED FORWARD — the money path has STILL never been exercised on current code.** Its only production proof (2026-09-28: two formats → two workflows, **6 Buzz debited from Blue**, `Generate · 6 Buzz`, a 1280×720 editor canvas) was measured on **0.1.3**. Two versions have shipped since, including a rewritten spend control.
+- **The 4 store screenshots are now DOUBLY stale** — they show the pre-taste-pass 640px column AND the old format previews.
 
-- **CARRIED FORWARD — end-to-end money path exercised in production** (2026-09-28): two formats → two workflows, two separately-labelled candidates, **6 Buzz debited from Blue**, button read `Generate · 6 Buzz`, editor opened a 1280×720 canvas with no error. 🔴 Measured on **0.1.3**, which no longer serves. **Neither the taste pass, nor the hero, nor the new generate form has EVER been exercised against the money path in production.**
-- **CARRIED FORWARD — operator decisions, recorded.** 2026-09-30: (a) wire the hero into 0.1.4 rather than ship the taste pass alone, with the stated risk acknowledged; (b) regenerate the full asset set on ChatGPT Images v2.0 with no spending cap; (c) re-generate the icon alone after it failed the 32px gate; (d) bump 0.1.5 and submit, AND attach the new icon + cover to the live listing now rather than waiting to batch them with the screenshot re-shoot.
+- **CARRIED FORWARD — operator decisions, recorded.** 2026-09-30: (a) wire the hero into 0.1.4 rather than ship the taste pass alone, with the stated risk acknowledged; (b) regenerate the full asset set on ChatGPT Images v2.0 with no spending cap; (c) re-generate the icon alone after it failed the 32px gate; (d) bump 0.1.5 and submit, AND attach the new icon + cover to the live listing immediately rather than batching them with the screenshot re-shoot.
 
 ## Version history (server-confirmed, never from a CLI exit code)
 | ver | pubreq | source | state |
@@ -36,8 +34,9 @@ Ship **YT Thumbnail** — a Civitai page-money app that generates YouTube thumbn
 | 0.1.1 | `pubreq_01M3JZB7TRZ6TMD1MX7H4M33VZ` | `c5e175d` | approved, superseded (listing copy) |
 | 0.1.2 | `pubreq_01M3K1PRF8Y0KXCT5RA6ZHDJWW` | `cb6f661` | approved, superseded (checkpoint-picker fix) |
 | 0.1.3 | `pubreq_01M3MY1W7XECTKKE8GTNGKEKJZ` | `b66ddaf` | approved, superseded (formats, storage, publishing, N-workflow) |
-| 0.1.4 | `pubreq_01M3SFBT2BF97X8WAE68EKM42F` | `dfc0112` | **approved + LIVE** (taste pass: width-adaptive layout, app-owned palette, hero banner) |
-| 0.1.5 | `pubreq_01M3SMFASYVB73050CKV9BJMFG` | `4183965` | **pending** (new brand art + composed-prompt preview, empty-prompt submit, Buzz-pool dropdown) |
+| 0.1.4 | `pubreq_01M3SFBT2BF97X8WAE68EKM42F` | `dfc0112` | approved, superseded (taste pass: width-adaptive layout, app-owned palette, hero banner) |
+| 0.1.5 | `pubreq_01M3SMFASYVB73050CKV9BJMFG` | `4183965` | **approved + LIVE** (new brand art; composed-prompt preview, empty-prompt submit, Buzz-pool dropdown) |
+| 0.1.5 | `pubreq_01M3SNTH8GKJY6656SCXBP05WQ` | *(none reported)* | **approved + LIVE** — a SECOND request for the same version, not created by this session; see *Gotchas* |
 
 ## 0.1.3 — what is in review
 SUPERSEDED — 0.1.3 is **approved, live and verified** (see *State now*). Nothing is in review for the APP. The only thing pending is the **listing-media revision** `alpr_01M3N183249CTB062W288KMM5S`.
@@ -110,21 +109,19 @@ No taint, `toBlob` works. **Do not add defensive workarounds for this.**
 - **Next probe:** ask the platform side whether ANY parameter controls output size, or measure an img2img run (`--ecosystem Flux1Kontext --image <file>`) and see whether a source aspect survives — that is the one case that could distinguish "fixed bucket" from "ignored parameter".
 
 ## Next steps (ranked)
-1. **Wait out the moderator queue, then run the arc-4 closing check.** Poll `civitai app status yt-thumbnail` and `civitai app listing status`. 🔴 For the LISTING half, status going quiet is NOT approval — diff the served `iconUrl` against the baseline in *How to verify* and **look at the image**. If the app deploy reports `failed` (sibling apps `sensei` and `model-benchmarking` each hit that twice this week), re-submit rather than assuming the source is wrong. Repo: `civitai-app-yt-thumbnail`.
-   forcing: gate
-2. **Exercise the LIVE app in a real browser once 0.1.5 is live, including the money path.** Nothing in this arc has been seen outside a mock harness, and the ONLY production proof of the money path was measured on 0.1.3, which no longer serves. 🔴 The specific unmeasured risk the new Buzz dropdown carries: production mounts the block **full-bleed in a host iframe**, so a `position: fixed` menu anchored to the iframe's viewport can land outside the host's visible region when the host page is scrolled. A local iframe probe was attempted and could not run — see *Gotchas*. 🔴 **Never fire an in-frame click at `pm-generate` to see whether it works** — that spent 6 real Buzz once. Repo: none (live app).
+1. **Exercise the LIVE 0.1.5 in a real browser, including the money path.** This is now the largest evidence gap in the project: the spend control was REWRITTEN this session and has never been used against real Buzz, and the only production proof of the money path is two versions old. 🔴 The specific unmeasured risk in the new control: production mounts the block **full-bleed in a host iframe**, so a `position: fixed` menu anchored to the iframe's viewport can land outside the host's visible region when the host page scrolls — a local iframe probe was attempted and could not run (see *Gotchas*). 🔴 **Never fire an in-frame click at `pm-generate` to see whether it works** — that spent 6 real Buzz once. Repo: none (live app).
    forcing: user
-3. **Re-shoot the 4 store screenshots and author an `app-capture` recipe for this slug.** They still show the pre-taste-pass 640px column AND the old format previews, so they now misrepresent the app twice over. Attach them as their own revision once 0.1.5 is live. Repo: `civitai` (the recipe), `civitai-app-yt-thumbnail` (the shots).
+2. **Re-shoot the 4 store screenshots and author an `app-capture` recipe for this slug.** Fully unblocked — 0.1.5 and the new art are live. Attach as ONE revision with the real changelog on every attach. Keep the before/after pair: that diff is the only part of an app-taste pass that produces evidence rather than opinion. Repo: `civitai` (the recipe), `civitai-app-yt-thumbnail` (the shots).
    forcing: gate
-4. **Two pieces of housekeeping in OTHER repos, both blocked here.** (a) **Prune the app-taste `decisions[]` prose** — `taste.json` was +61% at round 0 (26,543 → 42,541 B) and has grown again; route the near-verbatim docblock duplication to `/prune-skill` on the app-taste skill in the **civitai** repo. (b) **Register the cairn scope** — `civitai-app-yt-thumbnail` is still absent from `~/.config/subsystem-store/routes.json`, so `cairn recall`/`create` REFUSE verbatim and no subsystem entry could be written this session either. That file is home-manager-managed READ-ONLY; the fix is one line in the devrc nix source + `home-manager switch`. The table already carries `civitai-app-model-benchmarking`, `civitai-app-playable-collections` and `civitai-app-sensei`; devrc PR #1862 is the same change for a sibling scope. Blocked six times now. Repo: `civitai` (a), `devrc` (b).
+3. **Decide whether the app should steer generation toward an ecosystem that honours aspect.** The question changed shape this session: it is no longer "find a parameter that controls output size" but "pick the right ecosystem" (see the retraction in *Gotchas*). Either steer, or keep cover-cropping and say so in the copy. Repo: `civitai-app-yt-thumbnail`, `src/generation.ts`.
+   forcing: user
+4. **Two pieces of housekeeping in OTHER repos, both blocked here.** (a) **Prune the app-taste `decisions[]` prose** — route the near-verbatim docblock duplication to `/prune-skill` on the app-taste skill in the **civitai** repo. (b) **Register the cairn scope** — `civitai-app-yt-thumbnail` is still absent from `~/.config/subsystem-store/routes.json`, so `cairn recall`/`create` REFUSE verbatim and no subsystem entry could be written this session either. That file is home-manager-managed READ-ONLY; the fix is one line in the devrc nix source + `home-manager switch`. The table already carries three sibling `civitai-app-*` scopes; devrc PR #1862 is the same change. Blocked six times now. Repo: `civitai` (a), `devrc` (b).
    forcing: none
-5. **Re-open the output-dimensions question with the CORRECTED finding.** It is no longer "find a parameter that controls size" — it is "pick the right ecosystem" (see *Gotchas*). Decide whether the app should steer generation toward an ecosystem that honours 16:9, or keep cover-cropping and say so in the copy. Repo: `civitai-app-yt-thumbnail`, `src/generation.ts`.
-   forcing: user
-6. Exercise the storage + publish path once — still the only shipped feature with zero production evidence. Repo: none (live app).
+5. Exercise the storage + publish path once — still the only shipped feature with zero production evidence. Repo: none (live app).
    forcing: none
 
 ## Defects (batched)
-- None outstanding. The two found this session were fixed before merge: the Buzz menu clipped by the rail's `overflow-y: auto` (Green and Yellow unreachable) and, introduced by that fix, an outside-click handler that read a press on a pool as "outside" and dismissed before the click landed.
+- None outstanding. Two were found and fixed before merge this session: the Buzz menu clipped by the rail's `overflow-y: auto` (Green and Yellow unreachable), and — introduced by that fix — an outside-click handler that read a press on a pool as "outside" and dismissed before the click landed.
 
 ## Gotchas / decisions / dead-ends
 - 🔴 **`civitai app listing status` is a snapshot, and approval moves under you.** Two reads ~5 min apart this session returned `draft` then `approved`; `set-icon` refused in between with "this listing is live". **Re-read listing state immediately before an attach, not at the top of the task** — the attach path is materially different on each side of that line (direct edit vs. moderator-reviewed revision).
@@ -219,30 +216,35 @@ No taint, `toBlob` works. **Do not add defensive workarounds for this.**
 - **`gh pr merge` can answer `GraphQL: Pull Request is not mergeable` purely because GitHub has not recomputed mergeability after a push.** It read `MERGEABLE`/`CLEAN` six seconds later and the same command succeeded. Re-read before treating it as a real conflict.
 - **Batched listing attaches join ONE revision** (measured again: icon + cover both landed on `alpr_01M3SMGWAM0WEMF2GZDAWXECST`), and the attach that completes the publish floor submits the whole revision with whatever `--changelog` IT carried — so put the real changelog on **every** attach. `set-icon`/`set-cover` take `--changelog` but no `--yes`.
 
+- 🔴 **A SECOND PUBLISH REQUEST CAN SUPERSEDE YOURS, AND `civitai app status <slug>` THEN REPORTS NO SOURCE COMMIT AT ALL.** Measured 2026-09-30: two 0.1.5 requests existed, both `approved`+`live` — mine carrying source `4183965`, and a later one carrying **none**. The single-app view reports only the newest, so its `Source commit:` line was absent and the obvious reading ("the deploy lost my commit") was unavailable *and* unfalsifiable from status alone. **`civitai app status` with NO slug lists every row including yours**, and the artifact check is what actually settles which code serves. **Leading hypothesis, one coincidence only and NOT established:** approving a listing-media revision spawns a fresh app publish request — the second request's 12:29 CDT matches the revision's `updatedAt` 17:29:42Z to the minute.
+- **The listing-media round trip, for planning:** icon + cover attached 12:07, approved ~12:29 — about 22 minutes. The app's own 0.1.5 request sat `pending` for at least 24 minutes across 40 polls before moving. ⚠ **0.1.4's 6-minute submit→approve was ONE observation and is not a rate** — it was nearly treated as one. Moderation is human-paced; budget for tens of minutes, not single digits.
+
 ## How to verify
 ```bash
 cd /home/zach/workspace/civit/civitai-app-yt-thumbnail
 npx tsc -p tsconfig.json --noEmit && npm test    # at 4183965: 617/617 across 24 files
 npm run build && civitai app validate .
 cmp public/hero-banner.jpg dist/hero-banner.jpg  # the build must SHIP the asset, not just hold it
-civitai app status yt-thumbnail                  # 0.1.5: pending -> approved -> live
-# ARC 4 (a) — the APP. pm-account-trigger is 0 in the live 0.1.4 bundle, so it DISCRIMINATES:
+civitai app status yt-thumbnail                  # expect 0.1.5 approved + live
+# 🔴 STATUS CANNOT NAME THE SOURCE COMMIT when a second publish request supersedes yours —
+#    verify the CODE by artifact. These three are 0 on 0.1.4, so they DISCRIMINATE:
 B=$(curl -sS https://yt-thumbnail.civit.ai/ | grep -oE 'assets/index-[A-Za-z0-9_-]+\.js' | head -1)
-echo "$B"   # 0.1.4 served assets/index-DNhq8XQB.js — a DIFFERENT hash proves a real redeploy
+echo "$B"   # 0.1.4 served index-DNhq8XQB.js; 0.1.5 serves index-CgPV9KyL.js
 curl -sS "https://yt-thumbnail.civit.ai/$B" > /tmp/b.js
 for t in pm-account-trigger pm-account-menu yt-prompt-preview hero-banner pm-comfy-beta; do
   printf '%-22s %s\n' "$t" "$(grep -oF -- "$t" /tmp/b.js | wc -l)"
-done   # first three >=1 only on 0.1.5; hero-banner >=1 (positive control); last 0 (negative)
+done   # first three >=1 on 0.1.5; hero-banner >=1 control; pm-comfy-beta 0
+# the served assets ARE the committed bytes — the strongest form:
+curl -sSL https://yt-thumbnail.civit.ai/hero-banner.jpg | sha256sum   # a7d9ee3a…
+sha256sum public/hero-banner.jpg
 # 🔴 READ content-type, NEVER the status code — this host 200s EVERY path (SPA fallback):
 curl -sSI https://yt-thumbnail.civit.ai/hero-banner.jpg | grep -i '^content-type'   # image/jpeg
 curl -sSI https://yt-thumbnail.civit.ai/definitely-not-a-real-file-xyzzy.jpg | grep -i '^content-type'  # text/html
-# ARC 4 (b) — the LISTING. Status going quiet CANNOT tell approved from rejected:
-civitai app listing status | grep -c 'under moderator review'   # 0 once it resolves, either way
+# the LISTING: status going quiet CANNOT tell approved from rejected. Diff, then LOOK:
 env -i curl -sS https://civitai.com/api/v1/apps/yt-thumbnail | python3 -m json.tool \
   | grep -E 'iconUrl|coverUrl|updatedAt'
-#   BASELINE captured 2026-09-30 17:0x UTC, BEFORE the revision resolved — a CHANGE is the signal:
-#   iconUrl  .../ebd58763-dd19-4235-ae6b-f9c046112be2/width=320/...jpeg
-#   coverUrl .../c851c9d6-cde2-49bb-89a9-a5e368c01933/width=1200/...jpeg
-#   updatedAt 2026-09-30T15:42:24.283Z
-#   Then DOWNLOAD the served icon (curl -sSL — image.civitai.com 301s) and LOOK at it.
+#   as of the 2026-09-30 approval: updatedAt 2026-09-30T17:29:42.423Z,
+#   iconUrl  .../c28764c9-fbec-4e2f-a7b4-843f5d2c1e24/width=320/...jpeg
+#   coverUrl .../c4b7451b-7ecd-44cc-aa39-7855606e2412/width=1200/...jpeg
+#   Download with curl -sSL (image.civitai.com 301s) and VIEW it.
 ```
