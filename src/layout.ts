@@ -84,6 +84,27 @@ export interface BlockLayout {
   rail: boolean;
   /** px width of that rail. `0` exactly when `rail` is false. */
   railWidth: number;
+  /**
+   * px floor on the hero's height, so the banner image behind the headline has
+   * room to read as a picture rather than a stripe.
+   *
+   * 🔴 IT IS HERE RATHER THAN OPEN-CODED IN `App.tsx` FOR THE REASON THIS WHOLE
+   * MODULE EXISTS. `heroStyle` already asks the layout one width question
+   * (`layout.rail ? '22px 28px' : '18px 20px'`), and a second ternary on the same
+   * predicate at the same call site is the first copy of a predicate — the shape
+   * the module docblock above says is wrong at N−1 sites. Keyed off `rail` and
+   * nothing else, so the hero's padding and its height can never disagree about
+   * which shape the block is in; `layout.test.ts` asserts exactly that, in both
+   * directions, over the whole tier ladder.
+   *
+   * The values are 132 / 104 and they are a judgement, not a measurement: jsdom
+   * lays nothing out, so nothing in this repo can observe the crop. What IS
+   * derivable is that 104 clears the two-line text stack the hero draws (26px +
+   * 13px of type, 1.15 line-height, plus 36px of vertical padding ≈ 81px), so the
+   * floor binds rather than being absorbed by the text — which is the property
+   * that makes the image visible at all.
+   */
+  heroMinHeight: number;
   /** The 1280×720 editor canvas sits beside its text controls rather than above. */
   editorSideBySide: boolean;
   /** The Model row is a side-by-side `Group` rather than a stacked `Stack`. */
@@ -148,6 +169,16 @@ export const ULTRAWIDE_MIN = 1800;
  * coincidence a reader has to check.
  */
 const TWO_COLUMN_MAX_WIDTH = 1184;
+
+/**
+ * The hero's height floor, in px, at the two shapes its padding already
+ * distinguishes. Named rather than inlined for the same reason `TWO_COLUMN_MAX_WIDTH`
+ * is: `heroMinHeight`'s docblock argues about these two numbers, and a bare literal
+ * in the return would make the pairing something a reader has to re-derive.
+ */
+const HERO_MIN_H_RAIL = 132;
+/** The hero's height floor below the rail — a phone, or the `model.sidebar_top` slot. */
+const HERO_MIN_H_NARROW = 104;
 
 /** Rail width at `lg`/`xl`. Wide enough for the prompt textarea to stay usable. */
 const RAIL_W = 340;
@@ -257,6 +288,7 @@ export function layoutForTier(tier: BlockSizeTier, ultrawide = false): BlockLayo
       resultColumns: 1,
       rail: false,
       railWidth: 0,
+      heroMinHeight: HERO_MIN_H_NARROW,
       editorSideBySide: false,
       modelRow: 'stacked',
     };
@@ -271,6 +303,7 @@ export function layoutForTier(tier: BlockSizeTier, ultrawide = false): BlockLayo
       resultColumns: 2,
       rail: false,
       railWidth: 0,
+      heroMinHeight: HERO_MIN_H_NARROW,
       editorSideBySide: false,
       // `sm` is exactly where the existing Model row stops stacking — the one
       // structural swap this app already shipped, preserved by `bp.below('sm')`
@@ -290,6 +323,7 @@ export function layoutForTier(tier: BlockSizeTier, ultrawide = false): BlockLayo
     resultColumns: wide ? 4 : 3,
     rail: true,
     railWidth: wide ? RAIL_W_ULTRAWIDE : RAIL_W,
+    heroMinHeight: HERO_MIN_H_RAIL,
     editorSideBySide: true,
     modelRow: 'row',
   };
