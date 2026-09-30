@@ -38,9 +38,9 @@
     "@civitai/app-sdk": "0.39.0",
     "note": "read from the INSTALLED packages in this clone, not from the monorepo. No @civitai/* version was hand-edited by this pass."
   },
-  "heroPrompt": null,
-  "heroSeed": null,
-  "heroNote": "NO IMAGE WAS GENERATED AND NO BUZZ WAS SPENT BY THIS PASS. The in-app hero stays a pure-CSS gradient (now palette-driven, correct in both themes at every width). The store icon/cover are the operator's, already live from commit efb2acb. The generated in-app hero that was asked for is an OUTSTANDING ASK, not a closed decision — it is deferred[0], with a closing condition that names both the ship and the decline outcome.",
+  "heroPrompt": "A wide abstract brand banner for a creative video-thumbnail tool. A dark near-black ground with an energetic burst of magenta and cyan light radiating from left of centre: sharp angular shards and soft volumetric glow, deep perspective, high contrast, cinematic. Rich saturated magenta #FF49BD as the dominant hue with cool cyan as the secondary accent. Entirely abstract - pure light, colour and geometry. Generous empty dark space across the right two thirds for text to be placed over later.",
+  "heroSeed": 1418897043,
+  "heroNote": "Rendered 2026-09-30, workflow 8753561-20260930060406237-dxhg, 16 Buzz for quantity 2 on the DEFAULT ecosystem. NanoBanana (the listing-media suite's pinned model) estimated 208 for the same request and was deliberately not used: its advantages are headline text rendering and img2img composition preservation, and this hero is textless txt2img, so it would have bought nothing. TEXTLESS BY DESIGN - the hero's title stays in the DOM, where it is crisp at any width, follows the theme and is readable by assistive tech; that also sidesteps the suite's measured text-volume failure class entirely. ASPECT: --aspect-ratio 16:9 was REQUESTED and NOT honoured - both candidates measured 1216x832 (1.46). That is the same figure this repo already recorded for inert params.width/height, now reproduced through a THIRD route (a different session, a different ecosystem, and the --aspect-ratio flag rather than explicit dimensions), so the platform ignores requested output size however it is asked. Crop to the hero's real ratio; do not trust the dry-run's echo. NOT YET WIRED INTO THE APP - these are the rendered candidates only.",
   "decisions": [
     {
       "fork": "How does the block decide its shape? Per-call-site breakpoint ternaries, CSS container queries, or one pure function?",
