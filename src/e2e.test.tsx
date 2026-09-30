@@ -119,8 +119,15 @@ describe('App money path (e2e)', () => {
     await screen.findByTestId('pm-generate');
 
     // Pick Yellow, then generate.
+    // 🔴 MARKUP SHAPE CHANGED, ASSERTIONS DID NOT. "Spend from" is a trigger + a
+    // popup menu now, so a pool has to be OPENED before it can be clicked, and
+    // re-opened before its `aria-checked` can be read — choosing closes the menu.
+    // The expectation itself is the one this test has always made.
+    await user.click(screen.getByTestId('pm-account-trigger'));
     await user.click(screen.getByTestId('pm-account-yellow'));
+    await user.click(screen.getByTestId('pm-account-trigger'));
     expect(screen.getByTestId('pm-account-yellow')).toHaveAttribute('aria-checked', 'true');
+    await user.keyboard('{Escape}');
     await user.type(screen.getByLabelText(/prompt/i), 'a cat');
     await user.click(screen.getByTestId('pm-generate'));
 
@@ -167,7 +174,10 @@ describe('App money path (e2e)', () => {
     render(<App />);
     await screen.findByTestId('pm-generate');
     // It starts on Auto — the cost is unknown until the estimate lands.
+    // (Menu open/close around each read: see the shape note on the Yellow test.)
+    await user.click(screen.getByTestId('pm-account-trigger'));
     expect(screen.getByTestId('pm-account-auto')).toHaveAttribute('aria-checked', 'true');
+    await user.keyboard('{Escape}');
     await user.type(screen.getByLabelText(/prompt/i), 'a cat');
     await user.click(screen.getByTestId('pm-generate'));
 
@@ -176,6 +186,7 @@ describe('App money path (e2e)', () => {
     expect(submittedBodies.at(-1)).toHaveProperty('accountType', 'blue');
     // ...and the control SHOWS it. Submitting under a pool the picker still
     // displays as "Auto" would misstate where the money came from.
+    await user.click(screen.getByTestId('pm-account-trigger'));
     expect(screen.getByTestId('pm-account-blue')).toHaveAttribute('aria-checked', 'true');
   });
 
@@ -206,6 +217,7 @@ describe('App money path (e2e)', () => {
     // Auto threads NO accountType — the host drains its own order, which beats
     // naming a pool that cannot cover the bill.
     expect(submittedBodies.at(-1)).not.toHaveProperty('accountType');
+    await user.click(screen.getByTestId('pm-account-trigger'));
     expect(screen.getByTestId('pm-account-auto')).toHaveAttribute('aria-checked', 'true');
   });
 
@@ -223,15 +235,21 @@ describe('App money path (e2e)', () => {
     render(<App />);
     await screen.findByTestId('pm-generate');
 
+    await user.click(screen.getByTestId('pm-account-trigger'));
     await user.click(screen.getByTestId('pm-account-green'));
     await user.type(screen.getByLabelText(/prompt/i), 'a cat');
     await user.click(screen.getByTestId('pm-generate'));
 
     // The App surfaces a friendly "not available" note and falls back to Auto.
     expect(await screen.findByTestId('pm-account-rejected')).toBeInTheDocument();
+    // The trigger publishes the current pool without opening anything, so the
+    // fallback is readable exactly where the old radio row published it.
     await waitFor(() =>
-      expect(screen.getByTestId('pm-account-auto')).toHaveAttribute('aria-checked', 'true'),
+      expect(screen.getByTestId('pm-account-trigger-label')).toHaveTextContent('Auto'),
     );
+    await user.click(screen.getByTestId('pm-account-trigger'));
+    expect(screen.getByTestId('pm-account-auto')).toHaveAttribute('aria-checked', 'true');
+    await user.keyboard('{Escape}');
     // Not shown as a hard "generation failed" error, and no image.
     expect(screen.queryByText(/generation failed/i)).not.toBeInTheDocument();
     expect(screen.queryByAltText(/generated result/i)).not.toBeInTheDocument();
