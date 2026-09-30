@@ -158,8 +158,10 @@ function hexOf(value: string): string {
  * a colour counts" while the pattern named eleven properties. DEMONSTRATED: adding
  * `border-image: linear-gradient(#ff0000, #00ff00) 1` to the boot card ships two
  * off-palette colours with the whole suite green, and `filter: drop-shadow(...)`,
- * `border-inline-start`, `border-block`, `-webkit-text-stroke` and `caret-color`
- * were all equally invisible. Enumerating the colour-bearing half of CSS is not a
+ * `border-inline-start`, `border-block` and `-webkit-text-stroke` were equally
+ * invisible. (`caret-color` was NOT — the old pattern's `/color$/` arm caught it,
+ * which is exactly why an allowlist reads as wider than it is.)
+ * Enumerating the colour-bearing half of CSS is not a
  * thing anyone finishes; enumerating the 12 of this stylesheet's 15 distinct
  * properties that cannot paint is, and it fails in the safe direction — one nobody has
  * classified reads as a paint and has to be either put in the ledger or declared
@@ -276,11 +278,15 @@ describe('the boot skeleton mirrors the app it precedes', () => {
   it('there is deliberately NO `prefers-color-scheme: dark` block', () => {
     // 🔴 THE REASONING THAT USED TO LIVE IN `index.html` AND MUST NOT GO BACK THERE:
     // the built document ships to every viewer, so the argument lives here while the
-    // invariant is pinned mechanically. `prefers-color-scheme` has THREE states, not
-    // two — `dark`, `light`, and `no-preference` — and a UA reporting the third
-    // matches neither media query. So the dark theme is the unconditional base and
-    // `light` is the only override; symmetrising the sheet into two blocks would
-    // leave a `no-preference` viewer with no paint at all.
+    // invariant is pinned mechanically.
+    //
+    // A UA can match NEITHER `dark` NOR `light`. `no-preference` was a real third
+    // value of this media feature — Media Queries 5 later dropped it, but the UAs
+    // that shipped it did not un-ship — and a UA with no support for the feature at
+    // all matches neither query either. So the dark theme is the UNCONDITIONAL base
+    // and `light` is the only override: symmetrising the sheet into one block per
+    // theme would leave such a viewer on the browser's own default, an unstyled flash
+    // on precisely the surface this file exists to keep steady.
     //
     // Pinned in both shapes it can be broken: the condition appearing at all, and a
     // dark ledger row acquiring a media condition (which is what the sibling check's
@@ -288,10 +294,12 @@ describe('the boot skeleton mirrors the app it precedes', () => {
     expect(styleSheet(), 'the boot stylesheet grew a dark media block').not.toMatch(
       /prefers-color-scheme\s*:\s*dark/,
     );
+    const darkRows = COLOUR_LEDGER.filter((r) => r.theme === 'dark');
+    expect(darkRows.length, 'no dark ledger rows at all — this check is inert').toBeGreaterThan(0);
     expect(
-      COLOUR_LEDGER.filter((r) => r.theme === 'dark').map((r) => r.media),
-      'a dark ledger row moved under a media condition',
-    ).toEqual([null, null, null, null]);
+      darkRows.filter((r) => r.media !== null),
+      'a dark ledger row moved under a media condition — the dark rules ARE the base rules',
+    ).toEqual([]);
   });
 
   it('a property outside CARRIES_NO_COLOUR is read as a paint — positive control', () => {
