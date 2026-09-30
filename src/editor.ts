@@ -286,14 +286,49 @@ export function loadImageElement(url: string): Promise<HTMLImageElement> {
   });
 }
 
-/** Trigger a browser download of `blob` as `filename`. */
+/**
+ * Ask the browser to download `blob` as `filename`.
+ *
+ * 🔴 THIS FUNCTION CANNOT OBSERVE WHETHER A FILE ARRIVED, and callers must not
+ * claim it did. An `<a download>` click is fire-and-forget: it returns normally
+ * whether the browser wrote a file, showed a picker, or ignored the click
+ * entirely. In particular a sandboxed iframe WITHOUT `allow-downloads` drops the
+ * download silently — no throw, no event — which is exactly how 0.1.0–0.1.5
+ * shipped a Download button that printed "Saved" and produced nothing.
+ *
+ * 🔴 AND THIS APP CANNOT ASK FOR THAT TOKEN. `civitai app validate` REFUSES
+ * `allow-downloads` for an unverified block, and a submitted block is always
+ * unverified — `manifest.test.ts`'s sandbox block carries the exact wording and
+ * the conditions under which that changes. So this call is expected to be inert
+ * on civitai.com today. It is kept rather than deleted because it costs nothing
+ * and does work everywhere else this bundle runs (`npm run dev`, the harness, a
+ * verified tier later), and because deleting it would leave no path at all. The
+ * honest wording beside the button is the other half.
+ *
+ * 🔴 THE DEFERRED REVOKE IS NOT A FIX FOR THAT EITHER. Revoking the object URL on the line
+ * after `a.click()` is a real race — the navigation the click starts may not
+ * have read the URL yet — but a three-case controlled experiment in headless
+ * chromium showed it is NOT what broke the button: an unsandboxed page running
+ * this exact code, synchronous revoke included, downloaded the file. It is
+ * removed here because it is wrong, not because it was the cause. The revoke
+ * still happens (an object URL pins its blob for the life of the document);
+ * `setTimeout` just moves it past the click's own task.
+ */
 export function downloadBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
+  a.rel = 'noopener';
   document.body.appendChild(a);
   a.click();
   a.remove();
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), REVOKE_DELAY_MS);
 }
+
+/**
+ * How long the exported blob's object URL is kept alive after the click. Long
+ * enough that the download's own fetch has certainly started, short enough that
+ * a viewer exporting repeatedly does not accumulate pinned blobs.
+ */
+export const REVOKE_DELAY_MS = 60_000;
