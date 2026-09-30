@@ -106,6 +106,9 @@ import {
   thumbnailFileName,
   type TextOverlay,
 } from './editor.js';
+import { layoutForTier, type BlockLayout } from './layout.js';
+import { paletteFor, parseHex, type Palette } from './palette.js';
+import { useUltrawide } from './useUltrawide.js';
 
 /**
  * Which generation path the page is driving:
@@ -235,12 +238,22 @@ export function App() {
   // dragging a window edge 200px inside one tier re-renders this block zero
   // times. Full guide: https://developer.civitai.com/apps/responsive
   const bp = useBlockBreakpoint(rootRef);
-  // ONE structural decision, deliberately. `below('sm')` is the "am I in a narrow
-  // slot?" question every block eventually asks; everything else here is fluid
-  // CSS already. `measured` is not gated on because the fallback (`'base'`, i.e.
-  // narrow) is the safe branch for a block — see the hook's own docs for when to
-  // gate on it instead.
-  const narrow = bp.below('sm');
+  // 🔴 THE TIER CANNOT ANSWER "ULTRAWIDE" AND NEVER WILL. `xl` is UNBOUNDED —
+  // 1440px and 2560px resolve identically — and the SDK hook deliberately exposes
+  // no raw width. So the fourth column needs a threshold this app owns. Same
+  // observe/dedupe/seed discipline, resolved to a boolean; see `useUltrawide.ts`.
+  const ultrawide = useUltrawide(rootRef);
+  // ONE PLACE where width decides shape. Every layout decision below reads a
+  // field off this object; none of them re-derives a breakpoint comparison. The
+  // function is pure and unit-tested with literal expectations per tier
+  // (`layout.test.ts`), which is what makes the 640px column this replaces
+  // impossible to reintroduce by accident at one of six call sites.
+  //
+  // `measured` is not gated on: the fallback tier is `'base'`, whose branch is the
+  // single-column layout, which is the safe answer for an unmeasured block.
+  const layout = layoutForTier(bp.tier, ultrawide);
+  // The app-owned palette for the theme the host reports (`brandDepth: "skin"`).
+  const pal = paletteFor(theme);
 
   const [mode, setMode] = useState<GenMode>('generate');
   const [prompt, setPrompt] = useState('');
@@ -1024,7 +1037,7 @@ export function App() {
   // it. Only the container differs between the wide and narrow branches.
   const modelRow = (
     <>
-      <span style={currentModelStyle} title={checkpoint.label} data-testid="pm-model-label">
+      <span style={currentModelStyle(pal)} title={checkpoint.label} data-testid="pm-model-label">
         {checkpoint.label}
         {checkpoint.baseModel ? ` (${checkpoint.baseModel})` : ''}
       </span>
@@ -1042,10 +1055,21 @@ export function App() {
 
   // ---- Render ----
 
+  // The block root, shared by all three returns below. `data-theme` is what the
+  // W6 pack's CSS reads; the `data-*` layout attributes carry the numbers
+  // `layoutForTier` produced so a jsdom test can assert the whole chain — tier in,
+  // literal layout out, layout on the DOM — rather than only the pure function.
+  const rootProps = {
+    ref: rootRef,
+    'data-theme': theme,
+    'data-block-tier': bp.tier,
+    'data-ultrawide': layout.ultrawide ? 'true' : 'false',
+    style: shellStyle(pal),
+  } as const;
+
   if (!ready) {
     return (
-      // Theme the block's OWN root; that's what the pack's CSS reads.
-      <div ref={rootRef} data-theme={theme} data-block-tier={bp.tier} style={shell}>
+      <div {...rootProps}>
         <Card padding="lg">
           <Group gap={10}>
             <Badge color="info" variant="light">
@@ -1071,570 +1095,701 @@ export function App() {
   // stays mounted-below (state intact) but visually swapped out.
   if (editing) {
     return (
-      <div ref={rootRef} data-theme={theme} data-block-tier={bp.tier} style={shell}>
-        <Card padding="lg" style={cardStyle} data-testid="pm-editor">
-          <Stack gap={12}>
-            <Group justify="space-between" align="center" wrap={false}>
-              <strong style={titleStyle}>Edit thumbnail</strong>
-              <Button variant="light" onClick={() => setEditing(null)} data-testid="pm-editor-back">
-                Back
-              </Button>
-            </Group>
+      <div {...rootProps}>
+        <div style={contentStyle(layout)} {...contentProps(layout)}>
+          <Card padding="lg" style={fillStyle} data-testid="pm-editor">
+            <Stack gap={12}>
+              <Group justify="space-between" align="center" wrap={false}>
+                <strong style={titleStyle}>Edit thumbnail</strong>
+                <Button
+                  variant="light"
+                  onClick={() => setEditing(null)}
+                  data-testid="pm-editor-back"
+                >
+                  Back
+                </Button>
+              </Group>
 
-            {editorStatus === 'loading' && <span style={fieldDescStyle}>Loading image…</span>}
+              {editorStatus === 'loading' && (
+                <span style={fieldDescStyle(pal)}>Loading image…</span>
+              )}
 
-            {editorStatus === 'error' && (
-              <Alert
-                color="warning"
-                title="Couldn't open the image in the editor"
-                data-testid="pm-editor-error"
-              >
-                The image host refused a cross-origin load, so the canvas editor can&apos;t run on
-                it.{' '}
-                <a href={editing ?? '#'} target="_blank" rel="noreferrer">
-                  Open the image directly
-                </a>{' '}
-                to save it manually.
-              </Alert>
-            )}
+              {editorStatus === 'error' && (
+                <Alert
+                  color="warning"
+                  title="Couldn't open the image in the editor"
+                  data-testid="pm-editor-error"
+                >
+                  The image host refused a cross-origin load, so the canvas editor can&apos;t run
+                  on it.{' '}
+                  <a href={editing ?? '#'} target="_blank" rel="noreferrer">
+                    Open the image directly
+                  </a>{' '}
+                  to save it manually.
+                </Alert>
+              )}
 
-            {editorStatus === 'ready' && (
-              <>
-                <canvas
-                  ref={canvasRef}
-                  width={YT_W}
-                  height={YT_H}
-                  style={canvasStyle}
-                  data-testid="pm-editor-canvas"
-                  aria-label="Thumbnail preview"
-                />
+              {editorStatus === 'ready' && (
+                /* 🔴 THE CANVAS IS 1280×720 AND USED TO RENDER ABOVE ITS OWN
+                   CONTROLS IN A 640px COLUMN — half resolution, with the
+                   sliders pushed off screen, while ~900px of the block sat
+                   empty. At `lg`+ the canvas takes the wide half and its text
+                   controls sit beside it, so a title tweak and its result are
+                   visible at the same time. */
+                <div
+                  style={editorSplitStyle(layout)}
+                  data-testid="pm-editor-split"
+                  data-layout={layout.editorSideBySide ? 'side-by-side' : 'stacked'}
+                >
+                  <canvas
+                    ref={canvasRef}
+                    width={YT_W}
+                    height={YT_H}
+                    style={canvasStyle(pal)}
+                    data-testid="pm-editor-canvas"
+                    aria-label="Thumbnail preview"
+                  />
 
-                <TextInput
-                  label="Title text"
-                  value={overlay.text}
-                  onChange={(e) => setOverlay((o) => ({ ...o, text: e.target.value }))}
-                  data-testid="pm-editor-text"
-                  aria-label="Title text"
-                />
-
-                <Slider
-                  label="Text size"
-                  min={4}
-                  max={60}
-                  step={1}
-                  showValue
-                  value={overlay.sizePct}
-                  onChange={(v) => setOverlay((o) => ({ ...o, sizePct: v }))}
-                  data-testid="pm-editor-size"
-                  aria-label="Text size"
-                />
-                <Slider
-                  label="Horizontal position"
-                  min={0}
-                  max={100}
-                  step={1}
-                  showValue
-                  value={overlay.xPct}
-                  onChange={(v) => setOverlay((o) => ({ ...o, xPct: v }))}
-                  data-testid="pm-editor-x"
-                  aria-label="Horizontal position"
-                />
-                <Slider
-                  label="Vertical position"
-                  min={0}
-                  max={100}
-                  step={1}
-                  showValue
-                  value={overlay.yPct}
-                  onChange={(v) => setOverlay((o) => ({ ...o, yPct: v }))}
-                  data-testid="pm-editor-y"
-                  aria-label="Vertical position"
-                />
-                <Slider
-                  label="Outline width"
-                  min={0}
-                  max={50}
-                  step={1}
-                  showValue
-                  value={overlay.strokePct}
-                  onChange={(v) => setOverlay((o) => ({ ...o, strokePct: v }))}
-                  data-testid="pm-editor-stroke"
-                  aria-label="Outline width"
-                />
-
-                <Group gap={16} align="center">
-                  <label style={colorLabelStyle}>
-                    <span style={fieldDescStyle}>Text</span>
-                    <input
-                      type="color"
-                      value={overlay.color}
-                      onChange={(e) => setOverlay((o) => ({ ...o, color: e.target.value }))}
-                      data-testid="pm-editor-color"
-                      aria-label="Text color"
-                      style={colorInputStyle}
+                  <div style={editorControlsStyle} data-testid="pm-editor-controls">
+                    <TextInput
+                      label="Title text"
+                      value={overlay.text}
+                      onChange={(e) => setOverlay((o) => ({ ...o, text: e.target.value }))}
+                      data-testid="pm-editor-text"
+                      aria-label="Title text"
                     />
-                  </label>
-                  <label style={colorLabelStyle}>
-                    <span style={fieldDescStyle}>Outline</span>
-                    <input
-                      type="color"
-                      value={overlay.strokeColor}
-                      onChange={(e) => setOverlay((o) => ({ ...o, strokeColor: e.target.value }))}
-                      data-testid="pm-editor-strokecolor"
-                      aria-label="Outline color"
-                      style={colorInputStyle}
+
+                    <Slider
+                      label="Text size"
+                      min={4}
+                      max={60}
+                      step={1}
+                      showValue
+                      value={overlay.sizePct}
+                      onChange={(v) => setOverlay((o) => ({ ...o, sizePct: v }))}
+                      data-testid="pm-editor-size"
+                      aria-label="Text size"
                     />
-                  </label>
-                </Group>
+                    <Slider
+                      label="Horizontal position"
+                      min={0}
+                      max={100}
+                      step={1}
+                      showValue
+                      value={overlay.xPct}
+                      onChange={(v) => setOverlay((o) => ({ ...o, xPct: v }))}
+                      data-testid="pm-editor-x"
+                      aria-label="Horizontal position"
+                    />
+                    <Slider
+                      label="Vertical position"
+                      min={0}
+                      max={100}
+                      step={1}
+                      showValue
+                      value={overlay.yPct}
+                      onChange={(v) => setOverlay((o) => ({ ...o, yPct: v }))}
+                      data-testid="pm-editor-y"
+                      aria-label="Vertical position"
+                    />
+                    <Slider
+                      label="Outline width"
+                      min={0}
+                      max={50}
+                      step={1}
+                      showValue
+                      value={overlay.strokePct}
+                      onChange={(v) => setOverlay((o) => ({ ...o, strokePct: v }))}
+                      data-testid="pm-editor-stroke"
+                      aria-label="Outline width"
+                    />
 
-                {exportNote && (
-                  <span style={fieldDescStyle} data-testid="pm-export-note">
-                    {exportNote}
-                  </span>
-                )}
+                    <Group gap={16} align="center">
+                      <label style={colorLabelStyle}>
+                        <span style={fieldDescStyle(pal)}>Text</span>
+                        <input
+                          type="color"
+                          value={overlay.color}
+                          onChange={(e) => setOverlay((o) => ({ ...o, color: e.target.value }))}
+                          data-testid="pm-editor-color"
+                          aria-label="Text color"
+                          style={colorInputStyle(pal)}
+                        />
+                      </label>
+                      <label style={colorLabelStyle}>
+                        <span style={fieldDescStyle(pal)}>Outline</span>
+                        <input
+                          type="color"
+                          value={overlay.strokeColor}
+                          onChange={(e) => setOverlay((o) => ({ ...o, strokeColor: e.target.value }))}
+                          data-testid="pm-editor-strokecolor"
+                          aria-label="Outline color"
+                          style={colorInputStyle(pal)}
+                        />
+                      </label>
+                    </Group>
 
-                <Group gap={8}>
-                  <Button
-                    fullWidth
-                    onClick={() => {
-                      const canvas = canvasRef.current;
-                      if (!canvas || !editing) return;
-                      setExportNote('Exporting…');
-                      const toBlob = (quality: number) =>
-                        new Promise<Blob | null>((resolve) =>
-                          canvas.toBlob(resolve, 'image/jpeg', quality),
-                        );
-                      void exportLadder(toBlob)
-                        .then((res) => {
-                          downloadBlob(res.blob, thumbnailFileName(downloadCount + 1));
-                          setDownloadCount((n) => n + 1);
-                          setExportNote(
-                            res.oversized
-                              ? `Saved, but ${Math.round(res.bytes / 1024)} KB is over YouTube's 2 MB cap — trim the image.`
-                              : `Saved · ${Math.round(res.bytes / 1024)} KB · quality ${Math.round(res.quality * 100)}%`,
-                          );
-                        })
-                        .catch(() => setExportNote('Export failed — try again.'));
-                    }}
-                    data-testid="pm-editor-download"
-                  >
-                    Download 1280×720 JPG
-                  </Button>
-                </Group>
-              </>
-            )}
-          </Stack>
-        </Card>
+                    {exportNote && (
+                      <span style={fieldDescStyle(pal)} data-testid="pm-export-note">
+                        {exportNote}
+                      </span>
+                    )}
+
+                    <Group gap={8}>
+                      <Button
+                        fullWidth
+                        onClick={() => {
+                          const canvas = canvasRef.current;
+                          if (!canvas || !editing) return;
+                          setExportNote('Exporting…');
+                          const toBlob = (quality: number) =>
+                            new Promise<Blob | null>((resolve) =>
+                              canvas.toBlob(resolve, 'image/jpeg', quality),
+                            );
+                          void exportLadder(toBlob)
+                            .then((res) => {
+                              downloadBlob(res.blob, thumbnailFileName(downloadCount + 1));
+                              setDownloadCount((n) => n + 1);
+                              setExportNote(
+                                res.oversized
+                                  ? `Saved, but ${Math.round(res.bytes / 1024)} KB is over YouTube's 2 MB cap — trim the image.`
+                                  : `Saved · ${Math.round(res.bytes / 1024)} KB · quality ${Math.round(res.quality * 100)}%`,
+                              );
+                            })
+                            .catch(() => setExportNote('Export failed — try again.'));
+                        }}
+                        data-testid="pm-editor-download"
+                      >
+                        Download 1280×720 JPG
+                      </Button>
+                    </Group>
+                  </div>
+                </div>
+              )}
+            </Stack>
+          </Card>
+        </div>
       </div>
     );
   }
 
-  return (
-    // `data-block-tier` is not required by anything — it is here so you can see
-    // the tier in devtools (and assert it in a test) while you build a layout.
-    <div ref={rootRef} data-theme={theme} data-block-tier={bp.tier} style={shell}>
-      <Card padding="lg" style={cardStyle}>
-        <Stack gap={16}>
-          {/* The in-app hero. Pure CSS — a gradient wash plus the app name — so
-              it costs no bytes, scales to any block width, and reads correctly
-              in both host themes because every colour in it is a pack token.
-              (The STORE cover art is a different asset and ships in assets/.) */}
-          <div style={heroStyle} data-testid="yt-hero">
-            <strong style={heroTitleStyle}>YT Thumbnail</strong>
-            <span style={heroSubStyle}>Exports at 1280×720, ready to upload.</span>
-          </div>
+  // ---- Render pieces ----
+  //
+  // Each constant below is ONE surface, hoisted out of the return so the two
+  // layouts (rail at `lg`+, single column below it) share ONE copy of it. Same
+  // idiom `modelRow` above already used: only the CONTAINER differs between the
+  // branches, never the content — which is what stops the two layouts drifting
+  // into two different apps.
 
-          {/* Mode toggle: Generate (txt2img) ⇄ Remix (img2img). Switching swaps
-              the source control + the body-builder while REUSING the one
-              estimate -> consent -> submit -> poll driver + the shared
-              checkpoint/LoRA/account controls below. */}
-          <SegmentedControl
-            fullWidth
-            aria-label="Generation mode"
-            value={mode}
-            onChange={(v) => switchMode(v as GenMode)}
-            disabled={busy}
-            data={[
-              { value: 'generate', label: 'Generate' },
-              { value: 'remix', label: 'Remix an image' },
-            ]}
-          />
+  // The in-app hero. Pure CSS — a gradient wash plus the app name — so it costs
+  // no bytes and stays sharp at any block width. Under `brandDepth: "skin"` its
+  // colours come from the app's own palette rather than pack tokens, which is why
+  // both gradient stops AND both text colours are asserted in both themes.
+  // (The STORE cover art is a different asset and ships in assets/.)
+  const hero = (
+    <div style={heroStyle(pal, layout)} data-testid="yt-hero">
+      <strong style={heroTitleStyle(layout)}>YT Thumbnail</strong>
+      <span style={heroSubStyle(pal)}>Exports at 1280×720, ready to upload.</span>
+    </div>
+  );
 
-          {isRemix && (
-            <div style={fieldStyle}>
-              <span style={fieldLabelStyle}>Source image</span>
-              {sourceImage ? (
-                <Group gap={8} align="center" data-testid="pm-remix-preview">
-                  <img src={sourceImage.url} alt="Remix source" style={sourceThumbStyle} />
-                  <Button variant="light" size="sm" loading={uploadBusy} onClick={() => void onChooseSource()}>
-                    Replace
-                  </Button>
-                  <Button
-                    variant="subtle"
-                    size="sm"
-                    color="error"
-                    onClick={() => setSourceImage(null)}
-                    data-testid="pm-remix-clear"
-                  >
-                    Clear
-                  </Button>
-                </Group>
-              ) : (
-                <span>
-                  <Button
-                    variant="light"
-                    loading={uploadBusy}
-                    onClick={() => void onChooseSource()}
-                    data-testid="pm-remix-upload"
-                  >
-                    Choose an image
-                  </Button>
-                </span>
-              )}
-            </div>
-          )}
+  // Mode toggle: Generate (txt2img) ⇄ Remix (img2img). Switching swaps the source
+  // control + the body-builder while REUSING the one estimate -> consent ->
+  // submit -> poll driver + the shared checkpoint/LoRA/account controls.
+  const modeBlock = (
+    <>
+      <SegmentedControl
+        fullWidth
+        aria-label="Generation mode"
+        value={mode}
+        onChange={(v) => switchMode(v as GenMode)}
+        disabled={busy}
+        data={[
+          { value: 'generate', label: 'Generate' },
+          { value: 'remix', label: 'Remix an image' },
+        ]}
+      />
 
-          {/* 🔴 The description deliberately does NOT claim a generation size.
-              Measured 2026-09-28: the platform IGNORES params.width/height —
-              1280x720 and 1344x768 requests, on SD XL 1.0 and on FLUX.1 [dev],
-              all came back 1216x832. The old string "It is generated at 1280×720
-              (16:9)" was therefore FALSE. What IS true is the export: the canvas
-              editor cover-crops to exactly 1280x720 on download. */}
-          <Textarea
-            label="Prompt"
-            description="Describe the thumbnail. The download is cropped to 1280×720."
-            placeholder="a serene mountain lake at golden hour, highly detailed"
-            value={prompt}
-            minRows={4}
-            maxLength={PROMPT_MAX}
-            required
-            error={promptError}
-            onChange={(e) => setPrompt(e.target.value)}
-            onBlur={() => setTouched(true)}
-          />
-
-          {/* FORMATS. Multi-select, and the selection count IS the workflow
-              count: each format runs its own generation with its own prompt
-              suffix, so picking a second format is picking a second bill. That
-              is stated once, here, and again as the summed price on Generate. */}
-          <div style={fieldStyle}>
-            <Group justify="space-between" align="center" gap={8}>
-              <span style={fieldLabelStyle}>
-                Formats{' '}
-                <Badge color="info" variant="light">
-                  {selectedFormats.length}
-                </Badge>
-              </span>
-              <Group gap={6}>
-                <Button
-                  variant="subtle"
-                  size="sm"
-                  disabled={busy || storageState === 'anon' || customFormatsFull(customFormats)}
-                  onClick={onNewFormat}
-                  data-testid="yt-format-new"
-                >
-                  + New
-                </Button>
-                <Button
-                  variant="subtle"
-                  size="sm"
-                  disabled={busy}
-                  onClick={onOpenBoard}
-                  data-testid="yt-board-toggle"
-                >
-                  {boardOpen ? 'Hide published' : 'Browse published'}
-                </Button>
-              </Group>
-            </Group>
-            <span style={fieldDescStyle} data-testid="yt-format-cost-note">
-              {selectedFormats.length === 1
-                ? 'One generation. Costs Buzz.'
-                : `${selectedFormats.length} separate generations — each one costs Buzz.`}
-            </span>
-
-            <FormatPicker
-              formats={availableFormats}
-              selectedIds={selectedFormatIds}
-              onToggle={onToggleFormat}
-              onEdit={onEditFormat}
-              onDelete={(id) => void onDeleteFormat(id)}
-              onPublish={(fmt) => void onPublishFormat(fmt)}
-              busyId={formatBusyId}
-              disabled={busy}
-            />
-
-            {/* 🔴 The anonymous path, said out loud. `useAppStorage` resolves
-                null on read and REJECTS every write for an anonymous viewer, so
-                a "New format" button that looked enabled would simply eat their
-                work. */}
-            {storageState === 'anon' && (
-              <span style={fieldDescStyle} data-testid="yt-storage-anon">
-                Sign in to make and save your own formats.
-              </span>
-            )}
-            {storageState === 'error' && (
-              <span style={fieldDescStyle} data-testid="yt-storage-error">
-                Couldn&apos;t load your saved formats. The built-in ones still work.
-              </span>
-            )}
-            {storageNote && (
-              <span style={fieldDescStyle} data-testid="yt-storage-note">
-                {storageNote}
-              </span>
-            )}
-
-            {formatDraft && (
-              <FormatEditor
-                draft={formatDraft}
-                error={formatError}
-                busy={formatBusyId != null}
-                onChange={setFormatDraft}
-                onSave={() => void onSaveFormat()}
-                onCancel={() => {
-                  setFormatDraft(null);
-                  setFormatError(null);
-                }}
-              />
-            )}
-
-            {boardOpen && (
-              <PublishedBoard
-                items={boardItems}
-                loading={boardLoading}
-                error={boardError}
-                addedIds={new Set(addedPublished.map((f) => f.id))}
-                busyKey={boardBusyKey}
-                onAdd={onAddPublished}
-                onVote={(f) => void onVotePublished(f)}
-                onReport={(f) => void onReportPublished(f)}
-                onRefresh={() => void loadBoard()}
-              />
-            )}
-          </div>
-
-          {/* Model control. A page carries no host model context, so the app
-              starts on DEFAULT_CHECKPOINT and lets the user CHANGE it via the
-              HOST's resource picker (useResourcePicker, type=Checkpoint,
-              UNFILTERED so every ecosystem is reachable) — the block never
-              browses a catalog. Every pick is DISCOVERY ONLY: the server
-              re-validates + re-prices it at estimate/submit. */}
-          <div style={fieldStyle}>
-            <span style={fieldLabelStyle}>Model</span>
-            {/* THE RESPONSIVE EXAMPLE. Side by side when the block has room;
-                stacked, with a full-width button, when it doesn't. This is a
-                STRUCTURAL swap (a different element), which is the kind of
-                change CSS alone handles badly and `useBlockBreakpoint` is
-                for — pure sizing/spacing should stay in fluid CSS. */}
-            {narrow ? (
-              <Stack gap={8} align="stretch" data-testid="pm-model-row" data-layout="stacked">
-                {modelRow}
-              </Stack>
-            ) : (
-              <Group
-                justify="space-between"
-                align="center"
-                gap={8}
-                wrap={false}
-                data-testid="pm-model-row"
-                data-layout="row"
+      {isRemix && (
+        <div style={fieldStyle}>
+          <span style={fieldLabelStyle}>Source image</span>
+          {sourceImage ? (
+            <Group gap={8} align="center" data-testid="pm-remix-preview">
+              <img src={sourceImage.url} alt="Remix source" style={sourceThumbStyle(pal)} />
+              <Button
+                variant="light"
+                size="sm"
+                loading={uploadBusy}
+                onClick={() => void onChooseSource()}
               >
-                {modelRow}
-              </Group>
-            )}
-          </div>
-
-          {/* LoRA control. Add up to MAX_LORAS LoRAs on top of the checkpoint
-              via the HOST's resource picker (useResourcePicker, type=LORA),
-              each with an adjustable weight (the pack's Slider). Every LoRA +
-              weight is DISCOVERY ONLY: the server re-validates (LoRA-only?
-              base-model compatible? entitled?) + re-prices the whole body at
-              estimate/submit. */}
-          <LoraSelector
-            selected={loras}
-            capReached={loraCapReached}
-            pickerBusy={pickerBusy}
-            onAdd={() => void onAddLora()}
-            onRemove={onRemoveLora}
-            onWeight={onLoraWeight}
-          />
-
-          {/* Quantity — how many candidates per generation (server cap 4).
-              Multiple candidates cost proportionally; the estimate reflects it. */}
-          <div style={fieldStyle}>
-            <span style={fieldLabelStyle}>Images per format</span>
-            {/* 🔴 COST DISCLOSURE — kept deliberately while other copy was cut.
-                Quantity and format count MULTIPLY: this is images per format,
-                per run, and each one is charged. */}
-            <span style={fieldDescStyle}>
-              1–{QUANTITY_MAX} per format. Each image costs Buzz.
-            </span>
-            <div role="radiogroup" aria-label="Number of images" style={pickerRowStyle}>
-              {[1, 2, 3, 4].slice(0, QUANTITY_MAX - QUANTITY_MIN + 1).map((n) => (
-                <button
-                  key={n}
-                  type="button"
-                  role="radio"
-                  aria-checked={clampQuantity(quantity) === n}
-                  disabled={busy}
-                  onClick={() => setQuantity(n)}
-                  data-testid={`pm-quantity-${n}`}
-                  style={pickerBtnStyle(clampQuantity(quantity) === n, busy)}
-                >
-                  {n}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {!anon && (
-            <AccountPicker
-              value={account}
-              onChange={(v) => {
-                // A manual pick freezes the blue -> green -> yellow default:
-                // from here on the app never silently reassigns their pool.
-                accountTouchedRef.current = true;
-                setAccount(v);
-              }}
-              balance={balance}
-              disabled={busy}
-            />
-          )}
-
-          {anon ? (
-            <Button fullWidth onClick={() => requestSignIn()} data-testid="pm-signin">
-              Sign in to generate
-            </Button>
+                Replace
+              </Button>
+              <Button
+                variant="subtle"
+                size="sm"
+                color="error"
+                onClick={() => setSourceImage(null)}
+                data-testid="pm-remix-clear"
+              >
+                Clear
+              </Button>
+            </Group>
           ) : (
-            <Button
-              fullWidth
-              loading={busy}
-              disabled={prompt.trim().length === 0 || remixIncomplete}
-              onClick={onGenerateClick}
-              data-testid="pm-generate"
-            >
-              {/* The price on the button is the SUM across every selected
-                  format. `estimatePartial` means some formats could not be
-                  priced, so the figure is a floor, not the bill — say "from"
-                  rather than quote a total we know is incomplete.
-                  Unpriced at all -> no figure: `estimate()` 403s until the
-                  viewer consents, so a fresh viewer legitimately sees none. */}
-              {busy
-                ? phaseLabel(phase)
-                : estimatedCost != null
-                  ? `Generate · ${estimatePartial ? 'from ' : ''}${formatCost(estimatedCost)} Buzz`
-                  : 'Generate'}
-            </Button>
-          )}
-
-          {remixIncomplete && (
-            <span style={fieldDescStyle} data-testid="pm-remix-hint">
-              Choose a source image above to remix it.
+            <span>
+              <Button
+                variant="light"
+                loading={uploadBusy}
+                onClick={() => void onChooseSource()}
+                data-testid="pm-remix-upload"
+              >
+                Choose an image
+              </Button>
             </span>
           )}
+        </div>
+      )}
+    </>
+  );
 
-          {phase === 'needs-consent' && (
-            <Alert color="info" title="Grant access to generate">
-              Confirm in the Civitai dialog. If you dismissed it, click Generate again.
-            </Alert>
-          )}
+  // 🔴 The description deliberately does NOT claim a generation size. Measured
+  // 2026-09-28: the platform IGNORES params.width/height — 1280x720 and 1344x768
+  // requests, on SD XL 1.0 and on FLUX.1 [dev], all came back 1216x832. The old
+  // string "It is generated at 1280×720 (16:9)" was therefore FALSE. What IS true
+  // is the export: the canvas editor cover-crops to exactly 1280x720 on
+  // download — which the hero states and the download button repeats, so the crop
+  // no longer needs restating here (phase 2: delete copy that explains what the
+  // UI already shows).
+  const promptBlock = (
+    <Textarea
+      label="Prompt"
+      description="Describe the thumbnail."
+      placeholder="a serene mountain lake at golden hour, highly detailed"
+      value={prompt}
+      minRows={4}
+      maxLength={PROMPT_MAX}
+      required
+      error={promptError}
+      onChange={(e) => setPrompt(e.target.value)}
+      onBlur={() => setTouched(true)}
+    />
+  );
 
-          {phase === 'insufficient' && (
-            <Alert color="warning" title="Not enough Buzz" data-testid="pm-insufficient">
-              Top up your Buzz balance and try again.
-            </Alert>
-          )}
+  // FORMATS. Multi-select, and the selection count IS the workflow count: each
+  // format runs its own generation with its own prompt suffix, so picking a
+  // second format is picking a second bill. That is stated once, here, and again
+  // as the summed price on Generate.
+  const formatsBlock = (
+    <div style={fieldStyle}>
+      <Group justify="space-between" align="center" gap={8}>
+        <span style={fieldLabelStyle}>
+          Formats{' '}
+          <Badge color="info" variant="light">
+            {selectedFormats.length}
+          </Badge>
+        </span>
+        <Group gap={6}>
+          <Button
+            variant="subtle"
+            size="sm"
+            disabled={busy || storageState === 'anon' || customFormatsFull(customFormats)}
+            onClick={onNewFormat}
+            data-testid="yt-format-new"
+          >
+            + New
+          </Button>
+          <Button
+            variant="subtle"
+            size="sm"
+            disabled={busy}
+            onClick={onOpenBoard}
+            data-testid="yt-board-toggle"
+          >
+            {boardOpen ? 'Hide published' : 'Browse published'}
+          </Button>
+        </Group>
+      </Group>
+      {/* 🔴 COST DISCLOSURE — kept deliberately while other copy was cut. */}
+      <span style={fieldDescStyle(pal)} data-testid="yt-format-cost-note">
+        {selectedFormats.length === 1
+          ? 'One generation. Costs Buzz.'
+          : `${selectedFormats.length} separate generations — each one costs Buzz.`}
+      </span>
 
-          {phase === 'account-rejected' && error && (
-            <Alert
-              color="warning"
-              title="Buzz account not available"
-              withCloseButton
-              onClose={() => setError(null)}
-              data-testid="pm-account-rejected"
-            >
-              {error}
-            </Alert>
-          )}
+      <FormatPicker
+        formats={availableFormats}
+        selectedIds={selectedFormatIds}
+        onToggle={onToggleFormat}
+        onEdit={onEditFormat}
+        onDelete={(id) => void onDeleteFormat(id)}
+        onPublish={(fmt) => void onPublishFormat(fmt)}
+        busyId={formatBusyId}
+        disabled={busy}
+        pal={pal}
+        minCardPx={layout.formatMinCardPx}
+      />
 
-          {/* A WHOLE-BATCH failure: nothing succeeded. Named per format, because
-              with N runs "Generation failed" alone does not say which. */}
-          {phase === 'failed' && failed.length > 0 && (
-            <Alert color="error" title="Generation failed" data-testid="pm-failed">
-              <Stack gap={4}>
-                {failed.map((r) => (
-                  <span key={r.formatId}>
-                    <strong>{r.label}</strong>: {r.error ?? 'failed'}
-                  </span>
-                ))}
-              </Stack>
-            </Alert>
-          )}
+      {/* 🔴 The anonymous path, said out loud. `useAppStorage` resolves null on
+          read and REJECTS every write for an anonymous viewer, so a "New format"
+          button that looked enabled would simply eat their work. */}
+      {storageState === 'anon' && (
+        <span style={fieldDescStyle(pal)} data-testid="yt-storage-anon">
+          Sign in to make and save your own formats.
+        </span>
+      )}
+      {storageState === 'error' && (
+        <span style={fieldDescStyle(pal)} data-testid="yt-storage-error">
+          Couldn&apos;t load your saved formats. The built-in ones still work.
+        </span>
+      )}
+      {storageNote && (
+        <span style={fieldDescStyle(pal)} data-testid="yt-storage-note">
+          {storageNote}
+        </span>
+      )}
 
-          {/* 🔴 PARTIAL FAILURE. Some formats came back, some did not. The
-              successes are rendered below exactly as usual — the failures are
-              reported ALONGSIDE them, never instead of them. */}
-          {partialFailure && (
-            <Alert
-              color="warning"
-              title={`${failed.length} of ${runs.length} formats didn't finish`}
-              data-testid="pm-partial"
-            >
-              <Stack gap={4}>
-                {failed.map((r) => (
-                  <span key={r.formatId}>
-                    <strong>{r.label}</strong>: {r.error ?? 'failed'}
-                  </span>
-                ))}
-                <span>You were only charged for the ones that ran.</span>
-              </Stack>
-            </Alert>
-          )}
+      {formatDraft && (
+        <FormatEditor
+          draft={formatDraft}
+          error={formatError}
+          busy={formatBusyId != null}
+          onChange={setFormatDraft}
+          onSave={() => void onSaveFormat()}
+          onCancel={() => {
+            setFormatDraft(null);
+            setFormatError(null);
+          }}
+          pal={pal}
+        />
+      )}
 
-          {candidates.length > 0 && (
-            <Stack gap={8}>
-              {/* 🔴 SPEND IS THE SERVER'S NUMBER, SUMMED OVER THE RUNS THAT
-                  REPORTED ONE. It never falls back to the estimate, so a partial
-                  failure cannot inflate it into a bill for work that never
-                  ran — `formatCost(null)` renders '—'. */}
-              <Alert color="success" title="Done" data-testid="pm-spent">
-                Spent <strong>{formatCost(actualCost)}</strong> Buzz
-                <SpentAccountNote runs={runs} />.
-              </Alert>
-              <span style={fieldLabelStyle}>
-                {candidates.length} candidate{candidates.length === 1 ? '' : 's'} — pick one to edit
-              </span>
-              <div style={galleryStyle}>
-                {candidates.map((c, i) => (
-                  <div key={c.url} style={galleryItemStyle}>
-                    <div style={{ position: 'relative' }}>
-                      <img
-                        src={c.url}
-                        alt={`Generated result — ${c.formatLabel}`}
-                        style={imageStyle}
-                        data-testid="pm-result-img"
-                      />
-                      {/* Each candidate carries the format that made it — with
-                          N formats in one grid, an untagged image is unusable
-                          for deciding which format to keep paying for. */}
-                      <span style={candidateTagStyle} data-testid="pm-result-format">
-                        {c.formatLabel}
-                      </span>
-                    </div>
-                    <Button
-                      size="sm"
-                      variant="light"
-                      onClick={() => setEditing(c.url)}
-                      data-testid={`pm-edit-${i}`}
-                    >
-                      Edit &amp; download
-                    </Button>
-                  </div>
-                ))}
-              </div>
-            </Stack>
-          )}
+      {boardOpen && (
+        <PublishedBoard
+          items={boardItems}
+          loading={boardLoading}
+          error={boardError}
+          addedIds={new Set(addedPublished.map((f) => f.id))}
+          busyKey={boardBusyKey}
+          onAdd={onAddPublished}
+          onVote={(f) => void onVotePublished(f)}
+          onReport={(f) => void onReportPublished(f)}
+          onRefresh={() => void loadBoard()}
+          pal={pal}
+        />
+      )}
+    </div>
+  );
+
+  // Model control. A page carries no host model context, so the app starts on
+  // DEFAULT_CHECKPOINT and lets the user CHANGE it via the HOST's resource picker
+  // (useResourcePicker, type=Checkpoint, UNFILTERED so every ecosystem is
+  // reachable) — the block never browses a catalog. Every pick is DISCOVERY ONLY:
+  // the server re-validates + re-prices it at estimate/submit.
+  const modelBlock = (
+    <div style={fieldStyle}>
+      <span style={fieldLabelStyle}>Model</span>
+      {/* Side by side when the block has room; stacked, with a full-width
+          button, when it doesn't. A STRUCTURAL swap (a different element) —
+          the kind of change CSS alone handles badly. The decision comes from
+          `layoutForTier`, not from a breakpoint comparison inlined here. */}
+      {layout.modelRow === 'stacked' ? (
+        <Stack gap={8} align="stretch" data-testid="pm-model-row" data-layout="stacked">
+          {modelRow}
         </Stack>
-      </Card>
+      ) : (
+        <Group
+          justify="space-between"
+          align="center"
+          gap={8}
+          wrap={false}
+          data-testid="pm-model-row"
+          data-layout="row"
+        >
+          {modelRow}
+        </Group>
+      )}
+    </div>
+  );
+
+  // Quantity — how many candidates per generation (server cap 4). Multiple
+  // candidates cost proportionally; the estimate reflects it.
+  const quantityBlock = (
+    <div style={fieldStyle}>
+      <span style={fieldLabelStyle}>Images per format</span>
+      {/* 🔴 COST DISCLOSURE — kept deliberately while other copy was cut.
+          Quantity and format count MULTIPLY: this is images per format, per
+          run, and each one is charged. */}
+      <span style={fieldDescStyle(pal)}>1–{QUANTITY_MAX} per format. Each image costs Buzz.</span>
+      <div role="radiogroup" aria-label="Number of images" style={pickerRowStyle}>
+        {[1, 2, 3, 4].slice(0, QUANTITY_MAX - QUANTITY_MIN + 1).map((n) => (
+          <button
+            key={n}
+            type="button"
+            role="radio"
+            aria-checked={clampQuantity(quantity) === n}
+            disabled={busy}
+            onClick={() => setQuantity(n)}
+            data-testid={`pm-quantity-${n}`}
+            style={pickerBtnStyle(clampQuantity(quantity) === n, busy, pal)}
+          >
+            {n}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
+  // Sign in / Generate, plus the three PRE-SPEND gates. These stay next to the
+  // button that triggers them; post-spend reporting lives with the results.
+  const submitBlock = (
+    <>
+      {anon ? (
+        <Button fullWidth onClick={() => requestSignIn()} data-testid="pm-signin">
+          Sign in to generate
+        </Button>
+      ) : (
+        <Button
+          fullWidth
+          loading={busy}
+          disabled={prompt.trim().length === 0 || remixIncomplete}
+          onClick={onGenerateClick}
+          data-testid="pm-generate"
+        >
+          {/* The price on the button is the SUM across every selected format.
+              `estimatePartial` means some formats could not be priced, so the
+              figure is a floor, not the bill — say "from" rather than quote a
+              total we know is incomplete. Unpriced at all -> no figure:
+              `estimate()` 403s until the viewer consents, so a fresh viewer
+              legitimately sees none. */}
+          {busy
+            ? phaseLabel(phase)
+            : estimatedCost != null
+              ? `Generate · ${estimatePartial ? 'from ' : ''}${formatCost(estimatedCost)} Buzz`
+              : 'Generate'}
+        </Button>
+      )}
+
+      {remixIncomplete && (
+        <span style={fieldDescStyle(pal)} data-testid="pm-remix-hint">
+          Choose a source image above to remix it.
+        </span>
+      )}
+
+      {phase === 'needs-consent' && (
+        <Alert color="info" title="Grant access to generate">
+          Confirm in the Civitai dialog. If you dismissed it, click Generate again.
+        </Alert>
+      )}
+
+      {phase === 'insufficient' && (
+        <Alert color="warning" title="Not enough Buzz" data-testid="pm-insufficient">
+          Top up your Buzz balance and try again.
+        </Alert>
+      )}
+
+      {phase === 'account-rejected' && error && (
+        <Alert
+          color="warning"
+          title="Buzz account not available"
+          withCloseButton
+          onClose={() => setError(null)}
+          data-testid="pm-account-rejected"
+        >
+          {error}
+        </Alert>
+      )}
+    </>
+  );
+
+  // What the run produced — the app's PRIMARY OBJECT, so it is the first thing
+  // under the hero once it exists (phase 2), and it owns the post-spend
+  // reporting: the server's spend figure and any per-format failure.
+  const resultsBlock = (
+    <>
+      {/* A WHOLE-BATCH failure: nothing succeeded. Named per format, because
+          with N runs "Generation failed" alone does not say which. */}
+      {phase === 'failed' && failed.length > 0 && (
+        <Alert color="error" title="Generation failed" data-testid="pm-failed">
+          <Stack gap={4}>
+            {failed.map((r) => (
+              <span key={r.formatId}>
+                <strong>{r.label}</strong>: {r.error ?? 'failed'}
+              </span>
+            ))}
+          </Stack>
+        </Alert>
+      )}
+
+      {/* 🔴 PARTIAL FAILURE. Some formats came back, some did not. The
+          successes are rendered below exactly as usual — the failures are
+          reported ALONGSIDE them, never instead of them. */}
+      {partialFailure && (
+        <Alert
+          color="warning"
+          title={`${failed.length} of ${runs.length} formats didn't finish`}
+          data-testid="pm-partial"
+        >
+          <Stack gap={4}>
+            {failed.map((r) => (
+              <span key={r.formatId}>
+                <strong>{r.label}</strong>: {r.error ?? 'failed'}
+              </span>
+            ))}
+            <span>You were only charged for the ones that ran.</span>
+          </Stack>
+        </Alert>
+      )}
+
+      {candidates.length > 0 && (
+        <Stack gap={8}>
+          {/* 🔴 SPEND IS THE SERVER'S NUMBER, SUMMED OVER THE RUNS THAT
+              REPORTED ONE. It never falls back to the estimate, so a partial
+              failure cannot inflate it into a bill for work that never ran —
+              `formatCost(null)` renders '—'. */}
+          <Alert color="success" title="Done" data-testid="pm-spent">
+            Spent <strong>{formatCost(actualCost)}</strong> Buzz
+            <SpentAccountNote runs={runs} />.
+          </Alert>
+          <span style={fieldLabelStyle}>
+            {candidates.length} candidate{candidates.length === 1 ? '' : 's'}
+          </span>
+          {/* 🔴 THE GRID IS THE POINT OF GENERATING FOUR. It used to be
+              `repeat(2, …)` at EVERY width — two 170px thumbnails on a phone,
+              and two of them in a 640px column on a 1600px block. The column
+              count now comes from `layoutForTier`: 1 on a phone, 2 mid, 3 at
+              `lg`/`xl`, 4 ultrawide, so candidates are actually comparable
+              side by side. */}
+          {/* No `data-columns` here: `galleryStyle`'s `gridTemplateColumns` already
+              carries the count, in the form a browser acts on. */}
+          <div style={galleryStyle(layout)} data-testid="yt-results-grid">
+            {candidates.map((c, i) => (
+              <div key={c.url} style={galleryItemStyle}>
+                <div style={{ position: 'relative' }}>
+                  <img
+                    src={c.url}
+                    alt={`Generated result — ${c.formatLabel}`}
+                    style={imageStyle}
+                    data-testid="pm-result-img"
+                  />
+                  {/* Each candidate carries the format that made it — with N
+                      formats in one grid, an untagged image is unusable for
+                      deciding which format to keep paying for. */}
+                  <span style={candidateTagStyle(pal)} data-testid="pm-result-format">
+                    {c.formatLabel}
+                  </span>
+                </div>
+                <Button
+                  size="sm"
+                  variant="light"
+                  onClick={() => setEditing(c.url)}
+                  data-testid={`pm-edit-${i}`}
+                >
+                  Edit &amp; download
+                </Button>
+              </div>
+            ))}
+          </div>
+        </Stack>
+      )}
+    </>
+  );
+
+  // The inputs, in two halves. 🔴 SPLIT RATHER THAN ONE `controls` CONSTANT
+  // BECAUSE THE FORMAT PICKER SITS BETWEEN THEM below `lg` — it is an input that
+  // decides the bill, so it belongs next to the prompt, not after the Generate
+  // button. At `lg`+ it moves to the main column instead, which is why the two
+  // halves are joined there. Both layouts render the SAME block constants; only
+  // the order and the containers differ.
+  const inputsBeforeFormats = (
+    <>
+      {modeBlock}
+      {promptBlock}
+    </>
+  );
+  const inputsAfterFormats = (
+    <>
+      {modelBlock}
+      <LoraSelector
+        selected={loras}
+        capReached={loraCapReached}
+        pickerBusy={pickerBusy}
+        onAdd={() => void onAddLora()}
+        onRemove={onRemoveLora}
+        onWeight={onLoraWeight}
+        pal={pal}
+      />
+      {quantityBlock}
+      {!anon && (
+        <AccountPicker
+          value={account}
+          onChange={(v) => {
+            // A manual pick freezes the blue -> green -> yellow default: from
+            // here on the app never silently reassigns their pool.
+            accountTouchedRef.current = true;
+            setAccount(v);
+          }}
+          balance={balance}
+          disabled={busy}
+          pal={pal}
+        />
+      )}
+      {submitBlock}
+    </>
+  );
+
+  // ---- The two layouts ----
+
+  // 🔴 AT `lg`+ THE CONTROLS BECOME A PERSISTENT RAIL. The whole point of a
+  // 1600px block is that the inputs and the output can be on screen together: a
+  // stacked layout pushes the candidate grid below the fold, so tweaking a prompt
+  // and judging the result are two separate scroll positions. The persistence here
+  // is the SIDE-BY-SIDE arrangement, not `position: sticky` — see `railStyle` for
+  // why sticky is inert in a host-auto-sized iframe.
+  if (layout.rail) {
+    return (
+      <div {...rootProps}>
+        <div style={contentStyle(layout)} {...contentProps(layout)}>
+          <Stack gap={16}>
+            {hero}
+            <div style={railGridStyle(layout)} data-testid="yt-rail-grid">
+              <aside
+                style={railStyle(pal)}
+                data-testid="yt-rail"
+                aria-label="Generation controls"
+              >
+                <Stack gap={16}>
+                  {inputsBeforeFormats}
+                  {inputsAfterFormats}
+                </Stack>
+              </aside>
+              <main style={mainColumnStyle} data-testid="yt-main">
+                <Stack gap={16}>
+                  {resultsBlock}
+                  {formatsBlock}
+                </Stack>
+              </main>
+            </div>
+          </Stack>
+        </div>
+      </div>
+    );
+  }
+
+  // Below `lg` everything is one column, in the order it is used — except the
+  // results, which jump to the top once they exist (phase 2: the app's primary
+  // object is the first thing on screen).
+  return (
+    <div {...rootProps}>
+      <div style={contentStyle(layout)} {...contentProps(layout)}>
+        <Card padding="lg" style={fillStyle}>
+          <Stack gap={16}>
+            {hero}
+            {resultsBlock}
+            {inputsBeforeFormats}
+            {formatsBlock}
+            {inputsAfterFormats}
+          </Stack>
+        </Card>
+      </div>
     </div>
   );
 }
@@ -1652,6 +1807,7 @@ function LoraSelector({
   onAdd,
   onRemove,
   onWeight,
+  pal,
 }: {
   selected: readonly LoraOption[];
   capReached: boolean;
@@ -1659,6 +1815,7 @@ function LoraSelector({
   onAdd: () => void;
   onRemove: (versionId: number) => void;
   onWeight: (versionId: number, weight: number) => void;
+  pal: Palette;
 }) {
   return (
     <div style={fieldStyle}>
@@ -1668,13 +1825,11 @@ function LoraSelector({
           {selected.length}/{MAX_LORAS}
         </Badge>
       </span>
-      <span style={fieldDescStyle}>Optional. Up to {MAX_LORAS}, each with a weight.</span>
-
       {/* Selected LoRAs, each with a weight control + remove. */}
       {selected.length > 0 && (
         <Stack gap={8} style={loraListStyle}>
           {selected.map((l) => (
-            <div key={l.versionId} style={loraRowStyle} data-testid="pm-lora-row">
+            <div key={l.versionId} style={loraRowStyle(pal)} data-testid="pm-lora-row">
               <div style={loraRowHeadStyle}>
                 <span style={loraNameStyle} title={l.label}>
                   {l.label}
@@ -1718,7 +1873,7 @@ function LoraSelector({
         >
           + Add LoRA
         </Button>
-        {capReached && <span style={fieldDescStyle}>Max {MAX_LORAS} LoRAs selected.</span>}
+        {capReached && <span style={fieldDescStyle(pal)}>Max {MAX_LORAS} LoRAs selected.</span>}
       </span>
     </div>
   );
@@ -1735,18 +1890,20 @@ function AccountPicker({
   onChange,
   balance,
   disabled,
+  pal,
 }: {
   value: AccountChoice;
   onChange: (v: AccountChoice) => void;
   balance: { blue: number; green: number; yellow: number } | null;
   disabled: boolean;
+  pal: Palette;
 }) {
   return (
     <div style={fieldStyle}>
       <span style={fieldLabelStyle}>Spend from</span>
       {/* Kept short, but the "preference, not a guarantee" half stays: this is
           the control that decides whose Buzz is debited. */}
-      <span style={fieldDescStyle}>A preference — the server picks the final pool.</span>
+      <span style={fieldDescStyle(pal)}>A preference — the server picks the final pool.</span>
       <div role="radiogroup" aria-label="Buzz account" style={pickerRowStyle}>
         {ACCOUNT_CHOICES.map((choice) => {
           const selected = value === choice;
@@ -1760,7 +1917,7 @@ function AccountPicker({
               disabled={disabled}
               onClick={() => onChange(choice)}
               data-testid={`pm-account-${choice}`}
-              style={pickerBtnStyle(selected, disabled)}
+              style={pickerBtnStyle(selected, disabled, pal)}
               title={zero ? 'You have 0 Buzz in this account' : undefined}
             >
               {accountLabel(choice)}
@@ -1806,56 +1963,263 @@ function phaseLabel(phase: GenPhase): string {
   return 'Working…';
 }
 
-// The pack themes everything via data-theme; the block root only needs layout +
-// a themed page background so the iframe surface matches the card.
-const shell: React.CSSProperties = {
-  minHeight: '100dvh',
-  width: '100%',
-  display: 'flex',
-  justifyContent: 'center',
-  alignItems: 'flex-start',
-  padding: 24,
-  boxSizing: 'border-box',
-  background: 'var(--civitai-color-surface-2)',
-  color: 'var(--civitai-color-text)',
-};
+// ---------------------------------------------------------------------------
+// Styles.
+//
+// 🔴 TWO THINGS CHANGED HERE AND THEY ARE INDEPENDENT.
+//
+// 1. COLOUR. These used to read `--civitai-color-*`, the W6 pack's own tokens, so
+//    the HOST owned light/dark. Under `brandDepth: "skin"` the app owns its
+//    palette, so every colour is a `Palette` field and every style that uses one
+//    is a FUNCTION of `pal` rather than a constant. The pack's own components are
+//    untouched and still theme themselves from `data-theme` on the block root.
+//
+// 2. WIDTH. `cardStyle = { width: '100%', maxWidth: 640 }` is gone. Anything the
+//    block's width decides now reads a field off `layoutForTier(...)`; there is no
+//    breakpoint comparison in this file.
+// ---------------------------------------------------------------------------
 
-const cardStyle: React.CSSProperties = { width: '100%', maxWidth: 640 };
+/**
+ * The shell's inset, in px — the gap between the block's edge and its content.
+ *
+ * 🔴 NAMED BECAUSE A SECOND SURFACE DERIVES FROM IT. `railStyle` needs both the
+ * sticky offset and the rail's height bound expressed in terms of this inset, and
+ * `index.html`'s boot skeleton mirrors it as a CSS literal. A bare `24` in
+ * `shellStyle` made those three numbers three independent coincidences; asserted
+ * against this constant they are one value with one reason.
+ */
+export const SHELL_PADDING = 24;
+
+/** The block root: layout, plus the app's own page ground. */
+function shellStyle(pal: Palette): React.CSSProperties {
+  return {
+    minHeight: '100dvh',
+    width: '100%',
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'flex-start',
+    padding: SHELL_PADDING,
+    boxSizing: 'border-box',
+    background: pal.page,
+    color: pal.text,
+    // 🔴 THE ONE PLACE THIS APP SHIPS A CUSTOM PROPERTY, AND IT IS DELIBERATE.
+    // `index.css` paints the `:focus-visible` outline for raw textareas/buttons, and
+    // a stylesheet rule cannot read a TS palette — it used to name the HOST's
+    // `--civitai-color-primary`, which under `brandDepth: "skin"` is a colour that
+    // appears nowhere else on the block. Handing the stylesheet the app's own
+    // `brand` through an inherited property keeps the hex in `palette.ts` (still one
+    // place, still asserted in both themes) instead of duplicating it into CSS with
+    // a `prefers-color-scheme` branch that the host's `data-theme` would not agree
+    // with. The cast is because `React.CSSProperties` has no index signature for
+    // `--*`; React itself passes such keys through to `style.setProperty`.
+    ['--yt-focus-ring' as string]: pal.brand,
+  } as React.CSSProperties;
+}
+
+/**
+ * The content column.
+ *
+ * 🔴 THIS IS THE LINE THAT WAS THE WHOLE DEFECT. It was
+ * `{ width: '100%', maxWidth: 640 }` on every screen, so a ~1600px block rendered
+ * a 640px column and left ~60% of itself empty. `maxWidth: null` means "fill the
+ * block", which is what `lg`+ returns.
+ */
+function contentStyle(layout: BlockLayout): React.CSSProperties {
+  return { width: '100%', maxWidth: layout.maxWidth ?? undefined };
+}
+
+/**
+ * The layout numbers that reach the DOM in NO other form.
+ *
+ * jsdom lays nothing out, so these attributes are how a test asserts the App
+ * actually THREADED the pure function's answer through to the render —
+ * `layout.test.ts` pins the numbers `layoutForTier` produces, and these pin that
+ * the component used them. Either half alone is a claim about one side of the seam.
+ *
+ * 🔴 ONLY THE NUMBERS WITH NO INLINE-STYLE TWIN ARE HERE, AND THE REST WERE
+ * DELETED. `data-max-width`, `data-rail` and the results grid's `data-columns` each
+ * restated a fact the inline style on the same element already carries
+ * (`style.maxWidth`, the rail grid's `gridTemplateColumns` plus the rail element's
+ * existence, and the results grid's `gridTemplateColumns`). The style is the
+ * stronger witness of the two — a browser reads it, and it cannot be right while
+ * the layout is wrong — so a duplicate attribute in the shipped DOM bought a second
+ * assertion of the same thing and one more place to get out of step. What survives:
+ * `resultColumns`, because the column count is decided at every tier but only
+ * reaches a style once candidates exist, and `formatMinCardPx`, which the grid
+ * carries as `minmax()` but is worth naming at the content box too.
+ */
+function contentProps(layout: BlockLayout) {
+  return {
+    'data-testid': 'yt-content',
+    'data-result-columns': String(layout.resultColumns),
+    'data-min-card': String(layout.formatMinCardPx),
+  } as const;
+}
+
+/** A child that should simply fill the content column. */
+const fillStyle: React.CSSProperties = { width: '100%' };
+
+/** Rail + main, side by side. The rail is a fixed px column; main takes the rest. */
+function railGridStyle(layout: BlockLayout): React.CSSProperties {
+  return {
+    display: 'grid',
+    gridTemplateColumns: `${layout.railWidth}px minmax(0, 1fr)`,
+    gap: 20,
+    alignItems: 'start',
+  };
+}
+
+/**
+ * The persistent controls rail.
+ *
+ * 🔴 `position: sticky` IS LIVE ON BOTH HOST SURFACES — AND THE VERSION OF THIS
+ * COMMENT THAT SHIPPED BEFORE THIS ROUND SAID THE OPPOSITE. It claimed the rail had
+ * no scrolling ancestor because `useBlockResize(rootRef)` posts `RESIZE_IFRAME` and
+ * the host therefore fits the iframe to content. That was reasoned, not measured,
+ * and it is false on both surfaces a block can be mounted in (read off
+ * `civitai@main`):
+ *
+ *  - FULL PAGE (`/apps/run/<slug>`) — the only surface wide enough to reach the
+ *    `lg` rail in the first place. `PageBlockHost.tsx` handles NO `RESIZE_IFRAME`
+ *    message at all; `IframeHost.tsx` is the only host component that does. It
+ *    sizes the frame `height: 100%` with `min-height: calc(100dvh - <site header>)`,
+ *    so the frame is viewport-height whatever the app reports and the app's own
+ *    content scrolls INSIDE it.
+ *  - SLOT (`IframeHost.tsx`) — `RESIZE_IFRAME` is honoured, but the height goes
+ *    through `clampBlockHeight`, which takes the minimum of the requested height,
+ *    the manifest's `maxHeight`, a hard ceiling, and the viewport less the host's
+ *    own chrome. Past that clamp the frame stops growing and the app scrolls
+ *    internally here too.
+ *
+ * So the rail genuinely stays on screen while the candidate grid scrolls past it.
+ * `useBlockResize` is still called and still right — it is what lets a SHORT block
+ * occupy only the height it needs in a slot — but "the host fits the iframe to
+ * content" is not a property that survives either surface, and it was the wrong
+ * reason to call sticky inert. `taste.json` carries the correction.
+ *
+ * Sticky is not the rail's only benefit: the inputs and the candidate grid are SIDE
+ * BY SIDE, so neither is below the other's fold even before anything scrolls.
+ *
+ * `alignSelf: 'start'` keeps the grid item from stretching to the row height, which
+ * sticky needs in order to have anywhere to travel.
+ *
+ * 🔴 THE HEIGHT BOUND IS WHAT KEEPS THE SPEND BUTTON ON SCREEN, AND WITHOUT IT
+ * STICKY MADE THINGS WORSE. An unbounded sticky rail taller than the scrollport
+ * cannot scroll its own overflow: the viewer sees its top, the frame's scroll moves
+ * the MAIN column, and the rail's tail — quantity, spend-from, **Generate**, and the
+ * `needs-consent` / `insufficient` / `account-rejected` alerts that gate the spend —
+ * stays below the fold for the whole sticky range. That inverts the rail's purpose,
+ * because the control that debits the viewer's Buzz is the one thing that must be
+ * reachable from wherever the prompt is. At `lg`+ the rail carries mode toggle →
+ * prompt → model → up to `MAX_LORAS` LoRA rows → quantity → spend-from → Generate →
+ * alerts, so it exceeds a 1280x800 laptop's ~740px of scrollport well before the
+ * LoRA cap. `maxHeight` + `overflowY: auto` give the rail its OWN scrollport, so its
+ * tail is always one scroll away inside the rail rather than unreachable.
+ *
+ * BOTH NUMBERS ARE DERIVED FROM `SHELL_PADDING`, not picked. `top` is one inset, so
+ * a stuck rail keeps the same gap to the frame's top edge that the shell gives every
+ * other edge — `top: 0` sat flush against it. The bound is `100dvh` less TWO insets
+ * (one above, one below), which is the height the shell's own box leaves inside the
+ * frame.
+ *
+ * `dvh` IS EXACT HERE ON BOTH SURFACES, AND AN EARLIER VERSION OF THIS PARAGRAPH
+ * HEDGED ABOUT AN OVER-ESTIMATE IT DOES NOT MAKE. This code runs inside the block's
+ * own iframe, and a viewport unit resolves against THE IFRAME'S viewport, not the
+ * top document's — so `100dvh` is the frame's own height by definition, whatever
+ * height the host gave it. That is true on the full-page surface and equally true
+ * on a slot surface sized by `clampBlockHeight`; the host chrome the old sentence
+ * worried about is outside the frame and already excluded.
+ *
+ * 🔴 NOT VERIFIED IN PIXELS, AND THAT IS NOT A DETAIL. jsdom performs no layout, so
+ * nothing here can observe a sticky rail actually travelling, overflowing, or
+ * scrolling. What the suite asserts is that the bound and the overflow are PRESENT in
+ * the emitted style and that both are expressed in terms of `SHELL_PADDING`. Whether
+ * the tail is reachable on a real 1280x800 laptop is unmeasured and carried as a
+ * `deferred[]` item in `taste.json` alongside the rest of the browser check.
+ */
+function railStyle(pal: Palette): React.CSSProperties {
+  return {
+    position: 'sticky',
+    top: SHELL_PADDING,
+    maxHeight: `calc(100dvh - ${SHELL_PADDING * 2}px)`,
+    overflowY: 'auto',
+    alignSelf: 'start',
+    display: 'block',
+    padding: 16,
+    borderRadius: 12,
+    border: `1px solid ${pal.borderStrong}`,
+    background: pal.railBg,
+    boxSizing: 'border-box',
+  };
+}
+
+/** The main column beside the rail. `minWidth: 0` so a wide grid child can shrink. */
+const mainColumnStyle: React.CSSProperties = { minWidth: 0 };
+
 const titleStyle: React.CSSProperties = { fontSize: 20 };
 
-// The in-app hero. Every colour is a pack token, so it follows the host between
-// light and dark without a second palette to keep in sync — and it is CSS, not
-// an image, so it costs no bytes and stays sharp at any block width.
-const heroStyle: React.CSSProperties = {
-  display: 'grid',
-  gap: 2,
-  padding: '18px 20px',
-  borderRadius: 12,
-  background:
-    'linear-gradient(135deg, var(--civitai-color-primary) 0%, var(--civitai-color-primary-hover) 55%, var(--civitai-color-surface-2) 100%)',
-  color: 'var(--civitai-color-primary-fg, #fff)',
-};
-const heroTitleStyle: React.CSSProperties = {
-  fontSize: 22,
-  lineHeight: 1.15,
-  letterSpacing: '-0.01em',
-};
-const heroSubStyle: React.CSSProperties = { fontSize: 13, opacity: 0.85 };
+/**
+ * The in-app hero. A gradient wash plus the app name — no bytes, sharp at any
+ * width.
+ *
+ * 🔴 BOTH GRADIENT STOPS COME FROM THE PALETTE, which is the part `skin` made our
+ * problem. The old version read `--civitai-color-primary` → `-primary-hover` →
+ * `-surface-2`, so the host flipped it for us; now the light theme's stops are a
+ * separate pair of literals that a test has to check, because a gradient that
+ * only works in dark is invisible until someone opens the other theme.
+ *
+ * The padding and the headline scale with the block, so the hero is a masthead on
+ * a 1600px block rather than a banner that eats the fold.
+ */
+function heroStyle(pal: Palette, layout: BlockLayout): React.CSSProperties {
+  return {
+    display: 'grid',
+    gap: 2,
+    padding: layout.rail ? '22px 28px' : '18px 20px',
+    borderRadius: 12,
+    background: `linear-gradient(135deg, ${pal.heroFrom} 0%, ${pal.heroTo} 100%)`,
+    color: pal.heroFg,
+  };
+}
+function heroTitleStyle(layout: BlockLayout): React.CSSProperties {
+  return {
+    fontSize: layout.rail ? 26 : 22,
+    lineHeight: 1.15,
+    letterSpacing: '-0.01em',
+  };
+}
+function heroSubStyle(pal: Palette): React.CSSProperties {
+  // 🔴 NOT `opacity`. The old hero dimmed its sub-line with `opacity: 0.85`, which
+  // makes the realized contrast a value no test can read off the palette — and in
+  // the light theme it pushed white-on-magenta under AA. An explicit token is
+  // assertable: 4.86:1 dark, 4.65:1 light, both against `heroFrom`.
+  return { fontSize: 13, color: pal.heroSubFg };
+}
 
-// The format tag overlaid on each candidate. With N formats in one grid, an
-// untagged image cannot be traced back to the format that produced it.
-const candidateTagStyle: React.CSSProperties = {
-  position: 'absolute',
-  left: 6,
-  bottom: 6,
-  padding: '2px 8px',
-  borderRadius: 999,
-  fontSize: 11,
-  fontWeight: 600,
-  background: 'rgba(0, 0, 0, 0.62)',
-  color: '#fff',
-  pointerEvents: 'none',
-};
+/**
+ * The format tag overlaid on each candidate. With N formats in one grid, an
+ * untagged image cannot be traced back to the format that produced it.
+ *
+ * The scrim is `overlay` at 78% rather than a flat colour, because it sits on an
+ * arbitrary generated image — but the PAIR that is graded is `overlayFg` on a
+ * fully opaque `overlay` (18.31:1 in both themes), which is the worst case for
+ * legibility only if the image underneath is lighter, never darker.
+ */
+function candidateTagStyle(pal: Palette): React.CSSProperties {
+  return {
+    position: 'absolute',
+    left: 6,
+    bottom: 6,
+    padding: '2px 8px',
+    borderRadius: 999,
+    fontSize: 11,
+    fontWeight: 600,
+    background: withAlpha(pal.overlay, 0.78),
+    color: pal.overlayFg,
+    pointerEvents: 'none',
+  };
+}
+
 const imageStyle: React.CSSProperties = {
   width: '100%',
   aspectRatio: '16 / 9',
@@ -1863,58 +2227,89 @@ const imageStyle: React.CSSProperties = {
   borderRadius: 8,
   display: 'block',
 };
-const canvasStyle: React.CSSProperties = {
-  width: '100%',
-  borderRadius: 8,
-  display: 'block',
-  background: 'var(--civitai-color-surface-2)',
-};
-const sourceThumbStyle: React.CSSProperties = {
-  width: 96,
-  height: 54,
-  objectFit: 'cover',
-  borderRadius: 6,
-  border: '1px solid var(--civitai-color-border)',
-};
 
-// Field chrome — read the same pack CSS vars the pack's own inputs use, so the
-// Model + LoRA controls match the Textarea/TextInput surface across themes.
+function canvasStyle(pal: Palette): React.CSSProperties {
+  return {
+    width: '100%',
+    borderRadius: 8,
+    display: 'block',
+    background: pal.surfaceRaised,
+  };
+}
+
+/**
+ * The editor: canvas beside its controls at `lg`+, stacked below it.
+ *
+ * `minmax(0, 1fr)` on both tracks rather than `1fr`: a `<canvas>` carries an
+ * intrinsic width of 1280px, and a bare `1fr` track refuses to shrink below its
+ * content's intrinsic size, so the split would silently overflow the block.
+ */
+function editorSplitStyle(layout: BlockLayout): React.CSSProperties {
+  return {
+    display: 'grid',
+    gridTemplateColumns: layout.editorSideBySide
+      ? 'minmax(0, 3fr) minmax(0, 2fr)'
+      : 'minmax(0, 1fr)',
+    gap: 16,
+    alignItems: 'start',
+  };
+}
+const editorControlsStyle: React.CSSProperties = { display: 'grid', gap: 12, minWidth: 0 };
+
+function sourceThumbStyle(pal: Palette): React.CSSProperties {
+  return {
+    width: 96,
+    height: 54,
+    objectFit: 'cover',
+    borderRadius: 6,
+    border: `1px solid ${pal.border}`,
+  };
+}
+
+// Field chrome. The Model + LoRA controls match the pack's own input surface
+// because both sit on the same app palette, not because they share a CSS var.
 const fieldStyle: React.CSSProperties = { display: 'grid', gap: 4 };
 const fieldLabelStyle: React.CSSProperties = { fontSize: 14, fontWeight: 600 };
-const fieldDescStyle: React.CSSProperties = {
-  fontSize: 12,
-  color: 'var(--civitai-color-text-dimmed, var(--civitai-color-text))',
-  opacity: 0.8,
-};
-const currentModelStyle: React.CSSProperties = {
-  flex: 1,
-  minWidth: 0,
-  padding: '10px 12px',
-  borderRadius: 8,
-  border: '1px solid var(--civitai-color-border)',
-  background: 'var(--civitai-color-surface)',
-  color: 'var(--civitai-color-text)',
-  fontSize: 14,
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
-};
+function fieldDescStyle(pal: Palette): React.CSSProperties {
+  // 🔴 NO `opacity` HERE EITHER. It used to be `text-dimmed` at `opacity: 0.8`,
+  // i.e. a contrast ratio nothing could assert. `textDim` is a real token: 7.84:1
+  // on `page` dark, 6.62:1 light.
+  return { fontSize: 12, color: pal.textDim };
+}
+function currentModelStyle(pal: Palette): React.CSSProperties {
+  return {
+    flex: 1,
+    minWidth: 0,
+    padding: '10px 12px',
+    borderRadius: 8,
+    border: `1px solid ${pal.border}`,
+    background: pal.surface,
+    color: pal.text,
+    fontSize: 14,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  };
+}
 
-// The pill chrome (account picker, quantity, presets) reads the same pack CSS
-// vars as the Model/LoRA controls so it matches the surface across themes.
+// The pill chrome (account picker, quantity).
 const pickerRowStyle: React.CSSProperties = {
   display: 'flex',
   flexWrap: 'wrap',
   gap: 6,
   marginTop: 4,
 };
-function pickerBtnStyle(selected: boolean, disabled: boolean): React.CSSProperties {
+function pickerBtnStyle(
+  selected: boolean,
+  disabled: boolean,
+  pal: Palette,
+): React.CSSProperties {
   return {
     padding: '6px 14px',
     borderRadius: 999,
-    border: '1px solid ' + (selected ? 'var(--civitai-color-primary)' : 'var(--civitai-color-border)'),
-    background: selected ? 'var(--civitai-color-primary)' : 'var(--civitai-color-surface)',
-    color: selected ? 'var(--civitai-color-primary-fg, #fff)' : 'var(--civitai-color-text)',
+    border: '1px solid ' + (selected ? pal.brand : pal.border),
+    background: selected ? pal.brand : pal.surface,
+    color: selected ? pal.brandFg : pal.text,
     fontSize: 13,
     fontWeight: 600,
     cursor: disabled ? 'not-allowed' : 'pointer',
@@ -1922,13 +2317,22 @@ function pickerBtnStyle(selected: boolean, disabled: boolean): React.CSSProperti
   };
 }
 
-// Results gallery: 2-up on any width (thumbnails are wide; 2 columns keep each
-// preview readable at the block's usual width).
-const galleryStyle: React.CSSProperties = {
-  display: 'grid',
-  gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-  gap: 10,
-};
+/**
+ * The results grid.
+ *
+ * 🔴 IT USED TO BE `repeat(2, …)` AT EVERY WIDTH, with a comment claiming two
+ * columns "keep each preview readable at the block's usual width". That was two
+ * ~170px thumbnails on a phone and two ~300px ones inside a 640px column on a
+ * 1600px block. The count is now `layoutForTier`'s, so generating four candidates
+ * produces four comparable ones.
+ */
+function galleryStyle(layout: BlockLayout): React.CSSProperties {
+  return {
+    display: 'grid',
+    gridTemplateColumns: `repeat(${layout.resultColumns}, minmax(0, 1fr))`,
+    gap: 10,
+  };
+}
 const galleryItemStyle: React.CSSProperties = {
   display: 'grid',
   gap: 6,
@@ -1936,26 +2340,30 @@ const galleryItemStyle: React.CSSProperties = {
 
 // Color inputs (editor) — native, themed minimally.
 const colorLabelStyle: React.CSSProperties = { display: 'grid', gap: 2 };
-const colorInputStyle: React.CSSProperties = {
-  width: 42,
-  height: 28,
-  padding: 0,
-  border: '1px solid var(--civitai-color-border)',
-  borderRadius: 6,
-  background: 'none',
-  cursor: 'pointer',
-};
+function colorInputStyle(pal: Palette): React.CSSProperties {
+  return {
+    width: 42,
+    height: 28,
+    padding: 0,
+    border: `1px solid ${pal.border}`,
+    borderRadius: 6,
+    background: 'none',
+    cursor: 'pointer',
+  };
+}
 
-// The LoRA list + rows read the same pack CSS vars so they match the surface.
+// The LoRA list + rows.
 const loraListStyle: React.CSSProperties = { marginTop: 4 };
-const loraRowStyle: React.CSSProperties = {
-  display: 'grid',
-  gap: 6,
-  padding: '8px 10px',
-  borderRadius: 8,
-  border: '1px solid var(--civitai-color-border)',
-  background: 'var(--civitai-color-surface)',
-};
+function loraRowStyle(pal: Palette): React.CSSProperties {
+  return {
+    display: 'grid',
+    gap: 6,
+    padding: '8px 10px',
+    borderRadius: 8,
+    border: `1px solid ${pal.border}`,
+    background: pal.surface,
+  };
+}
 const loraRowHeadStyle: React.CSSProperties = {
   display: 'flex',
   justifyContent: 'space-between',
@@ -1976,3 +2384,14 @@ const loraAddWrapStyle: React.CSSProperties = {
   alignItems: 'center',
   marginTop: 4,
 };
+
+/**
+ * `#RRGGBB` + alpha → `rgba(...)`, so a scrim can be derived FROM a palette token
+ * instead of being a second hardcoded colour beside it. Kept here rather than in
+ * `palette.ts` because the palette is the set of solid colours the theme defines;
+ * this is one surface's compositing choice.
+ */
+function withAlpha(hex: string, alpha: number): string {
+  const [r, g, b] = parseHex(hex);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
