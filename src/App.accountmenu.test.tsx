@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { App } from './App.js';
+import { App, MENU_GAP, menuBoxFor } from './App.js';
 import { ACCOUNT_CHOICES } from './generation.js';
 import { DEFAULT_MOCK_BALANCE, installMockMoneyHost } from './mock-buzz.js';
 import { BUZZ_TYPE_COLOR, THEMES, palette, type ThemeName } from './palette.js';
@@ -329,6 +329,210 @@ describe('the dropdown’s keyboard operation', () => {
     expect(document.activeElement).toBe(trigger);
     // The selection is untouched — Escape is a cancel, not a commit.
     expect(screen.getByTestId('pm-account-trigger-label')).toHaveTextContent('Auto');
+  });
+});
+
+// ===========================================================================
+// THE RAIL-CLIPPING DEFECT, AND WHAT A jsdom TEST CAN AND CANNOT HOLD.
+//
+// 🔴 THE DEFECT, MEASURED IN A REAL BROWSER — NOT HERE. Shipped first as
+// `position: absolute` inside the field, i.e. a DESCENDANT of `yt-rail`, which
+// carries `overflowY: 'auto'` (it is a sticky column capped at
+// `calc(100dvh - 48px)`). In headless chromium at 1400x1000 the rail's box bottom
+// was 780 and the open menu ran to 863: the last 83px was clipped away, and
+// `document.elementFromPoint` at the centre of `pm-account-green` and
+// `pm-account-yellow` returned the RAIL rather than the option. Two of the four
+// Buzz pools could not be clicked.
+//
+// 🔴 NOTHING IN THIS FILE CAN SEE THAT. jsdom lays nothing out: every
+// `getBoundingClientRect()` is 0x0, `elementFromPoint` is not implemented, and
+// `overflow` clips nothing because there is no geometry to clip. A test here that
+// claimed to check "the menu is visible" would be a description wider than its
+// body — the exact shape this suite's own guards are written against.
+//
+// So the cases below pin the STRUCTURAL PROPERTY THAT MAKES THE CLIP IMPOSSIBLE,
+// which is a relationship jsdom CAN observe, plus the pure arithmetic of the
+// flip. The clip itself is browser-only and is asserted by the probe recorded in
+// the PR, not by any unit test. That is stated rather than papered over.
+// ===========================================================================
+
+/**
+ * Every ancestor of `el` up to (but excluding) `stopAt` that declares a CLIPPING
+ * overflow in its inline style.
+ *
+ * 🔴 A RELATIONSHIP, NOT A SPELLING. It does not look for "the rail", or for the
+ * string `yt-rail`, or for `position: fixed` — any of which a refactor could
+ * satisfy while re-parenting the popup into some other scroll container. It asks
+ * the question the browser asks: is there anything between this node and the
+ * block root that clips its overflow? Inline styles are readable in jsdom
+ * precisely because this app paints every one of its own surfaces inline.
+ */
+function clippingAncestorsOf(el: Element, stopAt: Element): string[] {
+  const out: string[] = [];
+  for (let p = el.parentElement; p && p !== stopAt; p = p.parentElement) {
+    const s = (p as HTMLElement).style;
+    const values = [s.overflow, s.overflowX, s.overflowY].filter(Boolean);
+    if (values.some((v) => v === 'auto' || v === 'scroll' || v === 'hidden' || v === 'clip')) {
+      out.push(
+        `${p.tagName.toLowerCase()}[${p.getAttribute('data-testid') ?? '—'}] ` +
+          `overflow=${values.join('/')}`,
+      );
+    }
+  }
+  return out;
+}
+
+describe('the popup cannot be clipped by the rail — the structural property', () => {
+  let uninstall: (() => void) | undefined;
+  let blockWidth = 0;
+  let restoreClientWidth: (() => void) | undefined;
+  let restoreResizeObserver: (() => void) | undefined;
+
+  class InertResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+
+  // The rail only exists at `lg`+, and `useBlockBreakpoint` reports `base` at
+  // every width in jsdom unless `clientWidth` and `ResizeObserver` are faked —
+  // the same stubs `responsive.test.tsx` and `theme-guard.test.tsx` install, and
+  // the same reason: without them these cases would pass against a layout that
+  // never rendered a rail at all, which is a vacuous green.
+  const setBlockWidth = (px: number) => {
+    blockWidth = px;
+    const original = Object.getOwnPropertyDescriptor(Element.prototype, 'clientWidth');
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
+      configurable: true,
+      get: () => blockWidth,
+    });
+    restoreClientWidth = () => {
+      delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientWidth;
+      if (original) Object.defineProperty(Element.prototype, 'clientWidth', original);
+    };
+    const prior = (globalThis as unknown as Record<string, unknown>).ResizeObserver;
+    (globalThis as unknown as Record<string, unknown>).ResizeObserver = InertResizeObserver;
+    restoreResizeObserver = () => {
+      (globalThis as unknown as Record<string, unknown>).ResizeObserver = prior;
+    };
+  };
+
+  afterEach(() => {
+    uninstall?.();
+    uninstall = undefined;
+    restoreClientWidth?.();
+    restoreClientWidth = undefined;
+    restoreResizeObserver?.();
+    restoreResizeObserver = undefined;
+  });
+
+  /** Render at rail width with the menu open, and hand back the three nodes. */
+  const openAtRailWidth = async () => {
+    setBlockWidth(1301); // inside `lg`, strictly between its boundaries
+    uninstall = installMockMoneyHost({ ...VIEWER });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+    const rail = await screen.findByTestId('yt-rail');
+    await user.click(screen.getByTestId('pm-account-trigger'));
+    return {
+      rail,
+      root: document.querySelector('[data-block-tier]') as HTMLElement,
+      menu: screen.getByTestId('pm-account-menu'),
+      trigger: screen.getByTestId('pm-account-trigger'),
+    };
+  };
+
+  it('🔴 the open menu is NOT a descendant of the scrolling rail', async () => {
+    const { rail, root, menu } = await openAtRailWidth();
+    // The rail is real, and it really does scroll — otherwise "not inside it"
+    // would be a claim about a container that clips nothing.
+    expect(rail.style.overflowY).toBe('auto');
+    expect(rail.contains(menu)).toBe(false);
+    // …and it did not escape the block, which would cost it `data-theme` and put
+    // it outside Guard B's contrast walk.
+    expect(root.contains(menu)).toBe(true);
+  });
+
+  it('🔴 NOTHING between the menu and the block root clips overflow', async () => {
+    const { root, menu, trigger } = await openAtRailWidth();
+
+    // 🔴 THE POSITIVE CONTROL FIRST, because a zero from a walk that cannot see
+    // anything is worthless. The TRIGGER is still inside the rail, so the same
+    // walk run from there MUST come back non-empty and MUST name the rail. If
+    // this ever returns [], the assertion below is measuring nothing.
+    const fromTrigger = clippingAncestorsOf(trigger, root);
+    expect(
+      fromTrigger,
+      'the walk found no clipping ancestor above the TRIGGER — it is wired to nothing',
+    ).not.toEqual([]);
+    expect(fromTrigger.join(' ')).toContain('yt-rail');
+
+    // And now the verdict: the popup has none.
+    expect(clippingAncestorsOf(menu, root)).toEqual([]);
+  });
+
+  it('is positioned against the viewport, not against a scrolled ancestor', async () => {
+    // `absolute` resolves against the nearest positioned ancestor and is still
+    // clipped by any scroll container between — which is exactly how the rail cut
+    // Green and Yellow off. Pinned as a value, not as "it has a position".
+    const { menu } = await openAtRailWidth();
+    expect(menu.style.position).toBe('fixed');
+    expect(menu.style.position).not.toBe('absolute');
+  });
+
+  it('a press on an OPTION is not treated as an outside click', async () => {
+    // 🔴 THE SECOND DEFECT THE PORTAL WOULD HAVE INTRODUCED, had the dismissal
+    // check not been widened with it. The popup is no longer a DOM descendant of
+    // the field wrapper, so a `wrapRef.contains(target)` test alone reads a press
+    // ON a pool as "outside" and closes the menu before the click lands — the
+    // option becomes unclickable for a second, subtler reason. Unlike the clip,
+    // THIS one jsdom can see, because it is event plumbing rather than geometry.
+    const { menu } = await openAtRailWidth();
+    fireEvent.mouseDown(screen.getByTestId('pm-account-green'));
+    expect(menu).toBeInTheDocument();
+    expect(screen.getByTestId('pm-account-menu')).toBeInTheDocument();
+  });
+});
+
+describe('menuBoxFor — the flip arithmetic, in numbers jsdom can actually carry', () => {
+  // jsdom reports every rect as 0x0, so the placement can only be tested as a
+  // pure function. It is one: the component measures, this decides.
+  const trigger = { top: 700, bottom: 740, left: 120, width: 260 };
+
+  it('sits below the trigger when there is room, offset by the gap', () => {
+    const box = menuBoxFor(trigger, 148, 1000);
+    expect(box).toEqual({ top: 744, left: 120, width: 260 });
+    expect(MENU_GAP).toBe(4);
+  });
+
+  it('🔴 flips ABOVE when the viewport has no room below', () => {
+    // 740 + 4 + 148 = 892 > 860, so below does not fit; above is 700 - 4 - 148.
+    expect(menuBoxFor(trigger, 148, 860)).toEqual({ top: 548, left: 120, width: 260 });
+  });
+
+  it('stays BELOW when neither side fits, rather than flipping into the top edge', () => {
+    // A popup taller than everything above the trigger: flipping would put its
+    // top at a negative coordinate, which is worse than overflowing downward.
+    expect(menuBoxFor(trigger, 900, 800)?.top).toBe(744);
+  });
+
+  it('does not flip on the first, unmeasured placement', () => {
+    // height 0 means "the popup has not been measured yet" — the first frame
+    // opens downward and the effect's second pass corrects it.
+    expect(menuBoxFor(trigger, 0, 100)?.top).toBe(744);
+  });
+
+  it('follows the trigger: the same trigger 300px higher places 300px higher', () => {
+    // The property the rail's own scrolling depends on — the box is a function of
+    // the trigger's CURRENT rect, with nothing cached.
+    const higher = { ...trigger, top: 400, bottom: 440 };
+    expect(menuBoxFor(higher, 148, 1000)?.top).toBe(444);
+    expect((menuBoxFor(trigger, 148, 1000) as { top: number }).top - 300).toBe(444);
+  });
+
+  it('returns null rather than a fabricated position when there is no trigger', () => {
+    expect(menuBoxFor(null, 148, 1000)).toBeNull();
   });
 });
 

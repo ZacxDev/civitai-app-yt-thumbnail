@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 import {
   useAppStorage,
@@ -1765,6 +1766,7 @@ export function App() {
           disabled={busy}
           cost={estimatedCost}
           costPartial={estimatePartial}
+          portalTo={rootRef}
           pal={pal}
         />
       )}
@@ -2081,6 +2083,38 @@ const ACCOUNT_DESC_ID = 'yt-account-desc';
  * menu Arrow keys move (wrapping), Home/End jump, Enter/Space choose, Escape
  * closes and returns focus to the trigger, Tab closes. A pointer press outside the
  * control dismisses it.
+ *
+ * 🔴 THE POPUP IS PORTALLED OUT OF THE RAIL, AND THAT IS A BUG FIX, NOT A STYLE
+ * CHOICE. It used to be `position: absolute` inside the field, i.e. a DESCENDANT
+ * of `yt-rail`, which carries `overflowY: 'auto'` because it is a `position:
+ * sticky` column capped at `calc(100dvh - 48px)` — a tall control list has to
+ * scroll inside it. MEASURED in headless chromium at 1400x1000: the rail's box
+ * bottom was 780 and the open menu ran to 863, so the last 83px was CLIPPED and
+ * `document.elementFromPoint` at the centre of `pm-account-green` and
+ * `pm-account-yellow` returned the rail, not the option. Two of the four Buzz
+ * pools could not be clicked. `z-index` cannot fix it: the clip comes from an
+ * ancestor's overflow, not from stacking.
+ *
+ * 🔴 WHY A PORTAL RATHER THAN A FLIP-UP. Flipping the menu above the trigger
+ * keeps it inside the same scroll container, so it trades a clip at the bottom
+ * for a clip at the top the moment the trigger sits near the rail's top edge —
+ * and since the rail SCROLLS, the trigger's distance from either edge is not
+ * constant, so no static direction is correct. Rendering into the block root
+ * instead makes the menu a NON-DESCENDANT of every inner scroll container, which
+ * is a structural property rather than an arithmetic one: there is no geometry
+ * for a flip calculation to get wrong.
+ *
+ * Positioned `fixed` off `getBoundingClientRect()` of the trigger, recomputed on
+ * scroll (CAPTURE phase, so the rail's own scroll is seen — scroll does not
+ * bubble) and on resize. It flips ABOVE the trigger only when the viewport has no
+ * room below, which is a viewport question with no clipping ancestor involved.
+ *
+ * It portals into the BLOCK ROOT, not `document.body`: the root carries
+ * `data-theme` and `--yt-focus-ring`, and `theme-guard.test.tsx`'s Guard B walks
+ * downward from it, so staying inside keeps both the pack's theming and that
+ * contrast walk applicable. `rootRef` is `null` only before the first commit, and
+ * the menu cannot be open then; it falls back to in-place rendering rather than
+ * dropping the popup.
  */
 function AccountPicker({
   value,
@@ -2089,6 +2123,7 @@ function AccountPicker({
   disabled,
   cost,
   costPartial,
+  portalTo,
   pal,
 }: {
   value: AccountChoice;
@@ -2099,25 +2134,52 @@ function AccountPicker({
   cost: number | null;
   /** True when only SOME formats priced — the figure is a floor, not the bill. */
   costPartial: boolean;
+  /** The block root the popup renders into — see the docblock's portal note. */
+  portalTo: React.RefObject<HTMLDivElement | null>;
   pal: Palette;
 }) {
   const [open, setOpen] = useState(false);
   const selectedIndex = Math.max(0, ACCOUNT_CHOICES.indexOf(value));
   const [activeIndex, setActiveIndex] = useState(selectedIndex);
+  const [menuBox, setMenuBox] = useState<MenuBox | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
-  // Dismiss on a pointer press anywhere outside the control. `mousedown` rather
-  // than `click` so the menu is gone before the press lands on whatever is under
-  // it — a click-based dismissal swallows that first interaction.
+  // Dismiss on a pointer press anywhere outside the control.
+  //
+  // 🔴 BOTH HALVES, BECAUSE THE PORTAL SPLIT THEM. The popup is no longer a DOM
+  // descendant of `wrapRef`, so a `wrapRef.contains(target)` test alone would
+  // read a press ON AN OPTION as "outside" and close the menu before the click
+  // landed — the option would be unclickable for a second, subtler reason than
+  // the clipping this portal fixes. `mousedown` rather than `click` so a genuine
+  // outside press is not swallowed by the dismissal.
   useEffect(() => {
     if (!open) return;
     const onDown = (e: Event) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+      const t = e.target as Node;
+      if (wrapRef.current?.contains(t)) return;
+      if (menuRef.current?.contains(t)) return;
+      setOpen(false);
     };
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
+  }, [open]);
+
+  // Keep the fixed popup pinned to the trigger. The CAPTURE phase is load-bearing:
+  // a `scroll` event does not bubble, so a listener on `document` in the bubble
+  // phase never hears the RAIL scrolling — only the window.
+  useEffect(() => {
+    if (!open) return;
+    const place = () => setMenuBox(measureMenuBox(triggerRef.current, menuRef.current));
+    place();
+    window.addEventListener('scroll', place, true);
+    window.addEventListener('resize', place);
+    return () => {
+      window.removeEventListener('scroll', place, true);
+      window.removeEventListener('resize', place);
+    };
   }, [open]);
 
   // Focus follows the active item while the menu is open, so the roving focus IS
@@ -2134,6 +2196,10 @@ function AccountPicker({
 
   const openAt = (index: number) => {
     setActiveIndex(index);
+    // Seed the position from the trigger BEFORE the popup paints, so its first
+    // frame is already against the control. The effect above then re-places it
+    // with the menu's measured height, which is what the flip decision needs.
+    setMenuBox(measureMenuBox(triggerRef.current, null));
     setOpen(true);
   };
   const close = () => {
@@ -2149,6 +2215,69 @@ function AccountPicker({
   const last = ACCOUNT_CHOICES.length - 1;
   const costText =
     cost != null ? `${costPartial ? 'from ' : ''}${formatCost(cost)} Buzz` : 'Not priced yet';
+
+  const menu = (
+    <div
+      ref={menuRef}
+      id={ACCOUNT_MENU_ID}
+      role="menu"
+      aria-label="Pay with"
+      data-testid="pm-account-menu"
+      style={accountMenuStyle(menuBox, pal)}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          close();
+        } else if (e.key === 'Tab') {
+          setOpen(false);
+        } else if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          setActiveIndex((i) => (i + 1) % ACCOUNT_CHOICES.length);
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          setActiveIndex((i) => (i + last) % ACCOUNT_CHOICES.length);
+        } else if (e.key === 'Home') {
+          e.preventDefault();
+          setActiveIndex(0);
+        } else if (e.key === 'End') {
+          e.preventDefault();
+          setActiveIndex(last);
+        }
+      }}
+    >
+      {ACCOUNT_CHOICES.map((choice, i) => {
+        const selected = value === choice;
+        const have = choice === 'auto' || balance == null ? null : balance[choice];
+        const zero = have === 0;
+        return (
+          <button
+            key={choice}
+            ref={(el) => {
+              itemRefs.current[i] = el;
+            }}
+            type="button"
+            role="menuitemradio"
+            aria-checked={selected}
+            tabIndex={i === activeIndex ? 0 : -1}
+            onClick={() => choose(choice)}
+            data-testid={`pm-account-${choice}`}
+            style={accountItemStyle(selected, pal)}
+            title={zero ? 'You have 0 Buzz in this account' : undefined}
+          >
+            <BuzzBolt choice={choice} pal={pal} testId={`pm-account-icon-${choice}`} />
+            <span>{accountLabel(choice)}</span>
+            {/* Each pool WITH ITS BALANCE, as the native "Pay with" menu lists
+                them. `auto` has no pool of its own, so it says what it does
+                instead. */}
+            <span style={accountBalanceStyle(pal)}>
+              {choice === 'auto' ? 'Host decides' : have == null ? '' : `· ${formatCost(have)}`}
+            </span>
+            {selected && <span aria-hidden="true">✓</span>}
+          </button>
+        );
+      })}
+    </div>
+  );
 
   return (
     <div style={fieldStyle}>
@@ -2192,73 +2321,77 @@ function AccountPicker({
           <Chevron pal={pal} />
         </button>
 
-        {open && (
-          <div
-            id={ACCOUNT_MENU_ID}
-            role="menu"
-            aria-label="Pay with"
-            data-testid="pm-account-menu"
-            style={accountMenuStyle(pal)}
-            onKeyDown={(e) => {
-              if (e.key === 'Escape') {
-                e.preventDefault();
-                close();
-              } else if (e.key === 'Tab') {
-                setOpen(false);
-              } else if (e.key === 'ArrowDown') {
-                e.preventDefault();
-                setActiveIndex((i) => (i + 1) % ACCOUNT_CHOICES.length);
-              } else if (e.key === 'ArrowUp') {
-                e.preventDefault();
-                setActiveIndex((i) => (i + last) % ACCOUNT_CHOICES.length);
-              } else if (e.key === 'Home') {
-                e.preventDefault();
-                setActiveIndex(0);
-              } else if (e.key === 'End') {
-                e.preventDefault();
-                setActiveIndex(last);
-              }
-            }}
-          >
-            {ACCOUNT_CHOICES.map((choice, i) => {
-              const selected = value === choice;
-              const have = choice === 'auto' || balance == null ? null : balance[choice];
-              const zero = have === 0;
-              return (
-                <button
-                  key={choice}
-                  ref={(el) => {
-                    itemRefs.current[i] = el;
-                  }}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={selected}
-                  tabIndex={i === activeIndex ? 0 : -1}
-                  onClick={() => choose(choice)}
-                  data-testid={`pm-account-${choice}`}
-                  style={accountItemStyle(selected, pal)}
-                  title={zero ? 'You have 0 Buzz in this account' : undefined}
-                >
-                  <BuzzBolt choice={choice} pal={pal} testId={`pm-account-icon-${choice}`} />
-                  <span>{accountLabel(choice)}</span>
-                  {/* Each pool WITH ITS BALANCE, as the native "Pay with" menu
-                      lists them. `auto` has no pool of its own, so it says what
-                      it does instead. */}
-                  <span style={accountBalanceStyle(pal)}>
-                    {choice === 'auto'
-                      ? 'Host decides'
-                      : have == null
-                        ? ''
-                        : `· ${formatCost(have)}`}
-                  </span>
-                  {selected && <span aria-hidden="true">✓</span>}
-                </button>
-              );
-            })}
-          </div>
-        )}
+        {/* 🔴 RENDERED OUT OF THE RAIL. `createPortal` moves the popup's DOM node
+            under the block root while leaving it where it is in the REACT tree —
+            so `onKeyDown` above and the handlers below still work exactly as
+            written, but no scroll container between the field and the root can
+            clip it. The `wrapRef` fallback covers the one frame before the root
+            ref is attached, when the menu cannot be open anyway. */}
+        {open && (portalTo.current ? createPortal(menu, portalTo.current) : menu)}
       </div>
     </div>
+  );
+}
+
+/** Where the fixed popup sits: viewport coordinates + the trigger's width. */
+export interface MenuBox {
+  top: number;
+  left: number;
+  width: number;
+}
+
+/** The gap between the trigger and the popup, on whichever side it opens. */
+export const MENU_GAP = 4;
+
+/**
+ * Place the popup against the trigger, in VIEWPORT coordinates.
+ *
+ * 🔴 THE ONLY GEOMETRY THIS CONTROL DOES, AND IT IS DELIBERATELY NOT A CLIPPING
+ * CALCULATION. The clip the portal fixes was an ANCESTOR-OVERFLOW problem, which
+ * this function cannot reintroduce: a `position: fixed` node under the block root
+ * has no scrolling ancestor between it and the viewport. What is computed here is
+ * only "is there room below the trigger before the VIEWPORT ends" — if not, and
+ * there is room above, the menu sits above instead. Both answers are re-derived
+ * on every scroll and resize, so a rail scrolled to a different offset gets a
+ * fresh answer rather than a stale one.
+ *
+ * 🔴 PURE, AND TAKING NUMBERS RATHER THAN ELEMENTS, SO THE FLIP CAN BE TESTED.
+ * jsdom reports every rect as 0×0, so a version of this that read the DOM itself
+ * could only ever be exercised in a browser. Handing it a rect, a height and a
+ * viewport makes the decision assertable with literal numbers; the component does
+ * the measuring.
+ *
+ * `menuHeight` is 0 on the FIRST placement (the popup has not been measured yet),
+ * which deliberately reads as "don't flip": the first frame opens downward and
+ * the effect's second pass corrects it. `null` for a missing trigger leaves the
+ * popup at its default corner rather than at a fabricated position.
+ */
+export function menuBoxFor(
+  trigger: { top: number; bottom: number; left: number; width: number } | null,
+  menuHeight: number,
+  viewportHeight: number,
+): MenuBox | null {
+  if (!trigger) return null;
+  const roomBelow = viewportHeight - trigger.bottom - MENU_GAP;
+  const roomAbove = trigger.top - MENU_GAP;
+  const flipUp = menuHeight > 0 && roomBelow < menuHeight && roomAbove > menuHeight;
+  return {
+    top: flipUp ? trigger.top - MENU_GAP - menuHeight : trigger.bottom + MENU_GAP,
+    left: trigger.left,
+    width: trigger.width,
+  };
+}
+
+/** Measure the live trigger + popup and hand them to {@link menuBoxFor}. */
+function measureMenuBox(
+  triggerEl: HTMLButtonElement | null,
+  menuEl: HTMLDivElement | null,
+): MenuBox | null {
+  if (!triggerEl) return null;
+  return menuBoxFor(
+    triggerEl.getBoundingClientRect(),
+    menuEl ? menuEl.getBoundingClientRect().height : 0,
+    window.innerHeight,
   );
 }
 
@@ -2741,13 +2874,19 @@ function accountTriggerStyle(disabled: boolean, pal: Palette): React.CSSProperti
 function accountCostStyle(pal: Palette): React.CSSProperties {
   return { marginLeft: 'auto', fontSize: 12, fontWeight: 500, color: pal.textDim };
 }
-function accountMenuStyle(pal: Palette): React.CSSProperties {
+function accountMenuStyle(box: MenuBox | null, pal: Palette): React.CSSProperties {
   return {
-    position: 'absolute',
+    // 🔴 `fixed`, NOT `absolute`. Absolute positioning resolves against the
+    // nearest positioned ancestor and is still CLIPPED by any scrolling ancestor
+    // in between — which is exactly how the rail cut Green and Yellow off. Fixed,
+    // under the block root, has no such ancestor. `box` carries viewport
+    // coordinates from `menuBoxFor`; `null` only for the frame before the trigger
+    // has been measured.
+    position: 'fixed',
     zIndex: 20,
-    top: 'calc(100% + 4px)',
-    left: 0,
-    right: 0,
+    top: box?.top ?? 0,
+    left: box?.left ?? 0,
+    width: box?.width,
     display: 'grid',
     gap: 2,
     padding: 4,
