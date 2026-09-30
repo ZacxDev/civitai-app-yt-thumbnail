@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 
 import { render, screen } from '@testing-library/react';
+import ts from 'typescript';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { App } from './App.js';
@@ -127,99 +128,78 @@ const ALL_SOURCES = tsSourcesUnder('src');
 const COVERED_FILES = ALL_SOURCES.filter((f) => !EXEMPT.some((e) => e.file === f));
 
 /**
- * Blank out comments, LEAVING STRING LITERALS INTACT.
+ * Blank out comments, LEAVING STRING LITERALS INTACT — using TypeScript's OWN
+ * parser, because both hand-rolled versions of this were holes inside the files
+ * Guard A covered.
  *
- * 🔴 THE REGEX VERSION OF THIS WAS A HOLE INSIDE THE FILES GUARD A COVERED. A
- * single `replace` of "slash slash to end of line" is string-unaware, so one line
- * of `App.tsx` —
+ * 🔴 VERSION 1, A `replace` OF "SLASH SLASH TO END OF LINE", WAS STRING-UNAWARE.
+ * One line of `App.tsx` —
  * `backgroundImage: 'url(https://cdn…/x.png)', border: '1px solid #2A313D',` —
  * had everything after the URL's `//` blanked, and the off-palette border was
- * invisible to the scanner with the suite green. So this is a character walk with
- * four states: code, `'`/`"` string, template literal, and `${…}` back in code.
+ * invisible to the scanner with the suite green.
  *
- * Replaced with spaces rather than nothing, so byte offsets stay usable for
- * locating the enclosing function.
+ * 🔴 VERSION 2, A FOUR-STATE CHARACTER WALK, MOVED THE HOLE INTO REGEX LITERALS,
+ * AND IT WAS LIVE. The walk tracked `'`/`"`/`` ` ``/`${…}` but read a regex literal
+ * as code, so every quote inside one flipped its quote parity. `setManifestBlockId`
+ * in `src/setup-dev-live.ts` holds `/("blockId"\s*:\s*)"[^"]*"/` — five quotes, an
+ * odd number — so the walk opened a string at the last one and ran it to the next
+ * quote 2,962 characters later. MEASURED against this implementation across the 13
+ * covered files: **940 characters of real comment left unstripped, all of them in
+ * that file, and 0 characters over-blanked.** Both directions were reachable: a hex
+ * named in prose anywhere in that region was a FALSE finding, and an off-palette
+ * literal written after any such regex was invisible. The demonstration is
+ * `a regex literal's apostrophe …` below — `/can't/` on the line above an
+ * off-palette hex hid it from version 2 completely.
  *
- * 🔴 AND THE BLANKING IS DONE BY SLICING, NOT BY INDEXING A SPREAD ARRAY. `[...src]`
- * splits a string by CODE POINT, so one astral character — every 🔴 in these files
- * is U+1F534, a surrogate pair — makes the array one element shorter than the
- * string and silently shifts every offset after it. Measured while writing this:
- * the `rgba(` in `withAlpha` came back attributed to `loraAddWrapStyle`, 14 lines
- * away, because 29 UTF-16 units of drift had accumulated by then. Mis-attribution
- * rather than a miss, but a guard whose error message names the wrong function is
- * how a real finding gets dismissed as a false positive.
+ * HOW THIS ONE WORKS, AND WHY IT HAS NOTHING TO GET WRONG. It parses the file and
+ * marks the extent of every leaf TOKEN. Everything else is trivia — whitespace or a
+ * comment — by the parser's own definition, so the blanking needs no rule about
+ * what a comment looks like, and a regex literal, a JSX text node, a template
+ * literal and a string are all single tokens it cannot see inside.
  *
- * RESIDUALS, STATED RATHER THAN IMPLIED. A regex literal and JSX text are both
- * scanned as code, so `/\/\//` or a JSX text node containing `//` would still
- * start a "comment". Neither exists in any covered file today, and closing them
- * needs a real parser; the failure direction is the same hole this fixed, so it is
- * named here rather than left to be rediscovered.
+ * 🔴 JSDoc IS THE ONE THING THE TOKEN WALK GETS WRONG, AND IT IS SKIPPED
+ * EXPLICITLY. `getChildren()` hands back `/** … *\/` blocks as JSDoc NODES whose
+ * text descends into tokens, so without the `FirstJSDocNode`/`LastJSDocNode` skip
+ * they are kept rather than blanked. MEASURED: dropping that one line turns
+ * `models.ts`'s JSDoc into a finding (`#128078`) and re-attributes `App.tsx`'s
+ * `withAlpha` exemption, i.e. it goes red on prose. `a hex inside a JSDoc block …`
+ * below is the case that pins it.
+ *
+ * Replaced with spaces rather than nothing, so offsets stay usable for locating the
+ * enclosing function, and `\n` is kept so line numbers survive. TypeScript's
+ * positions are UTF-16 code-unit indices — the same units `String.prototype.slice`
+ * uses — so the astral-drift bug that `[...src]` caused in version 2 cannot recur
+ * here; the case below still pins it.
+ *
+ * NO RESIDUAL HOLE OF THAT KIND REMAINS: there is no second parser to disagree with
+ * the compiler. The one thing this DEPENDS on is that the file parses, and
+ * `npm run build` runs `tsc --noEmit` over the same tree before anything ships.
  */
-function stripComments(src: string): string {
-  const comments: [number, number][] = [];
-  const blank = (from: number, to: number) => comments.push([from, to]);
+function stripComments(src: string, fileName = 'snippet.ts'): string {
+  const source = ts.createSourceFile(
+    fileName,
+    src,
+    ts.ScriptTarget.Latest,
+    /* setParentNodes */ true,
+    /\.tsx$/.test(fileName) ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
 
-  let i = 0;
-  let inTemplate = false;
-  /** Brace depth inside the innermost `${ … }`; the stack holds enclosing ones. */
-  let depth = 0;
-  const enclosing: number[] = [];
-
-  while (i < src.length) {
-    const c = src[i];
-
-    if (inTemplate) {
-      if (c === '\\') i += 2;
-      else if (c === '`') {
-        inTemplate = false;
-        i++;
-      } else if (c === '$' && src[i + 1] === '{') {
-        enclosing.push(depth);
-        depth = 0;
-        inTemplate = false;
-        i += 2;
-      } else i++;
-      continue;
+  const isToken = new Uint8Array(src.length);
+  const mark = (node: ts.Node): void => {
+    // See the JSDoc note above: these are comments the token walk would KEEP.
+    if (node.kind >= ts.SyntaxKind.FirstJSDocNode && node.kind <= ts.SyntaxKind.LastJSDocNode) return;
+    const children = node.getChildren(source);
+    if (children.length === 0) {
+      for (let p = node.getStart(source); p < node.end; p++) isToken[p] = 1;
+      return;
     }
+    for (const child of children) mark(child);
+  };
+  mark(source);
 
-    if (c === '/' && src[i + 1] === '*') {
-      const end = src.indexOf('*/', i + 2);
-      const stop = end === -1 ? src.length : end + 2;
-      blank(i, stop);
-      i = stop;
-    } else if (c === '/' && src[i + 1] === '/') {
-      const nl = src.indexOf('\n', i);
-      const stop = nl === -1 ? src.length : nl;
-      blank(i, stop);
-      i = stop;
-    } else if (c === "'" || c === '"') {
-      i++;
-      while (i < src.length && src[i] !== c) i += src[i] === '\\' ? 2 : 1;
-      i++;
-    } else if (c === '`') {
-      inTemplate = true;
-      i++;
-    } else if (c === '{') {
-      depth++;
-      i++;
-    } else if (c === '}') {
-      if (depth === 0 && enclosing.length > 0) {
-        depth = enclosing.pop()!;
-        inTemplate = true;
-      } else depth--;
-      i++;
-    } else i++;
-  }
-
-  // Newlines are preserved so line numbers survive; everything else becomes a
-  // space, one space per UTF-16 unit, so byte offsets are unchanged.
   let out = '';
-  let cursor = 0;
-  for (const [from, to] of comments) {
-    out += src.slice(cursor, from) + src.slice(from, to).replace(/[^\n]/g, ' ');
-    cursor = to;
-  }
-  return out + src.slice(cursor);
+  for (let p = 0; p < src.length; p++) out += isToken[p] === 1 || src[p] === '\n' ? src[p] : ' ';
+  return out;
 }
 
 /** Nearest `function foo` / `const foo =` at or above `offset`. */
@@ -265,7 +245,7 @@ describe('GUARD A — no colour literal reaches an app surface', () => {
   });
 
   it.each(COVERED_FILES)('%s introduces no colour outside a Palette', (file) => {
-    const findings = findingsIn(stripComments(readFileSync(file, 'utf8')));
+    const findings = findingsIn(stripComments(readFileSync(file, 'utf8'), file));
 
     expect(
       findings,
@@ -282,10 +262,10 @@ describe('GUARD A — no colour literal reaches an app surface', () => {
     // `findingsIn` — i.e. through `COLOUR_LITERAL` itself. The mutant is the real
     // one: `color: pal.text` → `color: '#F7F9FC'`, in the function it was
     // demonstrated on.
-    const mutated = stripComments(readFileSync('src/FormatPicker.tsx', 'utf8')).replace(
-      'color: pal.text,',
-      "color: '#F7F9FC',",
-    );
+    const mutated = stripComments(
+      readFileSync('src/FormatPicker.tsx', 'utf8'),
+      'src/FormatPicker.tsx',
+    ).replace('color: pal.text,', "color: '#F7F9FC',");
     expect(mutated, 'the mutation did not apply — the control proves nothing').toContain('#F7F9FC');
 
     const found = findingsIn(mutated);
@@ -323,6 +303,56 @@ describe('GUARD A — no colour literal reaches an app surface', () => {
     const stripped = stripComments(src);
     expect(stripped).toHaveLength(src.length);
     expect(findingsIn(stripped)).toEqual([{ text: '#ABCDEF', where: 'realOwner' }]);
+  });
+
+  it('a regex literal’s apostrophe does not invert quote parity — positive control', () => {
+    // 🔴 THE HOLE THE CHARACTER WALK LEFT OPEN, AS THE SHAPE THAT WALKS IT. One
+    // apostrophe inside a regex literal was read as a quote, so everything after it
+    // became "string" and no colour literal in the rest of the file was ever seen.
+    // Measured on version 2: this exact pair went GREEN.
+    const src = "export const APOSTROPHE_RE = /can't/;\nconst s = { color: '#2A313D' };\n";
+    expect(findingsIn(stripComments(src)).map((f) => f.text)).toEqual(['#2A313D']);
+  });
+
+  it('the odd-quote regex in `setup-dev-live.ts` swallows nothing after it', () => {
+    // 🔴 THE LIVE MANIFESTATION, BOUND TO THE REAL LINE RATHER THAN A FIXTURE.
+    // `setManifestBlockId` holds five quotes in one regex literal, which left 940
+    // characters of real comment unstripped from there on. Both directions are
+    // asserted, because version 2 got both wrong: a hex in prose after it was a
+    // FALSE finding, and a hex in code after it was invisible.
+    const file = 'src/setup-dev-live.ts';
+    const src = readFileSync(file, 'utf8');
+    const anchor = 'const re = /("blockId"\\s*:\\s*)"[^"]*"/;';
+    expect(src, `${file} no longer holds the odd-quote regex this case is about`).toContain(anchor);
+
+    const inProse = src.replace(anchor, `${anchor}\n  // the old grey was #101113`);
+    expect(findingsIn(stripComments(inProse, file)), 'a hex named in prose was read as a colour').toEqual(
+      [],
+    );
+
+    const inCode = src.replace(anchor, `${anchor}\n  const injected = '#101113';`);
+    expect(
+      findingsIn(stripComments(inCode, file)).map((f) => f.text),
+      'a hex in real code after the regex was invisible',
+    ).toContain('#101113');
+  });
+
+  it('JSX text containing `//` does not blank the rest of the line', () => {
+    // The third route version 2 named as an open residual. A JSX text node is one
+    // token to the parser, so its `//` is text and the code after it is still code.
+    const line = `const Cell = () => <span>a // b</span>; const s = { color: '#2A313D' };`;
+    expect(findingsIn(stripComments(line, 'snippet.tsx')).map((f) => f.text)).toEqual(['#2A313D']);
+  });
+
+  it('a hex inside a JSDoc block is not a finding, and one after it still is', () => {
+    // 🔴 THE ONE CASE THE TOKEN WALK NEEDS A RULE FOR. `getChildren()` descends into
+    // JSDoc, so without the explicit skip a `/**` block is KEPT and prose becomes a
+    // finding — measured: `models.ts`'s own JSDoc goes red. Both halves are pinned,
+    // so a skip widened to swallow the following code fails too.
+    expect(findingsIn(stripComments(`/** the old grey was #101113 */\nconst x = 1;`))).toEqual([]);
+    expect(
+      findingsIn(stripComments(`/** was #101113 */\nconst x = '#2A313D';`)).map((f) => f.text),
+    ).toEqual(['#2A313D']);
   });
 
   it('`withAlpha` is the only exemption, and it is still a real function', () => {
