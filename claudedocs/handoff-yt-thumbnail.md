@@ -10,33 +10,28 @@ Ordinary for a brand-new repo — register the scope or ignore until content exi
 
 ## Goal
 Ship **YT Thumbnail** — a Civitai page-money app that generates YouTube thumbnails: txt2img + img2img remix + multi-format generation + a canvas text-overlay editor with a YouTube-capped export.
-- **closing-condition: check** — **ARC 4 (ship 0.1.5 + the new listing media)**. MET when (a) 0.1.5 is `approved`+`live` and the served bundle greps `pm-account-trigger` ≥1 with controls, and (b) the listing revision resolves with the served `iconUrl` moved off its baseline **and the image looked at**.
-- 🔴 **MET 2026-09-30 17:32Z — THIS ARC IS CLOSED.** Both legs measured against ARTIFACTS, never a self-report. **(a)** 0.1.5 `approved`+`live`; served bundle moved `assets/index-DNhq8XQB.js` → **`assets/index-CgPV9KyL.js`**; discriminators that are **0** on 0.1.4 now present — `pm-account-trigger` **4**, `pm-account-menu` **1**, `yt-prompt-preview` **4** — with `hero-banner` **1** positive control and `pm-comfy-beta` **0** negative; served `hero-banner.jpg` and `formats/clickbait.webp` **sha256-identical** to the committed bytes (`a7d9ee3a…`, `28041f7d…`); `content-type: image/jpeg` against a cannot-exist control returning `text/html`. **(b)** listing revision `alpr_01M3SMGWAM0WEMF2GZDAWXECST` **APPROVED** — `iconUrl` and `coverUrl` both moved off the pre-revision baseline, `updatedAt` 15:42:24Z → **17:29:42Z**, and both images were DOWNLOADED AND VIEWED: the new ray icon and the new cover are serving. **FROZEN at round 1** — anything outstanding is a NEW arc.
-- **Arc 3 MET 2026-09-30** (0.1.4 live). **Arc 2 MET 2026-09-29.** **Arc 1 MET 2026-09-27.** All FROZEN, kept as history.
+- **closing-condition: check** — **ARC 5 (ship 0.1.6)**, opened 2026-09-30. MET when 0.1.6 is `approved`+`live` AND the served bundle greps **`yt-history` ≥1** (it is **0** in the live 0.1.5 bundle — a true discriminator) alongside `pm-account-trigger` ≥1 as positive control and `pm-comfy-beta` 0 as negative. Commands in *How to verify*. **NOT YET MET — `pubreq_01M3SZ9XRGJT19EFVH0Y8JG63S`, source `a20f34c`, submitted 2026-09-30 15:15 CDT, `pending`.**
+- **Arc 4 MET 2026-09-30** (0.1.5 live + the listing revision approved, both verified by artifact). **Arc 3 MET 2026-09-30.** **Arc 2 MET 2026-09-29.** **Arc 1 MET 2026-09-27.** All FROZEN, kept as history.
 
 ## State now
 - **No clawgate task.** `clawgate_handoff.sh resolve` exited **5** (NOTHING RESOLVED); an unknown session id also answers 200/empty, so that is not a clean bill of health. No field written.
-- 🔴 **0.1.5 IS LIVE AND SO IS THE NEW LISTING ART.** Submitted 12:05 CDT, a second request appeared at 12:29, deploy `live` 12:31. Everything this session produced is now what a viewer sees: the new icon, cover, hero and six format previews, plus the composed-prompt preview, empty-prompt submit and the Buzz-pool dropdown.
-- 🔴 **TWO 0.1.5 PUBLISH REQUESTS EXIST, BOTH `approved`+`live`** — `pubreq_01M3SMFASYVB73050CKV9BJMFG` (source `4183965`, submitted 12:05, MINE) and `pubreq_01M3SNTH8GKJY6656SCXBP05WQ` (**no source commit**, submitted 12:29, NOT created by this session). `civitai app status yt-thumbnail` reports only the newer one, which therefore shows **no source commit at all**. The artifact check above is what settles which code serves — and it is 0.1.5's. **Leading hypothesis, from ONE coincidence and NOT established:** approving a listing-media revision creates a fresh app publish request (12:29 CDT == the revision's `updatedAt` 17:29:42Z, to the minute). Do not restate this as fact; if it recurs, that is the second observation that would make it one.
-- **`main` is `df01ecb`+**, clean, ↑0↓0, no worktrees, no open PRs. Claim `yt-thumbnail-1` released.
-- **Six PRs merged this session, each verified by CONTENT not ancestry:** #8 `b11523a` · #9 `566dd73` · #10 `dfc0112` · #11 `8060bc2` · #12 `1b9a8a7` · #13 `4183965`.
-- **Verified at `4183965` on the INTEGRATED tree** (both feature PRs merged into one branch off main, not either alone): `tsc --noEmit` rc 0 · **617 passed / 24 files** · build rc 0 with every regenerated `public/` asset byte-identical in `dist/` by `cmp` · `civitai app validate .` rc 0.
-- **Buzz spent this session: 4,492** across ten workflows, `--dry-run` first on every one, estimate == realized on all ten. ⚠ Unreconciled: nine first-pass debits sum to 3,918 while the wallet moved 3,911 — a **7 Buzz** gap nothing local can decompose (`civitai buzz` reports a balance, not a history). Not chased.
-- **CARRIED FORWARD — the money path has STILL never been exercised on current code.** Its only production proof (2026-09-28: two formats → two workflows, **6 Buzz debited from Blue**, `Generate · 6 Buzz`, a 1280×720 editor canvas) was measured on **0.1.3**. Two versions have shipped since, including a rewritten spend control.
-- **The 4 store screenshots are now DOUBLY stale** — they show the pre-taste-pass 640px column AND the old format previews.
-
-- **CARRIED FORWARD — operator decisions, recorded.** 2026-09-30: (a) wire the hero into 0.1.4 rather than ship the taste pass alone, with the stated risk acknowledged; (b) regenerate the full asset set on ChatGPT Images v2.0 with no spending cap; (c) re-generate the icon alone after it failed the 32px gate; (d) bump 0.1.5 and submit, AND attach the new icon + cover to the live listing immediately rather than batching them with the screenshot re-shoot.
+- 🔴 **0.1.6 IS SUBMITTED AND PENDING** — `pubreq_01M3SZ9XRGJT19EFVH0Y8JG63S`, source `a20f34c`. **The live app is still 0.1.5** (bundle `assets/index-CgPV9KyL.js`).
+- **`main` is `a20f34c`**, clean, ↑0↓0, no worktrees, no open PRs.
+- **Four more PRs merged this session, each content-verified:** **#14 → `6209595`** (the operator's own cover, byte-for-byte, plus a repaletted icon) · **#15 → `bec8894`** (editable per-format prompts; honest export copy; a guard pinning the ABSENCE of `allow-downloads`) · **#16 → `a6aae56`** (ChatGPT Images default, budget 900, `useSaveImage`, thumbnail history) · **#17 → `a20f34c`** (the 0.1.6 bump).
+- **Verified at `a20f34c`:** `tsc --noEmit` rc 0 · **713 passed / 28 files** · `npm run build` rc 0 · `civitai app validate .` rc 0. PR #16's riskiest guard was re-mutated INDEPENDENTLY by this session: dropping `historyKey`'s zero-pad goes red on its own named test (*"keeps that order ACROSS a digit-count boundary"*), not on a neighbour's error.
+- **Buzz spent this session: 5,275** — 3,918 (nine-asset pass) + 574 (icon round 2) + 574 (icon round 3, cover-matched) + 209 (the dimensions measurement). Every run `--dry-run` first; estimate == realized on all twelve. ⚠ The 7 Buzz reconciliation gap from the first pass is still unexplained and was not chased.
+- **The live LISTING now carries the operator's own cover and the round-2 magenta icon** (attached and approved in arc 4). 🔴 **The round-3 blue/gold icon from #14 is in the REPO but NOT on the listing** — no attach has been made since. Icon and cover are therefore mismatched on the store until someone attaches.
+- **CARRIED FORWARD — the money path has STILL never been exercised on current code.** Its only production proof (2026-09-28, 6 Buzz from Blue) was on **0.1.3**. Three versions and a rewritten spend control have shipped since.
+- **CARRIED FORWARD — operator decisions.** (a) wire the hero into 0.1.4; (b) regenerate the asset set on ChatGPT Images with no cap; (c) re-generate the icon after it failed the 32px gate; (d) bump 0.1.5, attach icon+cover immediately; (e) **use the operator's own cover EXACTLY AS SUPPLIED despite it reproducing the YouTube mark four times** — raised against this repo's standing note and reaffirmed, so it is a decision, not an oversight; (f) icon matches the cover's PALETTE but carries no mark; (g) ChatGPT Images as default with `buzzBudgetPerGen` 900; (h) resume restores everything and does NOT auto-submit; (i) expired history entries stay visible and still resume.
 
 ## Version history (server-confirmed, never from a CLI exit code)
 | ver | pubreq | source | state |
 |---|---|---|---|
-| 0.1.0 | `pubreq_01M3JE62KDFVK17V8FWA95SEQF` | `17def4f` | approved, superseded |
-| 0.1.1 | `pubreq_01M3JZB7TRZ6TMD1MX7H4M33VZ` | `c5e175d` | approved, superseded (listing copy) |
-| 0.1.2 | `pubreq_01M3K1PRF8Y0KXCT5RA6ZHDJWW` | `cb6f661` | approved, superseded (checkpoint-picker fix) |
-| 0.1.3 | `pubreq_01M3MY1W7XECTKKE8GTNGKEKJZ` | `b66ddaf` | approved, superseded (formats, storage, publishing, N-workflow) |
-| 0.1.4 | `pubreq_01M3SFBT2BF97X8WAE68EKM42F` | `dfc0112` | approved, superseded (taste pass: width-adaptive layout, app-owned palette, hero banner) |
-| 0.1.5 | `pubreq_01M3SMFASYVB73050CKV9BJMFG` | `4183965` | **approved + LIVE** (new brand art; composed-prompt preview, empty-prompt submit, Buzz-pool dropdown) |
-| 0.1.5 | `pubreq_01M3SNTH8GKJY6656SCXBP05WQ` | *(none reported)* | **approved + LIVE** — a SECOND request for the same version, not created by this session; see *Gotchas* |
+| 0.1.3 | `pubreq_01M3MY1W7XECTKKE8GTNGKEKJZ` | `b66ddaf` | approved, superseded |
+| 0.1.4 | `pubreq_01M3SFBT2BF97X8WAE68EKM42F` | `dfc0112` | approved, superseded (taste pass) |
+| 0.1.5 | `pubreq_01M3SMFASYVB73050CKV9BJMFG` | `4183965` | **approved + LIVE** (new brand art, composed-prompt preview, Buzz dropdown) |
+| 0.1.5 | `pubreq_01M3SNTH8GKJY6656SCXBP05WQ` | *(none reported)* | approved + live — a SECOND request for the same version, not created by this session |
+| 0.1.6 | `pubreq_01M3SZ9XRGJT19EFVH0Y8JG63S` | `a20f34c` | **pending** (ChatGPT Images default, budget 900, history, `useSaveImage`) |
 
 ## 0.1.3 — what is in review
 SUPERSEDED — 0.1.3 is **approved, live and verified** (see *State now*). Nothing is in review for the APP. The only thing pending is the **listing-media revision** `alpr_01M3N183249CTB062W288KMM5S`.
@@ -109,19 +104,19 @@ No taint, `toBlob` works. **Do not add defensive workarounds for this.**
 - **Next probe:** ask the platform side whether ANY parameter controls output size, or measure an img2img run (`--ecosystem Flux1Kontext --image <file>`) and see whether a source aspect survives — that is the one case that could distinguish "fixed bucket" from "ignored parameter".
 
 ## Next steps (ranked)
-1. **Exercise the LIVE 0.1.5 in a real browser, including the money path.** This is now the largest evidence gap in the project: the spend control was REWRITTEN this session and has never been used against real Buzz, and the only production proof of the money path is two versions old. 🔴 The specific unmeasured risk in the new control: production mounts the block **full-bleed in a host iframe**, so a `position: fixed` menu anchored to the iframe's viewport can land outside the host's visible region when the host page scrolls — a local iframe probe was attempted and could not run (see *Gotchas*). 🔴 **Never fire an in-frame click at `pm-generate` to see whether it works** — that spent 6 real Buzz once. Repo: none (live app).
-   forcing: user
-2. **Re-shoot the 4 store screenshots and author an `app-capture` recipe for this slug.** Fully unblocked — 0.1.5 and the new art are live. Attach as ONE revision with the real changelog on every attach. Keep the before/after pair: that diff is the only part of an app-taste pass that produces evidence rather than opinion. Repo: `civitai` (the recipe), `civitai-app-yt-thumbnail` (the shots).
+1. **Watch 0.1.6 to `live`, then run the arc-5 check.** 🔴 Verify by ARTIFACT — a second publish request superseded the last one and `civitai app status <slug>` then reported **no source commit at all**. Poll `Deploy state:` until `live` (0.1.5 took ~24 min pending, ~6 min deploying; 0.1.4 took 6+6 — **one sample is not a rate**). If it reports `failed`, re-submit rather than assuming the source is wrong. Repo: `civitai-app-yt-thumbnail`.
    forcing: gate
-3. **Decide whether the app should steer generation toward an ecosystem that honours aspect.** The question changed shape this session: it is no longer "find a parameter that controls output size" but "pick the right ecosystem" (see the retraction in *Gotchas*). Either steer, or keep cover-cropping and say so in the copy. Repo: `civitai-app-yt-thumbnail`, `src/generation.ts`.
+2. **Exercise the LIVE app in a browser, including the money path AND history.** This is now the largest evidence gap by a distance. **History is entirely unexercised** — `createLiveHost` implements no App-Storage, so `dev:live` structurally cannot reach it — and the **storage scopes have never been consented in production**. Also unverified: `useSaveImage`, `cancel()`, quantity 2–4 under the new 900 budget, whether the server clamps 900, and Remix/img2img on OpenAI. 🔴 **Never fire an in-frame click at `pm-generate` to see whether it works** — that spent 6 real Buzz once. The `browser` CLI is NOT on this host; it is on `zach@10.42.0.100`. Repo: none (live app).
    forcing: user
-4. **Two pieces of housekeeping in OTHER repos, both blocked here.** (a) **Prune the app-taste `decisions[]` prose** — route the near-verbatim docblock duplication to `/prune-skill` on the app-taste skill in the **civitai** repo. (b) **Register the cairn scope** — `civitai-app-yt-thumbnail` is still absent from `~/.config/subsystem-store/routes.json`, so `cairn recall`/`create` REFUSE verbatim and no subsystem entry could be written this session either. That file is home-manager-managed READ-ONLY; the fix is one line in the devrc nix source + `home-manager switch`. The table already carries three sibling `civitai-app-*` scopes; devrc PR #1862 is the same change. Blocked six times now. Repo: `civitai` (a), `devrc` (b).
+3. **Attach the round-3 icon to the listing so it matches the cover**, and re-shoot the 4 store screenshots (still showing the pre-taste-pass 640px column and the old format previews). Batch into ONE revision with the real changelog on EVERY attach. Repo: `civitai-app-yt-thumbnail` (shots), `civitai` (an `app-capture` recipe).
+   forcing: gate
+4. **Two pieces of housekeeping in OTHER repos, both blocked here.** (a) **Prune the app-taste `decisions[]` prose** via `/prune-skill` on the app-taste skill in the **civitai** repo. (b) **Register the cairn scope** — `civitai-app-yt-thumbnail` is still absent from `~/.config/subsystem-store/routes.json`, so `cairn recall`/`create` REFUSE verbatim and no subsystem entry could be written this session either. That file is home-manager-managed READ-ONLY; the fix is one line in the devrc nix source + `home-manager switch`. Three sibling `civitai-app-*` scopes are already in the table; devrc PR #1862 is the same change. Blocked seven times now. Repo: `civitai` (a), `devrc` (b).
    forcing: none
-5. Exercise the storage + publish path once — still the only shipped feature with zero production evidence. Repo: none (live app).
+5. Exercise the storage + publish path (custom formats, published board) — still zero production evidence, and now sharing a storage surface with history. Repo: none (live app).
    forcing: none
 
 ## Defects (batched)
-- None outstanding. Two were found and fixed before merge this session: the Buzz menu clipped by the rail's `overflow-y: auto` (Green and Yellow unreachable), and — introduced by that fix — an outside-click handler that read a press on a pool as "outside" and dismissed before the click landed.
+- None outstanding. Four were found and fixed before merge this session: the Buzz menu clipped by the rail's `overflow-y: auto`; an outside-click handler introduced by that fix that dismissed on a press ON an option; the empty-prompt rule open-coded at THREE sites so the handler silently swallowed submits; and a `useAppStorage` object-identity dependency that span unbounded and OOM'd at 4 GB and 8 GB.
 
 ## Gotchas / decisions / dead-ends
 - 🔴 **`civitai app listing status` is a snapshot, and approval moves under you.** Two reads ~5 min apart this session returned `draft` then `approved`; `set-icon` refused in between with "this listing is live". **Re-read listing state immediately before an attach, not at the top of the task** — the attach path is materially different on each side of that line (direct edit vs. moderator-reviewed revision).
@@ -219,32 +214,33 @@ No taint, `toBlob` works. **Do not add defensive workarounds for this.**
 - 🔴 **A SECOND PUBLISH REQUEST CAN SUPERSEDE YOURS, AND `civitai app status <slug>` THEN REPORTS NO SOURCE COMMIT AT ALL.** Measured 2026-09-30: two 0.1.5 requests existed, both `approved`+`live` — mine carrying source `4183965`, and a later one carrying **none**. The single-app view reports only the newest, so its `Source commit:` line was absent and the obvious reading ("the deploy lost my commit") was unavailable *and* unfalsifiable from status alone. **`civitai app status` with NO slug lists every row including yours**, and the artifact check is what actually settles which code serves. **Leading hypothesis, one coincidence only and NOT established:** approving a listing-media revision spawns a fresh app publish request — the second request's 12:29 CDT matches the revision's `updatedAt` 17:29:42Z to the minute.
 - **The listing-media round trip, for planning:** icon + cover attached 12:07, approved ~12:29 — about 22 minutes. The app's own 0.1.5 request sat `pending` for at least 24 minutes across 40 polls before moving. ⚠ **0.1.4's 6-minute submit→approve was ONE observation and is not a rate** — it was nearly treated as one. Moderation is human-paced; budget for tens of minutes, not single digits.
 
+- 🔴 **`allow-downloads` CANNOT BE SHIPPED, and the client-side allowlist is NOT permission.** `civitai app validate` rejects it: *"sandbox token \"allow-downloads\" is not allowed for unverified blocks (trustTier is server-forced to unverified at submit; only allow-scripts and allow-forms are permitted)"*. Confirmed BOTH ways — red on the mutant, green on restore. The trap: `civitai/src/components/AppBlocks/sandbox.ts`'s `ALLOWED_SANDBOX_TOKENS` **does** list `allow-downloads`, and reading that as "a manifest may request it" is wrong — a separate trust-tier gate decides, and a **15-second local `validate` settles it**. A guard in #15 now pins the token's ABSENCE; do not re-add it, it would break every future submit. `REVIEW_SANDBOX_ALLOWED_TOKENS` separately strips it during moderator preview.
+- 🔴 **`<a download>` + `a.click()` IS INERT in the block's sandbox — the download never worked, in any version, and the app said "Saved".** Three-case control, one variable: top-level → download fired (which also RULES OUT the synchronous `URL.revokeObjectURL` as the cause); `sandbox="allow-scripts allow-forms"` → nothing; `+ allow-downloads` → fired.
+- 🔴 **`useSaveImage` is the ONLY route to save a paid output**, and its own docs say so. It takes `{url}` on the civitai image/blob CDN (generated candidates qualify) or `{imageId}`. **It cannot save the editor's composite**: `isAllowedSaveImageUrl` (`civitai/src/components/AppBlocks/saveImageDownload.ts:103`) is **https-only and explicitly drops `data:`/`blob:`**. And **`useImageUpload` cannot launder it** — it opens the HOST's own file-picker modal and *"the iframe never handles the bytes"*. All three routes are closed by measurement; the composited export keeps a right-click affordance and honest copy.
+- 🔴 **OpenAI honours the requested ASPECT but not the exact PIXELS, measured through the BLOCK's own route.** `params.width/height` 1280×720 → delivered **1536×864**, 16:9 preserved; read two agreeing ways (`magick identify` + the JPEG SOF marker). ⚠ This is a DIFFERENT route from the earlier `--aspect-ratio` CLI finding and had to be measured separately — `params.width/height` are INERT on SD XL 1.0 and FLUX. **Discriminating control:** OpenAI prices BY SHAPE (1280×720→209, 1024×1024→287, 720×1280→209) while SD XL is a flat **3** at every shape — positive arm moves, negative arm flat. Consequence: the ~18% silent composition loss is gone on the default model, but the editor's cover-crop COPY stays TRUE (the canvas still crops to 1280×720; a 16:9 source merely downscales).
+- 🔴 **`useAppWorkflows` CANNOT back a resume feature.** It returns only `workflowId`, `status`, `images[]`, `cost`, `createdAt` — the host *deliberately* drops "steps, params, prompts, resources, tokens, metadata, **tags**". So history is a **JOIN**: the hook for images/cost/status, and `useAppStorage` keyed by `workflowId` for the form state. **Tags being dropped is why a batch record is mandatory** — the app submits N workflows per generation and nothing else ties them together.
+- 🔴 **Pruning history rows must be BOUNDED by the oldest workflow fetched.** `useAppWorkflows` is paginated; pruning every stored row with no match on the CURRENT page wipes everything past page one.
+- 🔴 **There are ZERO LoRAs for `baseModel: 'OpenAI'`, and the catalog makes an un-annotated picker WORSE than empty** — it falls back to the FULL card set on an unmatched family, so the button would offer incompatible SD LoRAs for an OpenAI generation. Measured on `/api/v1/blocks/models`: `LORA&baseModels=OpenAI` → 0, with two positive controls (`Checkpoint&baseModels=OpenAI` → 2; unfiltered LORA → non-empty), so the zero is a product fact, not a bad filter value.
+- 🔴 **A hook object identity in a dependency array can OOM the app.** The formats loader depended on the `useAppStorage` object; mocked hosts return a fresh one per render, so it span unbounded — fatal once a SECOND storage effect existed (OOM at 4 GB *and* 8 GB, serially). Fixed at the root with a ref, not by removing the second effect.
+- **`civitai app dev-token --budget` caps at 250**, and ChatGPT Images is 209 at 16:9 / 287 at 1:1 — so a quantity-1 16:9 dev:live generation fits and a 1:1 one does NOT. dotenv is FIRST-wins: mint with `>`, never `>>`.
+- **The `browser` CLI is NOT on this host and i3 is not reachable from the agent shell** (`i3-msg: Could not determine i3 socket path`), so the `app-capture` recipe path is unavailable here. The operator's route is `ssh zach@10.42.0.100`. A recipe's `crop.rect` is only valid against the viewport it was measured in (`frame.py` refuses on >2px drift), so a recipe cannot be authored without a real measured run.
+- **A `#` in a generation prompt is consumed server-side as a wildcard reference** (`targets.prompt[0].category` came back `"FF49BD"` from a literal `#FF49BD`). Write "hex FF49BD". Separately, the token **`strips`** tripped generation moderation ("Inappropriate minor content") and charged nothing — reword rather than re-run.
+
 ## How to verify
 ```bash
 cd /home/zach/workspace/civit/civitai-app-yt-thumbnail
-npx tsc -p tsconfig.json --noEmit && npm test    # at 4183965: 617/617 across 24 files
+npx tsc -p tsconfig.json --noEmit && npx vitest run   # at a20f34c: 713/713 across 28 files
 npm run build && civitai app validate .
-cmp public/hero-banner.jpg dist/hero-banner.jpg  # the build must SHIP the asset, not just hold it
-civitai app status yt-thumbnail                  # expect 0.1.5 approved + live
-# 🔴 STATUS CANNOT NAME THE SOURCE COMMIT when a second publish request supersedes yours —
-#    verify the CODE by artifact. These three are 0 on 0.1.4, so they DISCRIMINATE:
+civitai app status yt-thumbnail                  # expect 0.1.6 approved + live
+# 🔴 STATUS CANNOT NAME THE SOURCE COMMIT when a second request supersedes yours.
+#    `civitai app status` with NO slug lists every row including yours. Verify by ARTIFACT:
 B=$(curl -sS https://yt-thumbnail.civit.ai/ | grep -oE 'assets/index-[A-Za-z0-9_-]+\.js' | head -1)
-echo "$B"   # 0.1.4 served index-DNhq8XQB.js; 0.1.5 serves index-CgPV9KyL.js
+echo "$B"   # 0.1.5 serves index-CgPV9KyL.js — a DIFFERENT hash proves a real redeploy
 curl -sS "https://yt-thumbnail.civit.ai/$B" > /tmp/b.js
-for t in pm-account-trigger pm-account-menu yt-prompt-preview hero-banner pm-comfy-beta; do
+for t in yt-history yt-history-anon yt-history-cancel pm-save-note pm-account-trigger pm-comfy-beta; do
   printf '%-22s %s\n' "$t" "$(grep -oF -- "$t" /tmp/b.js | wc -l)"
-done   # first three >=1 on 0.1.5; hero-banner >=1 control; pm-comfy-beta 0
-# the served assets ARE the committed bytes — the strongest form:
-curl -sSL https://yt-thumbnail.civit.ai/hero-banner.jpg | sha256sum   # a7d9ee3a…
-sha256sum public/hero-banner.jpg
+done   # first four are 0 on 0.1.5 and >=1 on 0.1.6; pm-account-trigger >=1 control; last 0
 # 🔴 READ content-type, NEVER the status code — this host 200s EVERY path (SPA fallback):
 curl -sSI https://yt-thumbnail.civit.ai/hero-banner.jpg | grep -i '^content-type'   # image/jpeg
 curl -sSI https://yt-thumbnail.civit.ai/definitely-not-a-real-file-xyzzy.jpg | grep -i '^content-type'  # text/html
-# the LISTING: status going quiet CANNOT tell approved from rejected. Diff, then LOOK:
-env -i curl -sS https://civitai.com/api/v1/apps/yt-thumbnail | python3 -m json.tool \
-  | grep -E 'iconUrl|coverUrl|updatedAt'
-#   as of the 2026-09-30 approval: updatedAt 2026-09-30T17:29:42.423Z,
-#   iconUrl  .../c28764c9-fbec-4e2f-a7b4-843f5d2c1e24/width=320/...jpeg
-#   coverUrl .../c4b7451b-7ecd-44cc-aa39-7855606e2412/width=1200/...jpeg
-#   Download with curl -sSL (image.civitai.com 301s) and VIEW it.
 ```
