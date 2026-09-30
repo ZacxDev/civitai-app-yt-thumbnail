@@ -10,38 +10,33 @@ Ordinary for a brand-new repo — register the scope or ignore until content exi
 
 ## Goal
 Ship **YT Thumbnail** — a Civitai page-money app that generates YouTube thumbnails: txt2img + img2img remix + multi-format generation + a canvas text-overlay editor with a YouTube-capped export.
-- **closing-condition: check** — this is **ARC 3 (ship the taste pass)**, opened 2026-09-30. It is MET when **0.1.4 is approved and live** AND the served bundle at `https://yt-thumbnail.civit.ai/` greps `hero-banner` ≥1 alongside a known-present positive control AND a known-absent negative control, AND `curl -sSI https://yt-thumbnail.civit.ai/hero-banner.jpg` returns **`content-type: image/jpeg`**. 🔴 **The content-type is the whole test, not the status code** — this host serves an SPA fallback and answers `200 text/html` for EVERY path including ones that cannot exist (measured, see Gotchas). Exact commands in *How to verify*. **NOT YET MET — 0.1.4 is `pending` moderator review.**
-- **Arc 2 was MET 2026-09-29 and RE-VERIFIED green 2026-09-30** (listing `approved` with no moderator-review line; `doctor` → `✓ No problems`; live bundle `assets/index-BrzuzOdM.js` greps `yt-storage-anon` **1** with controls `yt-format-card` **1** / `pm-editor-canvas` **1** and negative control `pm-comfy-beta` **0**). **FROZEN — that arc is CLOSED**; kept as history.
-- **Arc 1 ("ship it") was MET 2026-09-27** — `app_state.py yt-thumbnail` rc=0 and `https://yt-thumbnail.civit.ai/` returned 200. Frozen, kept as history.
+- **closing-condition: check** — **ARC 3 (ship the taste pass)**. MET when 0.1.4 is approved and live AND the served bundle greps `hero-banner` ≥1 alongside a known-present positive control and a known-absent negative control AND `https://yt-thumbnail.civit.ai/hero-banner.jpg` answers **`content-type: image/jpeg`**.
+- 🔴 **MET 2026-09-30 15:49Z — THIS ARC IS CLOSED.** Measured against the ARTIFACT, not the deploy's self-report. `civitai app status` → `approved` / `live`, source `dfc0112`. Served bundle moved **`assets/index-BrzuzOdM.js` → `assets/index-DNhq8XQB.js`**, so it is a new deploy rather than a cache. Grep triple on the live bundle: `hero-banner` **1**; positive controls `yt-format-card` **1**, `yt-storage-anon` **1**, `pm-editor-canvas` **1**; negative control `pm-comfy-beta` **0**. The asset: `content-type: image/jpeg`, `content-length: 29607`, and the downloaded bytes are **sha256-identical** to `public/hero-banner.jpg` (`13831ce9…6e86f`), `magick identify` 1216×380. Cannot-exist control `/definitely-not-a-real-file-xyzzy.jpg` → `text/html`, which is what makes the content-type leg discriminating rather than decorative. **FROZEN at round 1** — anything outstanding below is a NEW arc, not another round of this one.
+- **Arc 2 was MET 2026-09-29, RE-VERIFIED green 2026-09-30.** FROZEN, kept as history.
+- **Arc 1 ("ship it") was MET 2026-09-27.** FROZEN, kept as history.
 
 ## State now
-- **No clawgate task.** `clawgate_handoff.sh resolve` exited **5** (NOTHING RESOLVED). An unknown session id also answers 200/empty, so this is **not** a clean bill of health. No `clawgate-task:` field written, deliberately.
-- 🔴 **0.1.4 IS SUBMITTED AND PENDING MODERATOR REVIEW** — `pubreq_01M3SFBT2BF97X8WAE68EKM42F`, source `dfc0112`, submitted 2026-09-30. `civitai app status` row: `yt-thumbnail 0.1.4 pending - dfc0112`. **The live app is STILL 0.1.3** (`b66ddaf`, bundle `assets/index-BrzuzOdM.js`) until a moderator approves and the build deploys.
-- **`main` is `dfc0112`**, clean, ↑0↓0. Claim `yt-thumbnail-1` RELEASED. No open PRs.
-- **Three PRs merged this session, each verified by CONTENT not ancestry:**
-  - **#8 → `b11523a`** — the two rendered hero candidates + the `heroPrompt`/`heroSeed`/`heroNote` ledger.
-  - **#9 → `566dd73`** — the hero wired into `src/App.tsx` + `heroMinHeight` in `src/layout.ts`. Implemented by a dispatched subagent in an isolated worktree.
-  - **#10 → `dfc0112`** — the `0.1.4` bump. **BOTH `block.manifest.json` AND `package.json`**: `manifest.test.ts` pins them in lockstep and failed the manifest-only bump. That guard earned its place.
-- **Verified at `dfc0112` on the MERGED tree, re-run by this session rather than accepted from the subagent's report:** `npx tsc --noEmit` rc 0 · `npm test` **563 passed / 22 files**, 0 failed · `npm run build` ✓ with `dist/hero-banner.jpg` byte-identical to `public/` (`cmp`) · `civitai app validate .` rc 0. `main` moved twice under this work (`68c34bd`, then `566dd73`) and the suite was re-run after each.
-- 🔴 **THE HERO WAS RENDERED IN A REAL BROWSER — a first for this entire arc.** Headless chromium (nix `playwright-driver.browsers`, `chromium-1228`) against `npm run dev:harness`, at **700px** (one column) and **1400px** (rail), in **both themes**. Asset served `200 image/jpeg 1216×380`; **no console errors, no failed requests**; the three layers resolved in order; the scrim flipped per theme — `rgb(20,24,31)` dark / `rgb(122,0,78)` light, i.e. each theme's own `heroTo`; `minHeight` resolved **104** narrow / **132** rail, matching `layout.ts`. Screenshots were LOOKED AT: the headline is legible on the dark field at both widths and the burst reads cleanly on the right.
-- **The subagent's mutation matrix was SPOT-CHECKED, not taken on report.** M1 (move the photo in front of the scrim — the mutation the whole design exists to stop, and one that leaves every colour assertion green) was re-applied by hand to `dfc0112`'s source: the suite went **4 failed / 559 passed**, and the kill came from the NAMED test *"the layers are ordered scrim → photo → fallback"*, not from another guard's failure. Restored from a `cp -a` backup (never `git checkout --`) with sha256 re-verified byte-identical.
-- **CARRIED FORWARD — end-to-end money path exercised in production** (2026-09-28). Still the ONLY live proof of it: two formats → two workflows, two separately-labelled candidates, **6 Buzz debited from Blue**, button read `Generate · 6 Buzz`, editor opened a 1280×720 canvas with no error. 🔴 Measured on **0.1.3**. Neither the taste pass nor the hero has been exercised against the money path in production.
-- **The 4 live store screenshots are STALE** — they show the old 640px column. Re-shooting is now unblocked the moment 0.1.4 goes live. There is still **no `app-capture` recipe for this slug**.
-- **`cairn recall` still REFUSES** — `civitai-app-yt-thumbnail` absent from `~/.config/subsystem-store/routes.json`. Fifth session blocked; no subsystem entry could be written this session either.
+- **No clawgate task.** `clawgate_handoff.sh resolve` exited **5** (NOTHING RESOLVED); an unknown session id also answers 200/empty, so that is not a clean bill of health. No field written, deliberately.
+- 🔴 **0.1.4 IS APPROVED AND LIVE.** `pubreq_01M3SFBT2BF97X8WAE68EKM42F`, source `dfc0112`. Submitted 2026-09-30 10:36 CDT, reviewed **10:42** (6 min), deploy `live` **10:48** (12 min end to end). The taste pass and the hero are what a viewer now sees. The three-session-long "merged but NOT shipped" blocker is GONE.
+- **`main` is `7566c0b`+**, clean, ↑0↓0. Claim `yt-thumbnail-1` RELEASED. No open PRs.
+- **Four PRs merged this session, each verified by CONTENT not ancestry:** **#8 → `b11523a`** (hero candidates + prompt/seed ledger) · **#9 → `566dd73`** (hero wired into `App.tsx`, `heroMinHeight` in `layout.ts`; implemented by a dispatched subagent in an isolated worktree) · **#10 → `dfc0112`** (the 0.1.4 bump, two files — `manifest.test.ts` pins manifest and package.json in lockstep and failed the manifest-only bump).
+- **Verified at `dfc0112` on the MERGED tree, re-run by this session rather than accepted from the subagent's report:** `tsc --noEmit` rc 0 · `npm test` **563 passed / 22 files** · `npm run build` ✓ with `dist/hero-banner.jpg` byte-identical to `public/` · `civitai app validate .` rc 0. `main` moved twice under the work and the suite was re-run after each.
+- 🔴 **THE HERO WAS RENDERED IN A BROWSER — a first for this arc, but only against the MOCK HARNESS.** Headless chromium (nix `playwright-driver.browsers`, `chromium-1228`) against `npm run dev:harness` at **700px** and **1400px**, both themes. Asset `200 image/jpeg 1216×380`; no console errors, no failed requests; three layers resolved in order; scrim flipped per theme — `rgb(20,24,31)` dark / `rgb(122,0,78)` light, each theme's own `heroTo`; `minHeight` **104** narrow / **132** rail, matching `layout.ts`. Screenshots were LOOKED AT: the headline is legible on the dark field at both widths. 🔴 **This says NOTHING about the live host** — see rank 1.
+- **The subagent's mutation matrix was SPOT-CHECKED, not taken on report.** M1 (move the photo in front of the scrim — the mutant that leaves every colour assertion green) re-applied by hand: **4 failed / 559 passed**, killed by the NAMED test *"the layers are ordered scrim → photo → fallback"*. Restored from a `cp -a` backup (never `git checkout --`), sha256 re-verified byte-identical.
+- **CARRIED FORWARD — end-to-end money path exercised in production** (2026-09-28): two formats → two workflows, two separately-labelled candidates, **6 Buzz debited from Blue**, button read `Generate · 6 Buzz`, editor opened a 1280×720 canvas with no error. 🔴 Measured on **0.1.3**. **Neither the taste pass nor the hero has EVER been exercised against the money path**, and 0.1.4 is now what serves it.
+- **CARRIED FORWARD — operator decision 2026-09-30:** the fork was *ship the taste pass alone* vs *wire the hero into 0.1.4*. The operator chose **wire it in**, with the stated risk acknowledged. That risk was partly retired by rendering before submitting — but only against the mock harness.
+- **The 4 live store screenshots are STALE** and the re-shoot is now UNBLOCKED for the first time. There is still **no `app-capture` recipe for this slug**.
+- **`cairn recall` still REFUSES** — `civitai-app-yt-thumbnail` absent from `~/.config/subsystem-store/routes.json`. Fifth session blocked.
 - **Buzz spent this session: 0.**
-- **CARRIED FORWARD — operator decision 2026-09-30, recorded:** the fork was *merge #8 and ship the taste pass alone* vs *merge #8 AND wire the hero into 0.1.4*. The operator chose **wire it into 0.1.4**, with the stated risk acknowledged (an image nobody had seen render, in the same moderated release as the un-browser-verified layout). That risk was then partly retired by rendering the hero headless before submitting — but only against the MOCK harness, never the real host.
 
 ## Version history (server-confirmed, never from a CLI exit code)
 | ver | pubreq | source | state |
 |---|---|---|---|
 | 0.1.0 | `pubreq_01M3JE62KDFVK17V8FWA95SEQF` | `17def4f` | approved, superseded |
-| 0.1.1 | `pubreq_01M3JZB7TRZ6TMD1MX7H4M33VZ` | `c5e175d` | **approved + live** (listing copy) |
-| 0.1.2 | `pubreq_01M3K1PRF8Y0KXCT5RA6ZHDJWW` | `cb6f661` | **approved + live** (checkpoint-picker fix) |
-| 0.1.3 | `pubreq_01M3MY1W7XECTKKE8GTNGKEKJZ` | `b66ddaf` | **pending** (formats, storage, publishing, N-workflow) |
-
-**Remote now EXISTS** (this was rank-1 for two sessions): `git@github.com:ZacxDev/civitai-app-yt-thumbnail.git`, PUBLIC, `main` tracks `origin/main`. Every submitted source commit is on it. Before publishing, every blob in every commit was scanned — JWT / Civitai-key / AWS+GitHub-token patterns all 0, with `tok123` hitting 9 blobs as the positive control, so those zeros are measurements rather than a dead grep.
-
-0.1.2 live is confirmed by artifact, not just by status: served bundle moved to `assets/index-CfiTDCZc.js`, with `pm-editor-canvas` and `pm-change-model` at **1** and the not-yet-shipped `pm-format-row` at **0** — a pair, never a bare zero.
+| 0.1.1 | `pubreq_01M3JZB7TRZ6TMD1MX7H4M33VZ` | `c5e175d` | approved, superseded (listing copy) |
+| 0.1.2 | `pubreq_01M3K1PRF8Y0KXCT5RA6ZHDJWW` | `cb6f661` | approved, superseded (checkpoint-picker fix) |
+| 0.1.3 | `pubreq_01M3MY1W7XECTKKE8GTNGKEKJZ` | `b66ddaf` | approved, superseded (formats, storage, publishing, N-workflow) |
+| 0.1.4 | `pubreq_01M3SFBT2BF97X8WAE68EKM42F` | `dfc0112` | **approved + LIVE** (taste pass: width-adaptive layout, app-owned palette, hero banner) |
 
 ## 0.1.3 — what is in review
 SUPERSEDED — 0.1.3 is **approved, live and verified** (see *State now*). Nothing is in review for the APP. The only thing pending is the **listing-media revision** `alpr_01M3N183249CTB062W288KMM5S`.
@@ -114,17 +109,16 @@ No taint, `toBlob` works. **Do not add defensive workarounds for this.**
 - **Next probe:** ask the platform side whether ANY parameter controls output size, or measure an img2img run (`--ecosystem Flux1Kontext --image <file>`) and see whether a source aspect survives — that is the one case that could distinguish "fixed bucket" from "ignored parameter".
 
 ## Next steps (ranked)
-1. **Watch 0.1.4 through moderator review, then run the arc-3 closing check.** `civitai app status yt-thumbnail` until `approved`+`live`, then the *How to verify* block — 🔴 reading **`content-type`**, never the status code, on the `hero-banner.jpg` probe. If the deploy reports `failed` (it has for sibling apps twice this week — see the `civitai app status` rows for `sensei` and `model-benchmarking`), re-submit rather than assuming the source is wrong. Repo: `civitai-app-yt-thumbnail`.
-   forcing: gate
-2. **Verify the LIVE app in a real browser once 0.1.4 is approved.** The mock-harness render above is NOT the real host: it does not exercise the money path, the host's own theme signal, the sticky rail's travel, the boot→app frame sequence, or whether the new focus ring wins over the W6 pack's own focus styling. `taste.json` `deferred[3]` was WIDENED by PR #9, not closed. Use `browser` against the live app. Repo: none (live app).
+🔴 **Arc 3 is CLOSED. Every item below belongs to a NEW arc and none of them is another round of it.** A new arc needs its own `closing-condition:` before it is worked.
+1. **Exercise the LIVE 0.1.4 in a real browser — including the money path.** This is the one thing no render so far touches: the mock harness is not the real host, and the ONLY live proof of the money path was measured on 0.1.3, which no longer serves. Unobserved on the live app: the hero over the real host's theme signal, the sticky rail's travel and whether its `maxHeight`/`overflowY` bound holds, the boot→app frame sequence, whether the new focus ring wins over the W6 pack's own focus styling. 🔴 **Never fire an in-frame click at `pm-generate` to "see whether it works"** — that spent 6 real Buzz once already. `taste.json` `deferred[3]` was WIDENED by PR #9, not closed. Repo: none (live app).
    forcing: user
-3. **Re-shoot the 4 store screenshots and author an `app-capture` recipe for this slug** — unblocked once 0.1.4 is live. Keep the before/after pair: that diff is the only part of an app-taste pass that produces evidence rather than opinion. Repo: `civitai` (the recipe), `civitai-app-yt-thumbnail` (the shots).
+2. **Re-shoot the 4 store screenshots and author an `app-capture` recipe for this slug.** UNBLOCKED for the first time — 0.1.4 is live. Keep the before/after pair: that diff is the only part of an app-taste pass that produces evidence rather than opinion. Repo: `civitai` (the recipe), `civitai-app-yt-thumbnail` (the shots).
    forcing: gate
-4. **Two pieces of housekeeping in OTHER repos, both blocked here.** (a) **Prune the app-taste `decisions[]` prose — `taste.json` is +61% since round 0** (26,543 → 42,541 B); round 0's D3 disposition was to route the near-verbatim docblock duplication to `/prune-skill` on the app-taste skill in the **civitai** repo, and it has not run. (b) **Register the cairn scope** — `civitai-app-yt-thumbnail` is still absent from `~/.config/subsystem-store/routes.json`, so `cairn recall`/`create` REFUSE verbatim. That file is home-manager-managed READ-ONLY; the fix is one line in the devrc nix source + `home-manager switch`. The table already carries `civitai-app-model-benchmarking`, `civitai-app-playable-collections` and `civitai-app-sensei`, so this slug fits the established `civitai-app-<slug>` pattern exactly, and devrc PR #1862 is the same change for a sibling scope — copy its shape. Blocked five times now. Repo: `civitai` (a), `devrc` (b).
+3. **Two pieces of housekeeping in OTHER repos, both blocked here.** (a) **Prune the app-taste `decisions[]` prose — `taste.json` is +61% since round 0** (26,543 → 42,541 B); round 0's D3 disposition was to route the near-verbatim docblock duplication to `/prune-skill` on the app-taste skill in the **civitai** repo, and it has not run. (b) **Register the cairn scope** — `civitai-app-yt-thumbnail` is absent from `~/.config/subsystem-store/routes.json`, so `cairn recall`/`create` REFUSE verbatim. That file is home-manager-managed READ-ONLY; the fix is one line in the devrc nix source + `home-manager switch`. The table already carries `civitai-app-model-benchmarking`, `civitai-app-playable-collections` and `civitai-app-sensei`, so this slug fits the established `civitai-app-<slug>` pattern exactly, and devrc PR #1862 is the same change for a sibling scope. Blocked five times now. Repo: `civitai` (a), `devrc` (b).
    forcing: none
-5. **Decide the 1216×832 framing question** — confirmed by a THIRD route, and now a fourth: the hero itself was requested at `--aspect-ratio 16:9` and came back 1216×832, which is why it had to be cropped by hand. Correct the copy further, show the crop so users can reframe, or find a parameter that genuinely controls output size. Repo: `civitai-app-yt-thumbnail`, `src/generation.ts`.
+4. **Decide the 1216×832 framing question** — confirmed by a THIRD route, and a fourth: the hero was requested at `--aspect-ratio 16:9` and came back 1216×832, which is why it had to be cropped by hand. Correct the copy further, show the crop so users can reframe, or find a parameter that genuinely controls output size. Repo: `civitai-app-yt-thumbnail`, `src/generation.ts`.
    forcing: user
-6. Exercise the storage + publish path once — still the only part of 0.1.3 with zero production evidence. Repo: none (live app).
+5. Exercise the storage + publish path once — still the only part of 0.1.3's feature set with zero production evidence, and it is now serving under 0.1.4. Repo: none (live app).
    forcing: none
 
 ## Defects (batched)
@@ -203,23 +197,27 @@ No taint, `toBlob` works. **Do not add defensive workarounds for this.**
 - **`gh pr merge` can answer `GraphQL: Pull Request is not mergeable` purely because GitHub has not recomputed mergeability yet** after a push. `mergeable` read `MERGEABLE`/`CLEAN` six seconds later and the same command succeeded. Re-read the state before treating it as a real conflict.
 - **`civitai app submit`'s leak scan reports, it does not stop the upload.** The CLI says so verbatim: matched values are not printed, and `--package-only` is the path that lets you look first. Likewise, this repo has **no `tests/leakscan.py`**, so `handoff_doc.py` prints `NO SCANNER FOUND … PASS BY ABSENCE, not a clean result` on every handoff write here.
 
+- **0.1.4's round trip, for planning the next one: submit → approved in 6 minutes, approved → `live` in a further 6.** Deploy state went `deploying` for ~13 polls at 20s before flipping to `live`. Sibling apps (`sensei`, `model-benchmarking`) have had `approved` + `failed` deploys twice this week, so `approved` is NOT the end of the watch — poll `Deploy state:` until `live`, and treat `failed` as a re-submit rather than a source problem.
+- 🔴 **The served-bundle FILENAME is the cheapest proof a deploy actually replaced the old one.** `assets/index-BrzuzOdM.js` (0.1.3) → `assets/index-DNhq8XQB.js` (0.1.4). A grep that finds your new token in a bundle whose hash never moved is reading a stale artifact.
+
 ## How to verify
 ```bash
 cd /home/zach/workspace/civit/civitai-app-yt-thumbnail
 npx tsc -p tsconfig.json --noEmit && npm test    # at dfc0112: 563/563 across 22 files
 npm run build && civitai app validate .
 cmp public/hero-banner.jpg dist/hero-banner.jpg  # the build must SHIP the asset, not just hold it
-civitai app status yt-thumbnail                  # 0.1.4: pending -> approved + live
+civitai app status yt-thumbnail                  # expect 0.1.4 approved + live
 civitai app doctor | sed -n '/^yt-thumbnail/,/^$/p'   # expect "✓ No problems"
-# ARC 3's closing condition. The bundle grep ALWAYS reports a triple:
+# ARC 3's closing check (MET 2026-09-30). The bundle grep ALWAYS reports a triple:
 B=$(curl -sS https://yt-thumbnail.civit.ai/ | grep -oE 'assets/index-[A-Za-z0-9_-]+\.js' | head -1)
 curl -sS "https://yt-thumbnail.civit.ai/$B" > /tmp/b.js
 for t in hero-banner yt-format-card yt-storage-anon pm-comfy-beta; do
-  printf '%-20s %s\n' "$t" "$(grep -oF -- "$t" /tmp/b.js | wc -l)"   # last must be 0, others >=1
+  printf '%-18s %s\n' "$t" "$(grep -oF -- "$t" /tmp/b.js | wc -l)"   # last must be 0, others >=1
 done
-# 🔴 READ content-type, NEVER the status code — this host 200s every path (SPA fallback):
+# 🔴 READ content-type, NEVER the status code — this host 200s EVERY path (SPA fallback):
 curl -sSI https://yt-thumbnail.civit.ai/hero-banner.jpg | grep -i '^content-type'   # MUST be image/jpeg
 curl -sSI https://yt-thumbnail.civit.ai/definitely-not-a-real-file-xyzzy.jpg | grep -i '^content-type'  # control: text/html
-# render the hero locally (nothing about the LIVE host, but it is the only render there is):
-#   npm run dev:harness   then drive headless chromium at ?theme=light and default (dark)
+# strongest form — the served bytes ARE the committed bytes:
+curl -sSL https://yt-thumbnail.civit.ai/hero-banner.jpg | sha256sum   # 13831ce9…6e86f
+sha256sum public/hero-banner.jpg
 ```
