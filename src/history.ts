@@ -69,9 +69,12 @@ const TS_INVERT_BASE = 10 ** TS_DIGITS - 1;
  * order: store `TS_INVERT_BASE - createdAt`, zero-padded to a FIXED width so
  * lexicographic and numeric order agree.
  *
- * Without the fixed width this silently breaks at a digit-count boundary
- * ('9999' sorts before '10000' as strings), which is the sort of bug that shows
- * up once every few years and looks like data loss.
+ * Without the fixed width this silently breaks wherever the inverted value
+ * changes digit count — as strings, '999' sorts before '9999' sorts before
+ * '98299999999999', which is the opposite of their numeric order. Note that
+ * EVERY realistic epoch-ms timestamp inverts to 14 digits already, so the pad is
+ * a no-op on them: the defect is invisible to any test built only from plausible
+ * dates, and history.test.ts says so and picks values that straddle instead.
  *
  * `batchId` makes the key unique when two batches land in the same millisecond.
  */
