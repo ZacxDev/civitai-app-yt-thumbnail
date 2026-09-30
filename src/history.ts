@@ -35,7 +35,7 @@
 // rebuilds the batch from it.
 // ---------------------------------------------------------------------------
 
-import type { AppWorkflow } from '@civitai/app-sdk/blocks';
+import type { AppWorkflow, BlockWorkflowSnapshot } from '@civitai/app-sdk/blocks';
 
 import { buildWorkflowBody, type AccountChoice, type SourceImage } from './generation.js';
 import type { CheckpointOption, LoraOption } from './models.js';
@@ -302,6 +302,150 @@ export function joinHistory(
         .map((w) => w.workflowId),
     };
   });
+}
+
+// ---------------------------------------------------------------------------
+// THE APP'S OWN VIEW OF THE WORKFLOWS IT IS DRIVING RIGHT NOW.
+//
+// 🔴 WHY THIS EXISTS, AND IT IS NOT A CACHE. `useAppWorkflows()` is A PAGE THAT
+// WAS FETCHED EARLIER. A batch submitted a moment ago is not in it, `refetch()`
+// is not synchronous with our own poll loop, and a host may page it out entirely.
+// Without a second source the row for the batch the viewer JUST PAID FOR joins to
+// nothing, so it renders `unavailable` — no status, no images, no cost — while the
+// app is holding that workflow's own snapshot in its hands. Worse, `orphanedKeys`
+// would then see a record inside the fetched window matching no live workflow and
+// DELETE it.
+//
+// So every snapshot the app receives from `submit()`/`poll()` is folded into a map
+// keyed by workflowId and merged into the live page before the join. The map is
+// CUMULATIVE for the session and is deliberately NOT cleared by a new Generate:
+// clearing it is exactly how the previous batch's images disappeared the moment
+// the next click started.
+// ---------------------------------------------------------------------------
+
+/** Workflow statuses that cannot change again. Used to stop a merge regressing one. */
+const TERMINAL_WORKFLOW_STATUSES: ReadonlySet<AppWorkflow['status']> = new Set([
+  'succeeded',
+  'failed',
+  'expired',
+  'canceled',
+]);
+
+/**
+ * Fold ONE snapshot the app received itself into its map of driven workflows.
+ *
+ * `createdAt` is stamped on FIRST SIGHT and never moved, because a snapshot does
+ * not carry one. That only ever feeds {@link oldestWorkflowTime}, where "now" is
+ * the newest possible value and therefore cannot loosen the prune bound.
+ *
+ * `imageUrls` is passed in (rather than read off the snapshot) so this shares
+ * generation.ts's ONE extractor — `imageUrlsFrom` — instead of re-deriving which
+ * field the host put the urls in.
+ */
+export function upsertOwnWorkflow(
+  current: Readonly<Record<string, AppWorkflow>>,
+  snapshot: BlockWorkflowSnapshot,
+  imageUrls: readonly string[],
+  nowIso: string,
+): Record<string, AppWorkflow> {
+  const id = snapshot.workflowId;
+  if (!id) return current as Record<string, AppWorkflow>;
+  const previous = current[id];
+  const next: AppWorkflow = {
+    workflowId: id,
+    status: snapshot.status,
+    // An empty image list on a `pending` poll must not erase urls a previous
+    // snapshot already delivered.
+    images:
+      imageUrls.length > 0
+        ? imageUrls.map((url) => ({ url, width: null, height: null, nsfwLevel: null }))
+        : (previous?.images ?? []),
+    // Same rule for the price: only a number the SERVER sent replaces one it sent
+    // before. `null` here means "not told yet", never "free".
+    cost: snapshot.cost?.total ?? previous?.cost ?? null,
+    createdAt: previous?.createdAt ?? nowIso,
+  };
+  return { ...current, [id]: next };
+}
+
+/**
+ * The live half, widened by what the app knows itself: the fetched page, plus our
+ * own rows for workflows the page does not carry, plus a FIELD-WISE fill-in where
+ * both have the same workflow.
+ *
+ * 🔴 THE MERGE IS MONOTONIC — it can only ever ADD information, which is what
+ * makes it safe to run on every render. Three clauses, each with a reason:
+ *
+ *   images  the page's list wins when it is non-empty; ours fills an empty one.
+ *           A page fetched before the generation finished has no images for it,
+ *           and dropping ours there hides output the viewer PAID for.
+ *   cost    the page's number wins when it has one; ours fills a `null`. BOTH are
+ *           the server's own figure (`snapshot.cost.total` / the projection), so
+ *           neither is an estimate — see aggregateSpend's note on why an estimate
+ *           may never stand in for a realized cost.
+ *   status  a TERMINAL status wins over a non-terminal one, whichever side holds
+ *           it. A stale page saying `processing` about a workflow we have already
+ *           watched succeed would show a permanent skeleton; the reverse (our
+ *           `pending` against the page's `succeeded`) is the same error mirrored.
+ *
+ * `createdAt` always comes from the page when it has the row: it is the real one.
+ */
+export function mergeLiveWorkflows(
+  page: readonly AppWorkflow[],
+  own: Readonly<Record<string, AppWorkflow>>,
+): AppWorkflow[] {
+  const merged = page.map((w) => {
+    const mine = own[w.workflowId];
+    if (!mine) return w;
+    const pageTerminal = TERMINAL_WORKFLOW_STATUSES.has(w.status);
+    const mineTerminal = TERMINAL_WORKFLOW_STATUSES.has(mine.status);
+    return {
+      ...w,
+      status: !pageTerminal && mineTerminal ? mine.status : w.status,
+      images: w.images.length > 0 ? w.images : mine.images,
+      cost: w.cost != null ? w.cost : mine.cost,
+    };
+  });
+  const seen = new Set(page.map((w) => w.workflowId));
+  for (const w of Object.values(own)) if (!seen.has(w.workflowId)) merged.push(w);
+  return merged;
+}
+
+/**
+ * Should the history surface be rendered AT ALL?
+ *
+ * 🔴 ONLY THE `ready`-AND-EMPTY CASE HIDES, and the other states are not
+ * "empty with a different message" — each is ACTIONABLE and each names a
+ * different fix: sign in ('anon'), grant storage ('denied'), retry ('error'),
+ * wait ('loading'). Hiding those would delete the only thing on screen that tells
+ * the viewer why they have no history.
+ *
+ * A `note` keeps the surface up even when ready-and-empty, because the notes this
+ * surface carries are about the run that JUST happened — "too large to save",
+ * "wasn't saved to history" — and a note that vanishes with its container is a
+ * message nobody reads.
+ */
+export function showHistory(args: {
+  state: 'loading' | 'ready' | 'anon' | 'denied' | 'error';
+  entryCount: number;
+  note: string | null;
+}): boolean {
+  if (args.state !== 'ready') return true;
+  if (args.entryCount > 0) return true;
+  return args.note != null;
+}
+
+/**
+ * How many skeleton tiles a still-running batch should show: one per image it is
+ * expected to produce, i.e. quantity × formats, minus whatever has already landed.
+ *
+ * 🔴 FORMATS AND QUANTITY MULTIPLY — the same arithmetic the cost disclosure
+ * makes. A skeleton count of 1 for a 3-format × 2-image run would understate what
+ * is coming, which on this surface is a claim about what was paid for.
+ */
+export function skeletonCount(record: GenerationRecord, alreadyLanded: number): number {
+  const expected = Math.max(1, record.form.formats.length) * Math.max(1, record.form.quantity);
+  return Math.max(0, expected - Math.max(0, alreadyLanded));
 }
 
 /**
