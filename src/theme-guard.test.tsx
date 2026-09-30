@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 
 import { render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -32,14 +32,12 @@ import { AA_TEXT, THEMES, contrastRatio, palette, type ThemeName } from './palet
 // is exactly the pair `overlayFg` has in both themes, so that passes too. The
 // value is a legitimate palette colour; what is wrong is WHERE it is used.
 //
-// So the two guards below grade the two things that actually discriminate, and
-// neither of them is a list of surfaces:
+// So the two guards below grade the two things that actually discriminate:
 //
-//   A. NO COLOUR LITERAL MAY APPEAR IN THE CODE OF THE TWO FILES THAT DRAW THE
-//      APP. A hex, `rgb()` or `hsl()` anywhere outside `withAlpha` is a colour
-//      that did not come from a `Palette`, whatever theme it happens to suit.
-//      This is a property of the whole file, not a ledger, so a surface added
-//      tomorrow is covered the moment it is written.
+//   A. NO COLOUR LITERAL MAY APPEAR IN THE CODE OF ANY NON-TEST TYPESCRIPT FILE
+//      UNDER `src/`, except in `withAlpha` and in the four files named in
+//      `EXEMPT` below. A hex, `rgb()` or `hsl()` anywhere else is a colour that
+//      did not come from a `Palette`, whatever theme it happens to suit.
 //
 //   B. EVERY TEXT COLOUR THE APP PAINTS IS GRADED AGAINST ITS OWN RESOLVED
 //      GROUND, in both themes, by walking the rendered DOM. This is the
@@ -47,31 +45,181 @@ import { AA_TEXT, THEMES, contrastRatio, palette, type ThemeName } from './palet
 //      palette" but "can this text be read where it sits" — and it is what makes
 //      the mutant fail: 1.055:1 against `AA_TEXT`'s 4.5.
 //
-// Neither guard names a surface, so neither can be out of date.
+// 🔴 WHAT EACH GUARD IS AND IS NOT, STATED PRECISELY, BECAUSE THE PREVIOUS
+// VERSION OF THIS PARAGRAPH OVERCLAIMED BOTH. It said "a surface added tomorrow
+// is covered the moment it is written" and "neither guard names a surface, so
+// neither can be out of date". Guard A was at the time a two-entry FILE ledger,
+// and the same off-palette literal moved verbatim into a new `src/` file passed;
+// its comment stripper was also string-unaware, so a `//` inside a `url(...)`
+// blanked the rest of the line INSIDE a file it did cover. Both are closed below.
+// The honest statements now:
+//
+//   * Guard A's file set is DERIVED from the directory, so a new FILE is covered
+//     the moment it is written. What can go stale is the `EXEMPT` list, which is
+//     therefore asserted to name only files that still exist.
+//   * Guard A reads TypeScript only. `src/index.css` paints, and Guard A cannot
+//     see it; `palette.test.ts` and Guard B cover what that stylesheet does.
+//   * Guard B names no surface at all, but it grades TEXT against its ground. A
+//     BORDER or a BACKGROUND colour is never graded for contrast by either guard
+//     — Guard A is the only thing standing between those and an off-palette
+//     value, which is why widening Guard A's file set mattered.
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
-// GUARD A — no colour may enter these files except through a Palette.
+// GUARD A — no colour may enter the app's own code except through a Palette.
 // ---------------------------------------------------------------------------
 
-/** The two files that draw the app's own surfaces. */
-const DRAWING_FILES = ['src/App.tsx', 'src/FormatPicker.tsx'] as const;
+/**
+ * The ONE regex, used by the guard AND by its positive control.
+ *
+ * 🔴 HOISTED BECAUSE THE CONTROL USED TO RE-WRITE IT. The control below existed to
+ * prove "the zero above is not a dead pattern", and it inlined a second copy of
+ * this literal — so it validated a DUPLICATE. Measured: replacing the guard's copy
+ * with `/ZZZZZZNOMATCH/g` left the whole suite green, which is precisely the state
+ * the control claimed to rule out. There is now one expression and one reader of
+ * it, so mutating it takes the control down with the guard.
+ */
+const COLOUR_LITERAL = /#[0-9a-fA-F]{3,8}\b|\b(?:rgb|rgba|hsl|hsla)\(/g;
 
 /**
- * The ONE place a colour literal is legitimate in those files: `withAlpha` builds
+ * The ONE place a colour literal is legitimate in a covered file: `withAlpha` builds
  * an `rgba()` string out of a token it was handed, so the literal is the
  * FUNCTION's syntax, not a colour choice. Named rather than counted — a count
  * would still pass if the allowed occurrence moved into a surface.
  */
 const LITERAL_ALLOWED_IN = 'withAlpha';
 
-/** Strip `//` and block comments so a hex quoted in prose is not a finding. */
+/**
+ * Files that may name a colour, each with the reason it may.
+ *
+ * 🔴 AN EXEMPTION LIST, NOT A COVERAGE LIST, AND THE DIRECTION IS THE POINT. The
+ * set Guard A scans is whatever is in the directory minus these four, so a file
+ * added tomorrow is scanned without anyone remembering to add it. The previous
+ * shape was the opposite — two files named as covered — and it let the identical
+ * off-palette border literal live in a new `src/` module with the suite green.
+ */
+const EXEMPT: readonly { file: string; why: string }[] = [
+  { file: 'src/palette.ts', why: 'the palette itself: this is where the colours are DEFINED' },
+  {
+    file: 'src/main.tsx',
+    why: "the dev harness banner's own chrome, gated behind VITE_DEV_HARNESS and pinned to data-theme=dark — deliberately not themed, because it is not part of the block",
+  },
+  { file: 'src/Harness.tsx', why: 'the dev harness terminal chrome, same gate, same reason' },
+  {
+    file: 'src/editor.ts',
+    why: "DEFAULT_TEXT_OVERLAY's text and stroke colours: a default the viewer edits with a colour input and which is drawn ONTO the image, not painted as an app surface",
+  },
+];
+
+/** Every non-test `.ts`/`.tsx` file under `dir`, recursively. */
+function tsSourcesUnder(dir: string, out: string[] = []): string[] {
+  for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
+    a.name.localeCompare(b.name),
+  )) {
+    const path = `${dir}/${entry.name}`;
+    if (entry.isDirectory()) tsSourcesUnder(path, out);
+    else if (/\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name)) out.push(path);
+  }
+  return out;
+}
+
+const ALL_SOURCES = tsSourcesUnder('src');
+const COVERED_FILES = ALL_SOURCES.filter((f) => !EXEMPT.some((e) => e.file === f));
+
+/**
+ * Blank out comments, LEAVING STRING LITERALS INTACT.
+ *
+ * 🔴 THE REGEX VERSION OF THIS WAS A HOLE INSIDE THE FILES GUARD A COVERED. A
+ * single `replace` of "slash slash to end of line" is string-unaware, so one line
+ * of `App.tsx` —
+ * `backgroundImage: 'url(https://cdn…/x.png)', border: '1px solid #2A313D',` —
+ * had everything after the URL's `//` blanked, and the off-palette border was
+ * invisible to the scanner with the suite green. So this is a character walk with
+ * four states: code, `'`/`"` string, template literal, and `${…}` back in code.
+ *
+ * Replaced with spaces rather than nothing, so byte offsets stay usable for
+ * locating the enclosing function.
+ *
+ * 🔴 AND THE BLANKING IS DONE BY SLICING, NOT BY INDEXING A SPREAD ARRAY. `[...src]`
+ * splits a string by CODE POINT, so one astral character — every 🔴 in these files
+ * is U+1F534, a surrogate pair — makes the array one element shorter than the
+ * string and silently shifts every offset after it. Measured while writing this:
+ * the `rgba(` in `withAlpha` came back attributed to `loraAddWrapStyle`, 14 lines
+ * away, because 29 UTF-16 units of drift had accumulated by then. Mis-attribution
+ * rather than a miss, but a guard whose error message names the wrong function is
+ * how a real finding gets dismissed as a false positive.
+ *
+ * RESIDUALS, STATED RATHER THAN IMPLIED. A regex literal and JSX text are both
+ * scanned as code, so `/\/\//` or a JSX text node containing `//` would still
+ * start a "comment". Neither exists in any covered file today, and closing them
+ * needs a real parser; the failure direction is the same hole this fixed, so it is
+ * named here rather than left to be rediscovered.
+ */
 function stripComments(src: string): string {
-  // Replace with spaces rather than nothing, so byte offsets stay usable for
-  // locating the enclosing function.
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => ' '.repeat(m.length))
-    .replace(/\/\/[^\n]*/g, (m) => ' '.repeat(m.length));
+  const comments: [number, number][] = [];
+  const blank = (from: number, to: number) => comments.push([from, to]);
+
+  let i = 0;
+  let inTemplate = false;
+  /** Brace depth inside the innermost `${ … }`; the stack holds enclosing ones. */
+  let depth = 0;
+  const enclosing: number[] = [];
+
+  while (i < src.length) {
+    const c = src[i];
+
+    if (inTemplate) {
+      if (c === '\\') i += 2;
+      else if (c === '`') {
+        inTemplate = false;
+        i++;
+      } else if (c === '$' && src[i + 1] === '{') {
+        enclosing.push(depth);
+        depth = 0;
+        inTemplate = false;
+        i += 2;
+      } else i++;
+      continue;
+    }
+
+    if (c === '/' && src[i + 1] === '*') {
+      const end = src.indexOf('*/', i + 2);
+      const stop = end === -1 ? src.length : end + 2;
+      blank(i, stop);
+      i = stop;
+    } else if (c === '/' && src[i + 1] === '/') {
+      const nl = src.indexOf('\n', i);
+      const stop = nl === -1 ? src.length : nl;
+      blank(i, stop);
+      i = stop;
+    } else if (c === "'" || c === '"') {
+      i++;
+      while (i < src.length && src[i] !== c) i += src[i] === '\\' ? 2 : 1;
+      i++;
+    } else if (c === '`') {
+      inTemplate = true;
+      i++;
+    } else if (c === '{') {
+      depth++;
+      i++;
+    } else if (c === '}') {
+      if (depth === 0 && enclosing.length > 0) {
+        depth = enclosing.pop()!;
+        inTemplate = true;
+      } else depth--;
+      i++;
+    } else i++;
+  }
+
+  // Newlines are preserved so line numbers survive; everything else becomes a
+  // space, one space per UTF-16 unit, so byte offsets are unchanged.
+  let out = '';
+  let cursor = 0;
+  for (const [from, to] of comments) {
+    out += src.slice(cursor, from) + src.slice(from, to).replace(/[^\n]/g, ' ');
+    cursor = to;
+  }
+  return out + src.slice(cursor);
 }
 
 /** Nearest `function foo` / `const foo =` at or above `offset`. */
@@ -82,15 +230,42 @@ function enclosingName(src: string, offset: number): string {
   return last ? (last[1] ?? last[2] ?? '<unknown>') : '<file scope>';
 }
 
-describe('GUARD A — no colour literal reaches an app surface', () => {
-  it.each(DRAWING_FILES)('%s introduces no colour outside a Palette', (file) => {
-    const src = stripComments(readFileSync(file, 'utf8'));
+/** Every colour literal in `src`, with the function it sits in. The guard's own read. */
+function colourLiterals(src: string): { text: string; where: string }[] {
+  return [...src.matchAll(COLOUR_LITERAL)].map((m) => ({
+    text: m[0],
+    where: enclosingName(src, m.index),
+  }));
+}
 
-    // `#rgb`, `#rrggbb`, `#rrggbbaa`, plus functional colour notations.
-    const pattern = /#[0-9a-fA-F]{3,8}\b|\b(?:rgb|rgba|hsl|hsla)\(/g;
-    const findings = [...src.matchAll(pattern)]
-      .map((m) => ({ text: m[0], where: enclosingName(src, m.index) }))
-      .filter((f) => f.where !== LITERAL_ALLOWED_IN);
+/** …minus the one exemption that is a FUNCTION rather than a file. */
+function findingsIn(src: string): { text: string; where: string }[] {
+  return colourLiterals(src).filter((f) => f.where !== LITERAL_ALLOWED_IN);
+}
+
+describe('GUARD A — no colour literal reaches an app surface', () => {
+  it('the scanned set is derived from the directory, and it is not empty', () => {
+    // 🔴 REACHABILITY BEFORE VERDICT. A walk that found nothing would pass every
+    // per-file case below vacuously — `it.each([])` registers no tests at all — and
+    // read as coverage of the whole app.
+    expect(COVERED_FILES.length, 'Guard A scanned no files').toBeGreaterThan(5);
+    // The two files that draw the app's surfaces must be in the derived set. Named
+    // here as an assertion ABOUT the derivation, not as the derivation itself.
+    expect(COVERED_FILES).toContain('src/App.tsx');
+    expect(COVERED_FILES).toContain('src/FormatPicker.tsx');
+  });
+
+  it('every exemption still names a file that exists', () => {
+    // A stale exemption is dead weight that reads as a considered decision about a
+    // file which may have been deleted or renamed — and it would silently stop
+    // covering whatever replaced it.
+    for (const { file } of EXEMPT) {
+      expect(ALL_SOURCES, `EXEMPT names ${file}, which is no longer a source file`).toContain(file);
+    }
+  });
+
+  it.each(COVERED_FILES)('%s introduces no colour outside a Palette', (file) => {
+    const findings = findingsIn(stripComments(readFileSync(file, 'utf8')));
 
     expect(
       findings,
@@ -102,22 +277,52 @@ describe('GUARD A — no colour literal reaches an app surface', () => {
   });
 
   it('the guard can SEE a literal — positive control', () => {
-    // 🔴 WITHOUT THIS THE ZERO ABOVE IS INDISTINGUISHABLE FROM A DEAD PATTERN.
-    // The control is the real mutant: `color: pal.text` → `color: '#F7F9FC'`, in
-    // the function it was demonstrated on.
+    // 🔴 WITHOUT THIS THE ZEROES ABOVE ARE INDISTINGUISHABLE FROM A DEAD PATTERN,
+    // and this control only makes that distinction because it goes through
+    // `findingsIn` — i.e. through `COLOUR_LITERAL` itself. The mutant is the real
+    // one: `color: pal.text` → `color: '#F7F9FC'`, in the function it was
+    // demonstrated on.
     const mutated = stripComments(readFileSync('src/FormatPicker.tsx', 'utf8')).replace(
       'color: pal.text,',
       "color: '#F7F9FC',",
     );
     expect(mutated, 'the mutation did not apply — the control proves nothing').toContain('#F7F9FC');
 
-    const found = [...mutated.matchAll(/#[0-9a-fA-F]{3,8}\b|\b(?:rgb|rgba|hsl|hsla)\(/g)].map((m) => ({
-      text: m[0],
-      where: enclosingName(mutated, m.index),
-    }));
-    expect(found.filter((f) => f.where !== LITERAL_ALLOWED_IN)).not.toEqual([]);
+    const found = findingsIn(mutated);
+    expect(found, 'the guard did not see the injected literal').not.toEqual([]);
     // And it is attributed to the surface that did it, not to the file.
     expect(found.map((f) => f.where)).toContain('cardButtonStyle');
+  });
+
+  it('a `//` inside a string does not blank the rest of the line — positive control', () => {
+    // 🔴 THE SECOND WALKABLE ROUTE, AS A CASE. The regex stripper this replaces
+    // blanked from the URL's `//` to end of line, hiding the border literal that
+    // follows it on the same line of real code.
+    const line = `const s = { backgroundImage: 'url(https://cdn.example/x.png)', border: '1px solid #2A313D' };`;
+    const stripped = stripComments(line);
+    expect(stripped, 'the string was treated as a comment').toContain('#2A313D');
+    expect(findingsIn(stripped).map((f) => f.text)).toContain('#2A313D');
+  });
+
+  it('a real comment IS still blanked, and a string is still left alone', () => {
+    // The negative half of the pair above: widening the stripper must not have
+    // turned it off. A hex quoted in prose is not a finding; one in a string is.
+    expect(findingsIn(stripComments(`// the old grey was #101113\nconst x = 1;`))).toEqual([]);
+    expect(findingsIn(stripComments(`/* #101113 */ const x = 1;`))).toEqual([]);
+    expect(findingsIn(stripComments(`const x = '#101113';`)).map((f) => f.text)).toEqual(['#101113']);
+    // Byte offsets survive blanking, which is what `enclosingName` depends on.
+    expect(stripComments(`// abc\nconst q = 1;`)).toHaveLength(`// abc\nconst q = 1;`.length);
+  });
+
+  it('an astral character does not shift the offsets `enclosingName` reads', () => {
+    // 🔴 A REGRESSION CASE FOR A BUG IN THIS FILE'S OWN STRIPPER, not a hypothetical:
+    // blanking through `[...src]` splits by CODE POINT, so each 🔴 cost one UTF-16
+    // unit of drift and `withAlpha`'s own `rgba(` was reported against a `const` 14
+    // lines above it. Both halves are pinned — the length, and the attribution.
+    const src = `/* 🔴🔴 note */\nfunction realOwner() {\n  return '#ABCDEF';\n}\n`;
+    const stripped = stripComments(src);
+    expect(stripped).toHaveLength(src.length);
+    expect(findingsIn(stripped)).toEqual([{ text: '#ABCDEF', where: 'realOwner' }]);
   });
 
   it('`withAlpha` is the only exemption, and it is still a real function', () => {
@@ -133,9 +338,13 @@ describe('GUARD A — no colour literal reaches an app surface', () => {
 // ---------------------------------------------------------------------------
 
 type Rgb = [number, number, number];
+interface Layer {
+  rgb: Rgb;
+  alpha: number;
+}
 
 /** `rgb()` / `rgba()` / `#hex` → channels + alpha. `null` for anything else. */
-function parseColour(value: string): { rgb: Rgb; alpha: number } | null {
+function parseColour(value: string): Layer | null {
   const v = value.trim();
   if (v === '' || v === 'none' || v === 'transparent' || v === 'inherit' || v === 'currentColor') {
     return null;
@@ -165,15 +374,33 @@ function composite(src: Rgb, alpha: number, dst: Rgb): Rgb {
   return [0, 1, 2].map((i) => src[i] * alpha + dst[i] * (1 - alpha)) as Rgb;
 }
 
-/** Every colour stop in a `linear-gradient(...)`, in source order. */
-function gradientStops(image: string): Rgb[] {
+/**
+ * Every colour stop in a `linear-gradient(...)`, in source order, WITH ITS ALPHA.
+ *
+ * 🔴 THE ALPHA USED TO BE READ AND THEN DISCARDED: the line was
+ * `out.push(c.alpha === 1 ? c.rgb : c.rgb)` — two identical branches, so a
+ * translucent stop was graded as though it were opaque. Inert at the time (both
+ * hero stops are opaque) and silent the moment it stopped being: the first
+ * `withAlpha(...)` stop added to a gradient would have been graded against a
+ * colour nothing paints. `groundsFor` now composites such a stop over whatever is
+ * behind the gradient.
+ */
+function gradientLayers(image: string): Layer[] {
   if (!/gradient\(/i.test(image)) return [];
-  const out: Rgb[] = [];
+  const out: Layer[] = [];
   for (const m of image.matchAll(/rgba?\([^)]*\)|#[0-9a-fA-F]{3,6}\b/g)) {
     const c = parseColour(m[0]);
-    if (c) out.push(c.alpha === 1 ? c.rgb : c.rgb);
+    if (c) out.push(c);
   }
   return out;
+}
+
+/** What an element paints for itself: a gradient's stops, else its background colour. */
+function ownLayers(el: HTMLElement): Layer[] {
+  const stops = gradientLayers(el.style.backgroundImage || el.style.background || '');
+  if (stops.length > 0) return stops;
+  const bg = parseColour(el.style.backgroundColor || '');
+  return bg && bg.alpha > 0 ? [bg] : [];
 }
 
 /**
@@ -181,30 +408,26 @@ function gradientStops(image: string): Rgb[] {
  *
  * More than one when the ground is a gradient — then every stop is a ground the
  * text really does sit on somewhere along its width, and the worst of them is the
- * one that decides legibility. A translucent ground is composited over whatever
- * is behind it rather than skipped, so the candidate tag's 78% scrim is graded at
- * the colour it actually produces.
+ * one that decides legibility. A translucent layer, gradient stop or plain
+ * background alike, is composited over what is behind it rather than skipped, so
+ * the candidate tag's 78% scrim is graded at the colour it actually produces.
+ *
+ * Expressed as recursion on the parent rather than a loop with an accumulator,
+ * because that is the definition: a layer over the grounds of whatever encloses it.
  */
 function groundsFor(el: HTMLElement): Rgb[] {
-  let node: HTMLElement | null = el;
-  const layers: { rgb: Rgb; alpha: number }[] = [];
+  const layers = ownLayers(el);
+  const behind = (): Rgb[] => (el.parentElement ? groundsFor(el.parentElement) : []);
+  if (layers.length === 0) return behind();
 
-  while (node) {
-    const stops = gradientStops(node.style.backgroundImage || node.style.background || '');
-    if (stops.length > 0) {
-      // A gradient is opaque here: resolve each stop through the layers above it.
-      return stops.map((s) => layers.reduceRight((acc, l) => composite(l.rgb, l.alpha, acc), s));
-    }
-    const bg = parseColour(node.style.backgroundColor || '');
-    if (bg && bg.alpha > 0) {
-      if (bg.alpha === 1) {
-        return [layers.reduceRight((acc, l) => composite(l.rgb, l.alpha, acc), bg.rgb)];
-      }
-      layers.push(bg);
-    }
-    node = node.parentElement;
+  const translucent = layers.some((l) => l.alpha < 1);
+  const grounds = translucent ? behind() : [];
+  const out: Rgb[] = [];
+  for (const l of layers) {
+    if (l.alpha >= 1) out.push(l.rgb);
+    else for (const g of grounds) out.push(composite(l.rgb, l.alpha, g));
   }
-  return [];
+  return out;
 }
 
 const VIEWER = { viewer: { id: 2, username: 'dev', status: 'active' as const } };
@@ -284,6 +507,7 @@ describe.each(THEMES)('GUARD B — every text colour is legible where it sits (%
     const own = palette[theme];
     const graded: string[] = [];
     const failures: string[] = [];
+    const groundless: string[] = [];
 
     for (const el of [root, ...Array.from(root.querySelectorAll<HTMLElement>('*'))]) {
       // Only the app's OWN surfaces carry an inline colour. The W6 pack's
@@ -298,11 +522,10 @@ describe.each(THEMES)('GUARD B — every text colour is legible where it sits (%
       if (op < 1) continue;
 
       const grounds = groundsFor(el);
-      expect(
-        grounds.length,
-        `<${el.tagName.toLowerCase()} data-testid=${el.dataset.testid ?? '—'}> paints ` +
-          `${toHex(fg.rgb)} with no resolvable opaque ground above it`,
-      ).toBeGreaterThan(0);
+      if (grounds.length === 0) {
+        groundless.push(`<${el.tagName.toLowerCase()} testid=${el.dataset.testid ?? '—'}> ${toHex(fg.rgb)}`);
+        continue;
+      }
 
       for (const ground of grounds) {
         const ratio = contrastRatio(toHex(fg.rgb), toHex(ground));
@@ -321,6 +544,14 @@ describe.each(THEMES)('GUARD B — every text colour is legible where it sits (%
       `the walk graded ${graded.length} (element, ground) pairs — a guard that walks ` +
         `nothing is worse than no guard`,
     ).toBeGreaterThanOrEqual(MIN_GRADED_PAIRS);
+
+    // 🔴 THIS ONE CANNOT FIRE TODAY AND IS KEPT AS A TRIPWIRE, NOT COUNTED AS
+    // COVERAGE. The walk starts at the block root, which always carries an opaque
+    // inline `background: pal.page`, so every descendant resolves to something. It
+    // is here to fail loudly if that stops being true — an unreachable assertion
+    // that says so is better than one that reads as a check on the grader. The
+    // grader's own empty-set behaviour is exercised below, where it IS reachable.
+    expect(groundless, 'text with no resolvable opaque ground above it').toEqual([]);
 
     expect(
       failures,
@@ -382,5 +613,34 @@ describe('GUARD B — the grader itself', () => {
     const el = document.createElement('div');
     el.style.backgroundImage = 'linear-gradient(135deg, #b3006e 0%, #14181f 100%)';
     expect(groundsFor(el)).toHaveLength(2);
+  });
+
+  it('composites a TRANSLUCENT gradient stop over what is behind the gradient', () => {
+    // 🔴 THE CASE THE DEAD TERNARY WOULD FAIL. Graded as opaque, the first stop
+    // resolves to black (#000000); composited over the white behind it, to mid grey.
+    // Both grounds are returned, because the text crosses both.
+    const parent = document.createElement('div');
+    parent.style.backgroundColor = 'rgb(255, 255, 255)';
+    const el = document.createElement('div');
+    el.style.backgroundImage = 'linear-gradient(90deg, rgba(0, 0, 0, 0.5) 0%, #ffffff 100%)';
+    parent.appendChild(el);
+    const grounds = groundsFor(el).map((g) => g.map(Math.round));
+    expect(grounds).toEqual([
+      [128, 128, 128],
+      [255, 255, 255],
+    ]);
+  });
+
+  it('resolves NO ground when nothing above the element is opaque', () => {
+    // Where the walk's `groundless` case is reachable: the grader returns an empty
+    // set rather than inventing a ground, which is what makes that assertion mean
+    // something if the block root ever stops painting `page`.
+    const el = document.createElement('div');
+    el.style.color = 'rgb(0, 0, 0)';
+    expect(groundsFor(el)).toEqual([]);
+    const translucentOnly = document.createElement('div');
+    translucentOnly.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+    translucentOnly.appendChild(el);
+    expect(groundsFor(el)).toEqual([]);
   });
 });

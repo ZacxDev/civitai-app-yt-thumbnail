@@ -2120,11 +2120,15 @@ function railGridStyle(layout: BlockLayout): React.CSSProperties {
  * a stuck rail keeps the same gap to the frame's top edge that the shell gives every
  * other edge — `top: 0` sat flush against it. The bound is `100dvh` less TWO insets
  * (one above, one below), which is the height the shell's own box leaves inside the
- * frame. `100dvh` and not the frame's own height because the frame IS viewport-height
- * on the full-page surface (see above), and on the slot surface `clampBlockHeight`'s
- * ceiling is itself the viewport less host chrome, so `100dvh` is an over-estimate
- * there rather than an under-estimate — it can leave the rail taller than its
- * scrollport, never shorter than its content needs.
+ * frame.
+ *
+ * `dvh` IS EXACT HERE ON BOTH SURFACES, AND AN EARLIER VERSION OF THIS PARAGRAPH
+ * HEDGED ABOUT AN OVER-ESTIMATE IT DOES NOT MAKE. This code runs inside the block's
+ * own iframe, and a viewport unit resolves against THE IFRAME'S viewport, not the
+ * top document's — so `100dvh` is the frame's own height by definition, whatever
+ * height the host gave it. That is true on the full-page surface and equally true
+ * on a slot surface sized by `clampBlockHeight`; the host chrome the old sentence
+ * worried about is outside the frame and already excluded.
  *
  * 🔴 NOT VERIFIED IN PIXELS, AND THAT IS NOT A DETAIL. jsdom performs no layout, so
  * nothing here can observe a sticky rail actually travelling, overflowing, or

@@ -483,6 +483,13 @@ describe('the layout the App renders, at EVERY tier', () => {
 // Pinned as WHOLE NORMALISED STRINGS rather than keywords. A guard on the word
 // "Buzz" is walkable by rewording around it; the whole string makes a cosmetic
 // reword fail the test, which is the price of a machine-readable claim.
+//
+// 🔴 AND ALL THREE REALLY ARE WHOLE, WHICH THIS HEADER TWICE CLAIMED WITHOUT IT
+// BEING TRUE. The post-spend case was `toContain('Spent 8 Buzz')` — a substring
+// that would have survived deleting the account note, or appending copy that
+// contradicted it. It is a `toBe` now. Its expected value leads with `Done`
+// because that is the `Alert`'s own `title` prop, written in `App.tsx`: app copy
+// like the rest of the string, not pack chrome leaking into the assertion.
 // ===========================================================================
 
 describe('the cost disclosures survive', () => {
@@ -549,7 +556,7 @@ describe('the cost disclosures survive', () => {
     await user.click(generateBtn);
     await screen.findByAltText(/generated result/i, {}, { timeout: 5000 });
 
-    expect(norm(screen.getByTestId('pm-spent'))).toContain('Spent 8 Buzz');
+    expect(norm(screen.getByTestId('pm-spent'))).toBe('DoneSpent 8 Buzz from your Blue account.');
   });
 });
 

@@ -335,7 +335,8 @@ describe('layoutForTier', () => {
     });
 
     it('the ladder `layout.ts` mirrors really IS the SDK ladder', () => {
-      // 🔴 `layout.ts` MIRRORS `BREAKPOINT_KEYS` RATHER THAN IMPORTING IT, because
+      // 🔴 `layout.ts` WRITES OUT `BREAKPOINT_KEYS` PLUS `'base'` RATHER THAN
+      // IMPORTING IT — six entries against the SDK's five, not a mirror — because
       // `@civitai/theme` is a TRANSITIVE dependency — pinned by
       // `@civitai/blocks-react`, absent from this app's `package.json` — so shipped
       // code importing it would take an undeclared dependency. A mirror needs a pin,

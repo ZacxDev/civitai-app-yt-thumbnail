@@ -157,6 +157,14 @@ const RAIL_W_ULTRAWIDE = 400;
 /** Which of the three shapes a tier gets. Named so the `null` cap has one meaning. */
 type TierShape = 'one-column' | 'two-column' | 'rail';
 
+/**
+ * The `return 'rail'` is a FALLTHROUGH, and it carries the same assumption
+ * `admitsUltrawide` documents at length: an unrecognised tier counts as wider than
+ * `xl`. Right for a tier APPENDED above `xl` (the only direction this scale has
+ * grown), wrong for one INSERTED below — a hypothetical `2xs` would get the rail.
+ * Not guessed at here either: `layout.test.ts` pins the ladder's contents and its
+ * top against `resolveBlockTier`, so an insertion fails loudly and a human decides.
+ */
 function shapeForTier(tier: BlockSizeTier): TierShape {
   if (tier === 'base' || tier === 'xs') return 'one-column';
   if (tier === 'sm' || tier === 'md') return 'two-column';
@@ -166,11 +174,18 @@ function shapeForTier(tier: BlockSizeTier): TierShape {
 /**
  * The SDK's tier ladder as this module understands it, narrowest first.
  *
- * Mirrored rather than imported: `BREAKPOINT_KEYS` lives in `@civitai/theme`, which
- * is a TRANSITIVE dependency here (pinned by `@civitai/blocks-react`, absent from
- * this app's own `package.json`), so importing it into shipped code would take a
- * dependency the manifest does not declare. `layout.test.ts` pins this ladder against
- * the SDK's own `resolveBlockTier` instead, which IS a first-party export.
+ * NOT a copy of `BREAKPOINT_KEYS` — it is `BREAKPOINT_KEYS` PLUS `'base'`, which is
+ * six entries against the SDK's five (`xs`, `sm`, `md`, `lg`, `xl`). Saying it
+ * "mirrors" the keys elided that, and the extra entry is not cosmetic: `'base'` is
+ * what an unmeasured block reports, it is the bottom of `shapeForTier`'s
+ * one-column branch, and its index is what makes `admitsUltrawide`'s comparison
+ * against `'xl'` land where it does.
+ *
+ * Written out rather than imported: `@civitai/theme` is a TRANSITIVE dependency here
+ * (pinned by `@civitai/blocks-react`, absent from this app's own `package.json`), so
+ * importing it into shipped code would take a dependency the manifest does not
+ * declare. `layout.test.ts` pins this ladder against the SDK's own `resolveBlockTier`
+ * instead, which IS a first-party export.
  */
 const TIER_LADDER = ['base', 'xs', 'sm', 'md', 'lg', 'xl'] as const;
 
