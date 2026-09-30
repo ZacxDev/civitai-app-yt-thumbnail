@@ -42,6 +42,9 @@ export interface SourceImage {
   height: number;
 }
 
+/** What {@link composePrompt} puts between the user's text and the suffix. */
+const PROMPT_JOINER = ', ';
+
 /**
  * Compose the user's prompt with a FORMAT's suffix into the prompt one workflow
  * will actually carry. (Formats themselves live in `formats.ts`; this is the
@@ -59,11 +62,58 @@ export function composePrompt(prompt: string, suffix: string): string {
   const suf = suffix.trim();
   if (suf === '') return clampPrompt(base);
   if (base === '') return clampPrompt(suf);
-  const JOINER = ', ';
-  const room = PROMPT_MAX - suf.length - JOINER.length;
+  const room = userPromptRoom(suf);
   // A suffix at/over the cap on its own leaves no room for any user text.
   if (room <= 0) return clampPrompt(suf);
-  return `${base.slice(0, room)}${JOINER}${suf}`;
+  return `${base.slice(0, room)}${PROMPT_JOINER}${suf}`;
+}
+
+/**
+ * How many characters of the USER's own prompt survive composition with
+ * `suffix` — i.e. the budget {@link composePrompt} clamps them to.
+ *
+ * 🔴 ONE RULE, ONE PLACE. `composePrompt` calls this rather than re-deriving the
+ * arithmetic, and so does {@link promptWasTruncated}. A second copy of
+ * `PROMPT_MAX - suffix - joiner` is how the preview and the submitted body drift
+ * apart by one character and nobody notices until a 1500-char prompt is paid for.
+ *
+ * `0` when the suffix alone fills the cap (the composed prompt is then the suffix
+ * and nothing else); `PROMPT_MAX` when there is no suffix at all.
+ */
+export function userPromptRoom(suffix: string): number {
+  const suf = suffix.trim();
+  if (suf === '') return PROMPT_MAX;
+  return Math.max(0, PROMPT_MAX - suf.length - PROMPT_JOINER.length);
+}
+
+/**
+ * Did composing `prompt` with `suffix` CLAMP the user's own text? Drives the
+ * preview's "your prompt was trimmed to fit" note — the suffix is reserved, so
+ * the loss is always the viewer's words, and they should be told before paying.
+ */
+export function promptWasTruncated(prompt: string, suffix: string): boolean {
+  return prompt.trim().length > userPromptRoom(suffix);
+}
+
+/**
+ * Is there anything at all to submit? TRUE when at least one selected format
+ * composes to a non-empty prompt.
+ *
+ * 🔴 AN EMPTY USER PROMPT IS LEGITIMATE. A format IS a prompt — "show me this
+ * look in three models" is a real request — so the gate is not
+ * `prompt.trim() !== ''`. What it must still refuse is the state where a click
+ * would spend on nothing: no formats selected (zero workflows), or formats whose
+ * suffixes are all blank AND no user text.
+ *
+ * Derived from {@link composePrompt} itself rather than from a second predicate,
+ * so the button can never be enabled for a prompt the body-builder would send as
+ * an empty string.
+ */
+export function hasSubmittablePrompt(
+  prompt: string,
+  formats: ReadonlyArray<{ suffix: string }>,
+): boolean {
+  return formats.some((f) => composePrompt(prompt, f.suffix) !== '');
 }
 
 // ---------------------------------------------------------------------------

@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createMockHost } from '@civitai/blocks-react/testing';
@@ -41,6 +42,8 @@ describe('App (component)', () => {
     const signIn = await screen.findByTestId('pm-signin');
     expect(signIn).toHaveTextContent(/sign in to generate/i);
     expect(screen.queryByTestId('pm-generate')).not.toBeInTheDocument();
+    // Both halves of the control: its trigger AND (were it open) its pools.
+    expect(screen.queryByTestId('pm-account-trigger')).not.toBeInTheDocument();
     expect(screen.queryByTestId('pm-account-auto')).not.toBeInTheDocument();
   });
 
@@ -87,7 +90,14 @@ describe('App (component)', () => {
       viewer: { id: 2, username: 'dev', status: 'active' },
       buzzBalance: mockBuzzBalance(100),
     });
+    const user = userEvent.setup();
     render(<App />);
+
+    // 🔴 MARKUP SHAPE CHANGED, ASSERTIONS DID NOT. The "Spend from" control is a
+    // trigger + a popup menu now, not an always-rendered radio row, so the pools
+    // have to be OPENED before they are in the DOM at all. Every expectation
+    // below is the one this test has always made.
+    await user.click(await screen.findByTestId('pm-account-trigger'));
 
     // findByTitle waits for the balance to land, so this can't pass on the
     // pre-balance frame.
@@ -101,8 +111,14 @@ describe('App (component)', () => {
 
   it('account picker defaults to Auto and offers all three pools', async () => {
     uninstall = installMockMoneyHost({ viewer: { id: 2, username: 'dev', status: 'active' } });
+    const user = userEvent.setup();
     render(<App />);
 
+    // The trigger names the current pool without opening anything — the half of
+    // this claim that no longer needs the menu.
+    expect(await screen.findByTestId('pm-account-trigger-label')).toHaveTextContent('Auto');
+
+    await user.click(screen.getByTestId('pm-account-trigger'));
     const auto = await screen.findByTestId('pm-account-auto');
     expect(auto).toHaveAttribute('aria-checked', 'true');
     for (const pool of ['blue', 'green', 'yellow'] as const) {
@@ -115,12 +131,14 @@ describe('App (component)', () => {
       viewer: { id: 2, username: 'dev', status: 'active' },
       balanceError: true,
     });
+    const user = userEvent.setup();
     render(<App />);
 
     // The app still works — Generate + the full picker are present. With no
     // balance there is nothing to annotate, and (since the readout is gone) the
     // error surfaces NO user-visible balance chrome at all.
     expect(await screen.findByTestId('pm-generate')).toBeInTheDocument();
+    await user.click(screen.getByTestId('pm-account-trigger'));
     expect(screen.getByTestId('pm-account-auto')).toBeInTheDocument();
     for (const pool of ['blue', 'green', 'yellow'] as const) {
       expect(screen.getByTestId(`pm-account-${pool}`)).not.toHaveAttribute('title');

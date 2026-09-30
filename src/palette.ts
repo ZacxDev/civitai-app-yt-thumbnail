@@ -170,6 +170,46 @@ const light: Palette = {
 /** Both themes, keyed. `palette.dark.surface` / `palette.light.surface`. */
 export const palette: Record<ThemeName, Palette> = { dark, light };
 
+// ---------------------------------------------------------------------------
+// Buzz-type colours — A MIRROR, NOT AN APP TOKEN.
+// ---------------------------------------------------------------------------
+
+/**
+ * The three Buzz pools' brand colours, as the CIVITAI SITE paints them.
+ *
+ * 🔴 THESE ARE NOT PART OF `Palette`, AND THAT IS THE POINT. Every field in
+ * `Palette` is a colour this app CHOSE under `brandDepth: "skin"`, graded in both
+ * themes by `palette.test.ts`. These three are not ours to choose: they are a
+ * verbatim mirror of the host site's own currency theme, so a viewer who knows
+ * "yellow Buzz" from the generator recognises it here. Source of truth:
+ *
+ *   civitai/civitai → `src/shared/constants/currency-theme.constants.ts`
+ *
+ * (read 2026-09-30 from the checkout at `/home/zach/workspace/civit/civitai`).
+ * If that file changes, this mirror is stale — it is not derived from anything
+ * in this repo and nothing here can notice on its own.
+ *
+ * 🔴 WHY THEY LIVE IN THIS FILE. `theme-guard.test.tsx`'s Guard A forbids a
+ * colour literal anywhere under `src/` except the four exempt files, of which
+ * this is one ("the palette itself: this is where the colours are DEFINED").
+ * Putting the mirror in its own module would have meant widening that exemption
+ * list, i.e. taking a file out of Guard A's scan set for the sake of three
+ * constants. Defining them here keeps the scan set intact.
+ *
+ * 🔴 THEY ARE THEME-INDEPENDENT, AND THEY CARRY NO TEXT. The site uses one hex
+ * per pool in both themes, and so do we; the icon they tint always sits beside a
+ * TEXT label naming the same pool ("Blue"/"Green"/"Yellow"), so colour is never
+ * the sole carrier of the distinction (WCAG 1.4.1) and the icon is never the sole
+ * indicator of a control's state (1.4.11). Painting text in them would be a
+ * different claim entirely — #4dabf7 reaches only ~2.4:1 on the light theme's
+ * paper — which is why nothing here is ever assigned to a `color`.
+ */
+export const BUZZ_TYPE_COLOR: Record<'blue' | 'green' | 'yellow', string> = {
+  blue: '#4dabf7',
+  green: '#40c057',
+  yellow: '#f59f00',
+};
+
 /**
  * Resolve whatever the host put in `useBlockContext().theme` to a palette.
  *
@@ -257,6 +297,8 @@ export const TEXT_PAIRS: readonly (readonly [keyof Palette, keyof Palette])[] = 
   ['textDim', 'surface'],
   ['textDim', 'surfaceRaised'],
   ['textDim', 'railBg'],
+  // The Buzz-account menu's selected row: a balance in `textDim` on the tint.
+  ['textDim', 'brandTint'],
   ['brandFg', 'brand'],
   ['brandFg', 'brandHover'],
   ['brand', 'page'],

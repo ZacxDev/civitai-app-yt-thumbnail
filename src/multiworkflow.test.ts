@@ -7,13 +7,16 @@ import {
   aggregateSpend,
   composePrompt,
   failedRuns,
+  hasSubmittablePrompt,
   initRun,
   initRuns,
   isPartialFailure,
   overallPhase,
   patchRun,
   pickDefaultAccount,
+  promptWasTruncated,
   runCandidates,
+  userPromptRoom,
   type FormatRun,
 } from './generation.js';
 
@@ -84,6 +87,101 @@ describe('composePrompt', () => {
   it('never exceeds the cap even when the suffix alone is over it', () => {
     const got = composePrompt('a cat', 'z'.repeat(PROMPT_MAX + 40));
     expect(got).toHaveLength(PROMPT_MAX);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The three predicates the composed-prompt PREVIEW and the Generate gate are
+// built on.
+//
+// 🔴 BEHAVIOUR COVERAGE, NOT REGRESSION COVERAGE. `userPromptRoom`,
+// `promptWasTruncated` and `hasSubmittablePrompt` did not exist at the base ref
+// (ed88fd5), so a run against that tree fails on a missing export — a VACUOUS
+// red. What they pin is the property a SECOND copy of the arithmetic would
+// break: the preview's answer and `composePrompt`'s answer are the same answer.
+// ---------------------------------------------------------------------------
+
+describe('userPromptRoom — the budget the USER’s text is clamped to', () => {
+  it('is the whole cap when there is no suffix at all', () => {
+    expect(userPromptRoom('')).toBe(PROMPT_MAX);
+    expect(userPromptRoom('   ')).toBe(PROMPT_MAX);
+  });
+
+  it('is the cap minus the trimmed suffix and the two-character joiner', () => {
+    // Literal answers, derived by hand rather than read back off the module.
+    // 'neon ' TRIMS to 4 characters, so 1500 - 4 - 2 = 1494 — which also pins
+    // that the trim happens before the arithmetic; 1500 - 20 - 2 = 1478 for the
+    // second. Neither equals the cap, a suffix length, or a round multiple of
+    // anything, so a mutant returning a constant or dropping the joiner shows.
+    expect(userPromptRoom('neon ')).toBe(1494);
+    expect(userPromptRoom('cinematic teal grade')).toBe(1478);
+  });
+
+  it('is 0 — never negative — when the suffix alone fills the cap', () => {
+    expect(userPromptRoom('z'.repeat(PROMPT_MAX))).toBe(0);
+    expect(userPromptRoom('z'.repeat(PROMPT_MAX + 500))).toBe(0);
+  });
+
+  it('🔴 AGREES WITH `composePrompt`, which is the whole reason it exists', () => {
+    // The seam: the preview asks THIS function how much of the viewer's text
+    // survives, while the submitted body is built by `composePrompt`. If the two
+    // ever disagree, the string on screen is not the string that gets paid for.
+    const suffix = 'cinematic teal and orange grade';
+    const long = 'w'.repeat(PROMPT_MAX);
+    const kept = userPromptRoom(suffix);
+    expect(composePrompt(long, suffix)).toBe(`${'w'.repeat(kept)}, ${suffix}`);
+    // …and the composed result is exactly the cap, so `kept` is not merely a
+    // number the two sides happen to agree on while both being wrong.
+    expect(composePrompt(long, suffix)).toHaveLength(PROMPT_MAX);
+  });
+});
+
+describe('promptWasTruncated', () => {
+  it('is false for prompts that fit alongside their suffix', () => {
+    expect(promptWasTruncated('a cat', 'neon lighting')).toBe(false);
+    expect(promptWasTruncated('', 'neon lighting')).toBe(false);
+    // Exactly ON the boundary is not truncation: 1478 characters against a
+    // 20-character suffix compose to exactly 1500.
+    expect(promptWasTruncated('w'.repeat(1478), 'cinematic teal grade')).toBe(false);
+  });
+
+  it('is true one character past the boundary', () => {
+    expect(promptWasTruncated('w'.repeat(1479), 'cinematic teal grade')).toBe(true);
+  });
+
+  it('is true when the suffix alone fills the cap, so no user text survives', () => {
+    expect(promptWasTruncated('a cat', 'z'.repeat(PROMPT_MAX))).toBe(true);
+  });
+
+  it('is true for an over-cap prompt even with no suffix', () => {
+    expect(promptWasTruncated('w'.repeat(PROMPT_MAX + 1), '')).toBe(true);
+    expect(promptWasTruncated('w'.repeat(PROMPT_MAX), '')).toBe(false);
+  });
+});
+
+describe('hasSubmittablePrompt — the Generate gate', () => {
+  it('🔴 an EMPTY user prompt with a format selected IS submittable', () => {
+    // The operator's case: "show me this look in different models". The format's
+    // suffix IS the prompt, and refusing it was the defect.
+    expect(hasSubmittablePrompt('', [{ suffix: 'neon lighting' }])).toBe(true);
+    expect(hasSubmittablePrompt('   \n  ', [{ suffix: 'neon lighting' }])).toBe(true);
+  });
+
+  it('a typed prompt is submittable even against a blank-suffix format', () => {
+    expect(hasSubmittablePrompt('a cat', [{ suffix: '' }])).toBe(true);
+  });
+
+  it('🔴 NOTHING at all is NOT submittable', () => {
+    // No formats -> zero workflows -> a click that spends nothing and reports
+    // success. That is the state the gate still has to refuse, and it is the
+    // half `prompt.trim().length === 0` never covered.
+    expect(hasSubmittablePrompt('a cat', [])).toBe(false);
+    expect(hasSubmittablePrompt('', [])).toBe(false);
+    expect(hasSubmittablePrompt('  ', [{ suffix: '' }, { suffix: '   ' }])).toBe(false);
+  });
+
+  it('one usable format among blank ones is enough', () => {
+    expect(hasSubmittablePrompt('', [{ suffix: '  ' }, { suffix: 'neon' }])).toBe(true);
   });
 });
 
