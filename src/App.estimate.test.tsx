@@ -339,6 +339,46 @@ describe('the live estimate — when it fires', () => {
   });
 });
 
+describe('the live estimate — no stale price survives a change', () => {
+  it('🔴 DROPS the old price the moment an input changes, before the new one lands', async () => {
+    /**
+     * 🔴 A WRONG NUMBER IS WORSE THAN NO NUMBER ON A SPEND CONTROL. Between an input
+     * change and the new estimate landing there is a window of at least
+     * `ESTIMATE_DEBOUNCE_MS`; leaving the previous figure up during it means the button
+     * states the cost of a generation the viewer has already stopped asking for. An
+     * unpriced button is honest about not knowing.
+     *
+     * The in-flight request is deferred by hand so the window can be observed at all —
+     * with a resolving mock the new price arrives too fast to see.
+     */
+    const user = userEvent.setup();
+    render(<App />);
+    await untilPriced(PRICE.mount);
+
+    const resolvers: Array<(snap: BlockWorkflowSnapshot) => void> = [];
+    estimateFn.mockImplementation(
+      () => new Promise<BlockWorkflowSnapshot>((resolve) => resolvers.push(resolve)),
+    );
+
+    await user.selectOptions(screen.getByTestId('pm-quantity'), '4');
+
+    // The OLD price is gone immediately — not after the request settles.
+    await waitFor(() =>
+      expect(priceShown(screen.getByTestId('pm-generate'))).toBeNull(),
+    );
+    // The Buzz picker publishes its own not-priced wording rather than a stale figure.
+    expect(priceShown(screen.getByTestId('pm-account-trigger-cost'))).toBeNull();
+
+    // POSITIVE CONTROL: the request really is in flight and really does repopulate, so
+    // the null above is a WINDOW and not a broken preview.
+    await waitFor(() => expect(resolvers).toHaveLength(1));
+    await act(async () => {
+      resolvers[0](priced(PRICE.second));
+    });
+    await untilPriced(PRICE.second);
+  });
+});
+
 describe('the live estimate — out-of-order responses', () => {
   it('🔴 a SLOW EARLIER response never overwrites a NEWER price', async () => {
     /**
