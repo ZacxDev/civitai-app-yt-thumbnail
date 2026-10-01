@@ -867,6 +867,51 @@ describe('🔴 a run whose storage write FAILED is not deleted by a refresh', ()
     expect(screen.getByTestId('yt-history')).toHaveTextContent(/Thumbnails\s*1/);
   });
 
+  it('🔴 a DIFFERENT signed-in id gets none of the previous viewer\'s rows', async () => {
+    /**
+     * 🔴 BEHAVIOUR COVERAGE FOR A CLASS, NOT A REPRODUCED BUG. Neither the unsaved map
+     * nor the on-screen list is keyed to a viewer, and `loadHistory` re-`set()`s the map
+     * under whoever is signed in when it next runs — so if the host ever swapped
+     * `viewer` to a different id without remounting the block, viewer A's records would
+     * be written into viewer B's storage and rendered to them. Whether `blocks-react`
+     * does that is NOT established; `historyOwnerRef` closes the class either way, and
+     * this is what exercises it. (Its other arm — `null` is NOT a swap, because a
+     * mid-run token expiry must not delete anything — is the case above.)
+     *
+     * Deliberately asserts on the WRITE as well as the render: a guard that only blanked
+     * the screen would still hand viewer A's unsaved record to viewer B's storage. The
+     * new viewer is given a row of their OWN so that BOTH assertions are reached in every
+     * variant — its arrival is the sync point, rather than the absence of viewer A's row,
+     * which is one of the things under test.
+     */
+    const OWN_IMAGE = 'https://image.civitai.com/done-a.jpg';
+    const srcs = () => screen.getAllByTestId('yt-history-img').map((n) => n.getAttribute('src'));
+
+    generateOnce();
+    state.workflows = [DONE_WORKFLOW];
+    storageSet.mockRejectedValue(new Error('network hiccup'));
+
+    const user = userEvent.setup();
+    render(<App />);
+    await user.type(await screen.findByLabelText(/prompt/i), 'a cat');
+    await user.click(screen.getByTestId('pm-generate'));
+    expect(await screen.findByTestId('yt-history-img')).toHaveAttribute('src', FRESH_IMAGE);
+
+    // A different person is now signed in, and storage answers with THEIR row.
+    stockStorage([{ key: RECORD_KEY, value: { ...RECORD, workflowIds: ['wf-done'] } }]);
+    state.viewer = { id: 7, username: 'someone-else' };
+    const setsBefore = storageSet.mock.calls.length;
+    await user.click(await screen.findByRole('button', { name: /try again/i }));
+    // Their own row arriving means the reload completed — true in every variant.
+    await waitFor(() => expect(srcs()).toContain(OWN_IMAGE));
+
+    // 🔴 THE POINT: viewer 2's record was not written under viewer 7...
+    expect(storageSet.mock.calls.length).toBe(setsBefore);
+    // ...and is not rendered to them either.
+    expect(srcs()).not.toContain(FRESH_IMAGE);
+    expect(screen.getAllByTestId('yt-history-row')).toHaveLength(1);
+  });
+
   it('🔴 a RELOAD IN FLIGHT does not blank rows it already has', async () => {
     /**
      * 🔴 RED AT c84f082: `state === 'loading'` was an unconditional early return
