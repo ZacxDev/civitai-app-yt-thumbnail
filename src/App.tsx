@@ -1616,8 +1616,8 @@ export function App() {
         //    `s` is the 'loading' this call set and this paints 'error', with a "Try
         //    again", over a read that fully succeeded. That is an overcautious FALSE
         //    ALARM and it is not defended here; it is accepted because it self-corrects
-        //    the moment that write settles (its own `then`/`catch` sets 'ready' or a
-        //    classified state), and because telling it apart from the case above needs
+        //    the moment that write settles — the line after that `await` sets 'ready',
+        //    its `catch` a classified state — and because telling it apart needs
         //    an in-flight-write count this surface has no other use for.
         //
         // Reachable at all because the Show toggle calls `loadHistory` and stays
