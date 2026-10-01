@@ -237,11 +237,19 @@ The attribution itself is not dropped, though — it is just not a chip. Each im
 which the join builds by pairing `workflowIds[i]` with `form.formats[i]` *before*
 dropping workflows the live page does not carry. Getting this from the render site
 instead is what made a 2-format batch save its Cinematic picture as
-`yt-thumbnail-clickbait-3.jpg`. One caveat, stated rather than hidden: a record written
-before the ids and the formats came off the same submitted list (0.1.6 and earlier
-recorded ids in *completion* order) can pair a multi-format batch the wrong way round.
-That is strictly narrower than the bug it replaces, which mislabelled every image but
-the first on **every** record.
+`yt-thumbnail-clickbait-3.jpg`.
+
+One caveat, stated rather than ranked: **records written before this change cannot be
+labelled reliably at all.** The earlier writer recorded `workflowIds` in *completion*
+order and `form.formats` as the formats that survived *estimation*, so an old row can
+pair a multi-format batch the wrong way round (whichever format replied first takes the
+first format's name) and can also carry more formats than ids (one submit failure shifts
+every later label by one). Nothing in such a row says which format each id came from, so
+this is not repairable — only stated. It is **not** a claim that those rows are labelled
+better or worse than they were before: over a random reply order the two are a wash, and
+on a 2-format row whose second format replied first the new pairing mislabels both while
+the old one — which named every image after `formats[0]` — happened to get the first
+format's images right. Those rows age out with the orchestrator's images.
 
 ### Partial failure
 
@@ -312,15 +320,23 @@ each of them was a bug first:
   live here now, so a collapsed panel hides output the viewer paid for — on a returning
   visit as much as after a Generate. An explicit Hide is still honoured.
 - 🔴 **No storage state may REPLACE a row.** `anon` / `denied` / `error` and a reload
-  in flight are all banners **over** the rows. The record is written at submit time, so
+  in flight are all banners **over** the rows — the reload one is
+  `yt-history-reloading`, added because narrowing the early return alone left a reload
+  over an existing list with no indication at all. The record is written at submit time, so
   a rejected write is the *common* way to reach those states while paid-for images are
   on screen; an early return there deletes the pictures and reports a storage problem
   as though the generation had produced nothing. The whole block hides in exactly one
   state — ready, empty and noteless (`showHistory`).
-- 🔴 **A record whose write FAILED survives a reload** (`mergeUnsavedRecords`). It
-  exists in memory only, and a reload replaces the list with what storage holds — so
-  the "Try again" button the error state offers used to *delete* the run it was meant
-  to recover. A reload is now a merge, and it retries the write that failed.
+- 🔴 **A row that EXISTS survives a reload** (`mergeUnsavedRecords`, called inside a
+  functional `setHistoryRecords`). A record whose write failed exists in memory only,
+  and a reload used to replace the list with what storage holds — so the "Try again"
+  button the error state offers *deleted* the run it was meant to recover. A reload is
+  now a merge: over the unsaved map **and** over the list as it stands when the read
+  resolves, because a batch saved *while* the read was in flight is in neither the
+  listing (taken earlier) nor the unsaved map (its write succeeded). The reload also
+  retries the writes that failed, and the state it lands on is gated on whether any of
+  them is still unsaved — a `set()` that keeps rejecting must not withdraw the banner
+  and the retry button while the record is still only in memory.
 
 ### What the platform does with `params.width`/`height`
 

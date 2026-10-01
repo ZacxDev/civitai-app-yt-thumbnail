@@ -397,6 +397,9 @@ export function App() {
    * A ref rather than state on purpose: nothing renders from it, and making it state
    * would put it in `loadHistory`'s dependency list, whose stability is load-bearing
    * (see that callback's note about the unbounded re-render loop).
+   *
+   * 🔴 IT IS ONE VIEWER'S DATA AND THE MAP ITSELF DOES NOT SAY WHOSE — see
+   * `historyOwnerRef` below, which drops it on a change of signed-in id.
    */
   const unsavedRecordsRef = useRef<Map<string, GenerationRecord>>(new Map());
   /** The unsaved map as the list shape everything else here speaks. */
@@ -475,6 +478,18 @@ export function App() {
    * 🔴 CUMULATIVE, AND NEVER CLEARED BY A NEW GENERATE. Clearing it is the bug:
    * `runs` IS reset per click, and when the results grid read `runs` the previous
    * batch's images disappeared the instant the next run started.
+   *
+   * 🔴 IF YOU EVER ADD A CAP OR A RESET HERE, READ THIS FIRST — being unbounded is
+   * load-bearing for something that is not about rendering. `loadHistory` re-`set()`s
+   * every record still in `unsavedRecordsRef`, and it does NOT consult the prune. A
+   * key that `orphanedKeys` deleted can only come back if it is still in that map AND
+   * something selects it again — and today it cannot be selected, because selection
+   * goes through `liveWorkflows`, and the ids of a pruned batch are still sitting in
+   * THIS object forever, so the row never falls out of the live half in the first
+   * place. Bound this, or clear it, and resurrection-after-delete becomes reachable:
+   * a pruned key still held as unsaved would be written back and re-rendered. The
+   * fix at that point is to drop pruned keys from `unsavedRecordsRef` in the prune
+   * effect, not to re-tune this.
    */
   const [ownWorkflows, setOwnWorkflows] = useState<Record<string, AppWorkflow>>({});
   // True once the viewer has picked a Buzz account themselves. Until then the
@@ -1477,19 +1492,35 @@ export function App() {
    * timestamp; there is no sort option on `list()` and there does not need to be.
    * Rows that don't parse are dropped rather than rendered half-formed.
    *
-   * 🔴 IT IS A MERGE, NOT A REPLACEMENT, AND THAT IS A MONEY RULE. Records whose
-   * `set()` rejected exist only in memory (`unsavedRecordsRef`); overwriting the
-   * list with the stored half deleted them and the paid-for images they render —
-   * from the "Try again" button whose entire purpose is to recover. So every
-   * still-unsaved record is RETRIED here (this read is the viewer asking us to try
-   * the storage again) and carried across whether or not that retry lands.
+   * 🔴 IT IS A MERGE, NOT A REPLACEMENT, AND THAT IS A MONEY RULE. The rule is about
+   * every row that EXISTS, not only the ones we know failed to save. Overwriting the
+   * list with the stored half deleted paid-for images two different ways:
+   *
+   *  - records whose `set()` rejected live in memory only (`unsavedRecordsRef`), and
+   *    the button that deleted them was the "Try again" whose entire purpose is to
+   *    recover. So every still-unsaved record is RETRIED here (this read IS the viewer
+   *    asking us to try the storage again) and carried across either outcome.
+   *  - a batch inserted AND SAVED while this read was in flight is in neither half it
+   *    can see: not in the listing (taken before the write) and not in the unsaved map
+   *    (the write succeeded). So the merge runs INSIDE a functional setter, over the
+   *    list as it stands when the read resolves — never over a snapshot taken before
+   *    the awaits.
+   *
+   * 🔴 AND THE RESULTING STATE IS GATED ON WHETHER ANYTHING IS STILL UNSAVED. A
+   * `set()` that keeps rejecting (host KV quota exhausted, say — `list`/`get` still
+   * succeed) used to land on `ready` regardless, which withdrew the banner and the
+   * "Try again" button and reported no problem while the record was still unpersisted
+   * and still about to die with the iframe.
    */
   const loadHistory = useCallback(async () => {
     if (viewerId == null) {
       setHistoryState('anon');
-      // 🔴 THE UNSAVED HALF SURVIVES AN ANON READ TOO. A token that expires mid-run
-      // takes `viewerId` with it, and this is the path that then runs.
-      setHistoryRecords(mergeUnsavedRecords([], unsavedRecords()));
+      // 🔴 THE UNSAVED HALF SURVIVES AN ANON READ TOO, AND SO DOES THE STORED HALF.
+      // A token that expires mid-run takes `viewerId` with it and this is the path
+      // that then runs; it reads nothing, so it has nothing to replace the list WITH.
+      // Passing `[]` as the stored half dropped every already-saved row — Hide then
+      // Show after an expiry collapsed the surface to "Thumbnails 0".
+      setHistoryRecords((cur) => mergeUnsavedRecords(cur, unsavedRecords()));
       return;
     }
     setHistoryState('loading');
@@ -1514,18 +1545,38 @@ export function App() {
       // they are no longer unsaved, but they are also not in `stored`, which was read
       // before they were written. The row would vanish on the one outcome that fixed it.
       const held = unsavedRecords();
+      // 🔴 THE RETRY'S OUTCOME IS KEPT, NOT SWALLOWED. The first rejection decides the
+      // state below, and it is CLASSIFIED rather than flattened to 'error' so a scope
+      // denial and an expired token keep saying the thing that names their own fix.
+      const failures: unknown[] = [];
       await Promise.all(
         held.map(async ({ key, record }) => {
           try {
             await store.set(key, record);
             unsavedRecordsRef.current.delete(key);
-          } catch {
-            /* still unsaved; still rendered */
+          } catch (err) {
+            // Still unsaved, still rendered — and now still REPORTED.
+            failures.push(err);
           }
         }),
       );
-      setHistoryRecords(mergeUnsavedRecords(stored, held));
-      setHistoryState('ready');
+      // `held` first so an in-memory record beats the on-screen copy of itself, then
+      // `cur` for anything that appeared while the awaits were pending.
+      setHistoryRecords((cur) => mergeUnsavedRecords(stored, [...held, ...cur]));
+      const firstFailure = failures[0];
+      if (firstFailure !== undefined) {
+        setHistoryState(classifyStorageError(firstFailure));
+      } else if (unsavedRecordsRef.current.size > 0) {
+        // Nothing WE retried failed, but the map is not empty: a submit landed while
+        // this read was in flight and its own write rejected after `held` was taken.
+        // That submit already set the right state and its own note, so this must not
+        // say 'ready' — and must not say 'error' over a 'denied' either, which is why
+        // it only resolves the 'loading' this call itself set. Reachable: the Show
+        // toggle calls `loadHistory` and stays clickable during a generate.
+        setHistoryState((s) => (s === 'loading' ? 'error' : s));
+      } else {
+        setHistoryState('ready');
+      }
     } catch (err) {
       setHistoryState(classifyStorageError(err));
     }
@@ -1541,6 +1592,36 @@ export function App() {
     // stable and the effect runs on mount and on a real viewer change only.
     // `unsavedRecords` is dependency-free too, for the same reason.
   }, [viewerId, classifyStorageError, unsavedRecords]);
+
+  /**
+   * 🔴 BOTH HALVES OF THE HISTORY SURFACE BELONG TO ONE VIEWER, AND NOTHING ELSE
+   * KEYS THEM TO ONE. `unsavedRecordsRef` is re-`set()` by `loadHistory` under
+   * whatever viewer is signed in when it next runs, and the merge there now carries
+   * the CURRENT list across a reload. Both are keyed on nothing. If `viewer` ever
+   * changed to a DIFFERENT id in a live iframe, viewer A's records would be written
+   * into viewer B's storage and rendered to them — so this drops both halves on a
+   * change of id, before that read resolves.
+   *
+   * 🔴 WHETHER THE HOST DOES THAT IS NOT ESTABLISHED. We could not determine whether
+   * `blocks-react` ever swaps `viewer` to another id without remounting the block, and
+   * this does not claim it cannot: it closes the class instead of answering the
+   * question, because the data is someone else's and the path is a money path.
+   *
+   * 🔴 `null` IS NOT A SWAP, AND THAT DISTINCTION IS LOAD-BEARING. A token that
+   * expires mid-run takes `viewerId` with it — see `loadHistory`'s anon branch — and
+   * the unsaved half surviving exactly that is the whole reason a rejected write no
+   * longer deletes paid-for images. Only a non-null id that differs from the last
+   * non-null one counts.
+   */
+  const historyOwnerRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (viewerId == null) return;
+    const prev = historyOwnerRef.current;
+    historyOwnerRef.current = viewerId;
+    if (prev == null || prev === viewerId) return;
+    unsavedRecordsRef.current.clear();
+    setHistoryRecords([]);
+  }, [viewerId]);
 
   useEffect(() => {
     if (!ready) return;

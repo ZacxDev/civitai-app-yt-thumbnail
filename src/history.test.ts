@@ -364,15 +364,64 @@ describe('joinHistory — the batch grouping', () => {
     expect(entries[0].imageLabels).toEqual(['Clickbait', 'Clickbait', 'Cinematic']);
   });
 
-  it('labels an image `null` rather than guessing when the record names no format for it', () => {
-    // A record written before the ids and the formats came off the same list can
-    // carry MORE ids than formats. `null` is a filename without a slug, not a
-    // wrong slug — see candidateFileName.
+  it('stays TOTAL on a row with fewer formats than ids — `null`, not a throw', () => {
+    /**
+     * 🔴 A TOTALITY GUARD AT THE PARSE BOUNDARY, NOT REGRESSION COVERAGE, and the
+     * difference matters because the reason written here before was false. It said a
+     * pre-change record "can carry MORE ids than formats". It cannot: measured at the
+     * only released writer (`a6aae56`), `workflowIds = submittedIds ⊆ viable` while
+     * `form.formats = formats.filter(viable)`, so `|formats| >= |ids|` ALWAYS — the
+     * inequality runs the other way, and the case below is one NO shipped writer
+     * produces. What it does pin is real but much smaller: `parseRecord` validates the
+     * two lists separately and never relates their lengths, so `joinHistory` has to
+     * survive every shape it accepts. Without the `?.` this row throws a TypeError out
+     * of the function that renders the whole surface. `null` is a filename without a
+     * slug, not a wrong slug — see candidateFileName.
+     *
+     * The REACHABLE skew is the mirror image, and it is the case below this one.
+     */
     const entries = joinHistory(
       [{ key: 'k1', record: record({ workflowIds: ['wf-a', 'wf-b', 'wf-extra'] }) }],
       [workflow({ workflowId: 'wf-extra', images: [{ url: 'x', width: 1, height: 1, nsfwLevel: 1 }] })],
     );
     expect(entries[0].imageLabels).toEqual([null]);
+  });
+
+  it('pins the KNOWN MISLABEL on a pre-change row: more formats than ids shifts every later label', () => {
+    /**
+     * 🔴 THIS PINS A LIMITATION, NOT DESIRED BEHAVIOUR, and it is here because the
+     * limitation was undocumented and unasserted while a comment described the
+     * unreachable mirror case instead. At `a6aae56` `form.formats` held the ESTIMATE
+     * survivors and `workflowIds` held the SUBMIT survivors, so one failed submit
+     * leaves a row with more formats than ids — and the pairing is positional, so
+     * every label after the gap names the wrong format. Nothing in the row records
+     * which format each id came from, so this is not repairable from the data; the
+     * README states it and this makes it machine-readable.
+     *
+     * Fixture: formats [A, B, C], ids [wf-a, wf-c] (B's submit failed). The correct
+     * labels would be A and C; positional pairing gives A and B.
+     */
+    const three = record({
+      workflowIds: ['wf-a', 'wf-c'],
+      form: form({
+        formats: [
+          { id: 'fmt:a', label: 'Alpha', suffix: 'one', prompt: 'p one' },
+          { id: 'fmt:b', label: 'Beta', suffix: 'two', prompt: 'p two' },
+          { id: 'fmt:c', label: 'Gamma', suffix: 'three', prompt: 'p three' },
+        ],
+      }),
+    });
+    const entries = joinHistory(
+      [{ key: 'k1', record: three }],
+      [
+        workflow({ workflowId: 'wf-a', images: [{ url: 'x', width: 1, height: 1, nsfwLevel: 1 }] }),
+        workflow({ workflowId: 'wf-c', images: [{ url: 'y', width: 1, height: 1, nsfwLevel: 1 }] }),
+      ],
+    );
+    // 'Gamma' is the truth for the second image; 'Beta' is what a positional pairing
+    // can know. Asserted so that a later change which DOES fix it fails here loudly
+    // rather than silently contradicting the README.
+    expect(entries[0].imageLabels).toEqual(['Alpha', 'Beta']);
   });
 
   it('lists the still-cancellable workflow ids, and only those', () => {

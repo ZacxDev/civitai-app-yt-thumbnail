@@ -706,6 +706,164 @@ describe('🔴 a run whose storage write FAILED is not deleted by a refresh', ()
     expect(screen.getByTestId('yt-history-note')).toHaveTextContent(/images are above/i);
   });
 
+  it('🔴 a retry that FAILS AGAIN keeps the banner and the Try again button', async () => {
+    /**
+     * 🔴 RED AT f4df1a38 — the retry's `catch` was empty and `setHistoryState('ready')`
+     * ran unconditionally, so the ONE outcome that means "still broken" was reported as
+     * "fine". Shape: host KV quota exhausted, so `set()` rejects forever while
+     * `list()`/`get()` keep working. Submit → banner + "Try again" → click → the read
+     * succeeds, the retry rejects → the banner and the button were WITHDRAWN while the
+     * record was still only in memory and still about to die with the iframe.
+     *
+     * 🔴 THE SYNC POINT IS A SECOND ROW, NOT A TIMER. The reload's `setHistoryRecords`
+     * and its `setHistoryState` are called back-to-back, so React commits them
+     * together: once the row this read ADDS is on screen, the state write has landed
+     * too. Waiting on `storageSet` alone would assert before it, which passes at base
+     * for the wrong reason.
+     */
+    generateOnce();
+    state.workflows = [EXPIRED_WORKFLOW];
+    storageSet.mockRejectedValue(new Error('storage quota exceeded'));
+
+    const user = userEvent.setup();
+    render(<App />);
+    await user.type(await screen.findByLabelText(/prompt/i), 'a cat');
+    await user.click(screen.getByTestId('pm-generate'));
+
+    expect(await screen.findByTestId('yt-history-img')).toHaveAttribute('src', FRESH_IMAGE);
+    await screen.findByTestId('yt-history-error');
+
+    // The read now hands back a row that was NOT on screen before, so the merge's
+    // commit is observable.
+    stockStorage();
+    await user.click(await screen.findByRole('button', { name: /try again/i }));
+    await waitFor(() => expect(screen.getAllByTestId('yt-history-row')).toHaveLength(2));
+    // The retry really ran and really failed again.
+    await waitFor(() => expect(storageSet).toHaveBeenCalledTimes(2));
+
+    // 🔴 THE POINT: the surface still says there is a problem, and still offers the
+    // only control that can fix it.
+    expect(screen.getByTestId('yt-history-error')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /try again/i })).toBeInTheDocument();
+    // ...and the unsaved row is still rendered, with its image.
+    const srcs = screen.getAllByTestId('yt-history-img').map((n) => n.getAttribute('src'));
+    expect(srcs).toContain(FRESH_IMAGE);
+  });
+
+  it('🔴 a batch SAVED while a reload is in flight is not overwritten away', async () => {
+    /**
+     * 🔴 RED AT f4df1a38, and the half `unsavedRecordsRef` cannot cover. The merge was
+     * `setHistoryRecords(mergeUnsavedRecords(stored, held))` — a NON-functional setter
+     * fed two snapshots taken before the awaits. A batch inserted AND SUCCESSFULLY
+     * SAVED while the read was in flight is in NEITHER: not in `stored` (listed before
+     * the write) and not in `held` (its write succeeded, so it was dropped from the
+     * unsaved map). The resolving read therefore overwrote that row and its images away
+     * — the success path, with no banner and nothing to retry.
+     *
+     * The `get()` for a second stored key is held open to put the read INSIDE that
+     * window; releasing it adds a row in every version, which is the sync point.
+     */
+    const RECORD2_KEY = historyKey(Date.parse('2026-09-30T12:20:00.000Z'), 'b-2');
+    const RECORD2 = { ...RECORD, batchId: 'b-2', createdAt: Date.parse('2026-09-30T12:20:00.000Z'), workflowIds: ['wf-done'] };
+
+    stockStorage([{ key: RECORD_KEY, value: RECORD }]);
+    state.workflows = [EXPIRED_WORKFLOW, DONE_WORKFLOW];
+    estimateWorkflow.mockResolvedValue({ workflowId: 'e', status: 'pending', cost: { total: 209 } });
+    submitWorkflow.mockResolvedValue({
+      workflowId: 'wf-new',
+      status: 'succeeded',
+      cost: { total: 209 },
+      imageUrls: [FRESH_IMAGE],
+    });
+
+    const user = userEvent.setup();
+    render(<App />);
+    await openHistory(user);
+    await screen.findByTestId('yt-history-row');
+
+    // The reload will list TWO keys and hang on the second one's value.
+    let release = () => {};
+    storageList.mockResolvedValue({
+      keys: [
+        { key: RECORD_KEY, updatedAt: new Date() },
+        { key: RECORD2_KEY, updatedAt: new Date() },
+      ],
+    });
+    storageGet.mockImplementation(async (key: string) => {
+      if (key === 'formats:custom:v1') return null;
+      if (key === RECORD_KEY) return RECORD;
+      return new Promise((resolve) => {
+        release = () => resolve(RECORD2);
+      });
+    });
+
+    // Hide then Show: the Show starts the reload, which now hangs mid-read.
+    await user.click(screen.getByTestId('yt-history-toggle'));
+    await user.click(screen.getByTestId('yt-history-toggle'));
+    await waitFor(() => expect(storageGet).toHaveBeenCalledWith(RECORD2_KEY));
+
+    // Generate DURING that read. Its write SUCCEEDS, which is the whole point: there
+    // is nothing in the unsaved map to carry this row across.
+    await user.type(screen.getByLabelText(/prompt/i), 'a cat');
+    await user.click(screen.getByTestId('pm-generate'));
+    await waitFor(() =>
+      expect(screen.getAllByTestId('yt-history-img').map((n) => n.getAttribute('src'))).toContain(
+        FRESH_IMAGE,
+      ),
+    );
+    await waitFor(() => expect(storageSet).toHaveBeenCalledTimes(1));
+
+    // Let the read resolve. Its second row lands in every version, so this is a sync
+    // point on the merge's own commit rather than on a timer.
+    release();
+    await waitFor(() =>
+      expect(screen.getAllByTestId('yt-history-img').map((n) => n.getAttribute('src'))).toContain(
+        'https://image.civitai.com/done-a.jpg',
+      ),
+    );
+
+    // 🔴 THE POINT: the batch that was saved mid-read is still on screen.
+    const srcs = screen.getAllByTestId('yt-history-img').map((n) => n.getAttribute('src'));
+    expect(srcs).toContain(FRESH_IMAGE);
+    expect(screen.getAllByTestId('yt-history-row')).toHaveLength(3);
+  });
+
+  it('🔴 a token that expires does not delete the rows storage ALREADY HAS', async () => {
+    /**
+     * 🔴 RED AT f4df1a38. The anon branch passed `[]` as the STORED half —
+     * `mergeUnsavedRecords([], unsavedRecords())` — so every row storage had already
+     * given us was dropped the moment `viewerId` went null. A token expiring and the
+     * viewer clicking Hide then Show collapsed the surface to "Thumbnails 0" and took
+     * the images with it until a full reload. (Better than the `setHistoryRecords([])`
+     * it replaced, which dropped the unsaved half too — still a deletion of paid-for
+     * images.)
+     */
+    stockStorage([{ key: RECORD_KEY, value: { ...RECORD, workflowIds: ['wf-done'] } }]);
+    state.workflows = [DONE_WORKFLOW];
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByTestId('yt-history-img');
+
+    // The token expires: the host now reports no viewer at all.
+    state.viewer = null;
+    // Hide forces the render that picks that up — which re-runs the load effect under
+    // the new (null) viewer id, i.e. the anon branch.
+    await user.click(screen.getByTestId('yt-history-toggle'));
+    // The header's count is rendered whether the panel is open or not, and it is the
+    // badge that read 0.
+    await waitFor(() => expect(screen.getByTestId('yt-history')).toHaveTextContent(/Thumbnails\s*1/));
+
+    await user.click(screen.getByTestId('yt-history-toggle'));
+    // 🔴 THE POINT: the row and its paid-for image are still there, with the sign-in
+    // prompt as a BANNER above them rather than in place of them.
+    expect(await screen.findByTestId('yt-history-row')).toBeInTheDocument();
+    expect(screen.getByTestId('yt-history-img')).toHaveAttribute(
+      'src',
+      'https://image.civitai.com/done-a.jpg',
+    );
+    expect(screen.getByTestId('yt-history-anon')).toBeInTheDocument();
+  });
+
   it('🔴 a RELOAD IN FLIGHT does not blank rows it already has', async () => {
     /**
      * 🔴 RED AT c84f082: `state === 'loading'` was an unconditional early return
@@ -714,11 +872,15 @@ describe('🔴 a run whose storage write FAILED is not deleted by a refresh', ()
      * banner's Try again both call one — blanked the images for its duration.
      *
      * The `list()` call is left UNRESOLVED on purpose: that is what holds the app in
-     * `historyState === 'loading'` for the assertions. With the fix the loading state
-     * is invisible when there are rows, so there is nothing positive to assert about
-     * it; what makes this non-vacuous is that it was RED at base, plus the two facts
-     * asserted here — `list()` was called again and has not come back — which together
-     * mean the code is inside the branch by construction.
+     * `historyState === 'loading'` for the assertions.
+     *
+     * 🔴 AND THERE *IS* SOMETHING POSITIVE TO ASSERT NOW. This docstring used to say
+     * there was not — "the loading state is invisible when there are rows" — which was
+     * a true description of a surface that gave a reload over an existing list NO
+     * feedback at all, while three comment blocks and the README claimed a banner. The
+     * banner exists; it is asserted here, alongside the absence of the full-panel
+     * replacement. Those are the two halves of the rule and they are not the same
+     * claim.
      */
     stockStorage();
     state.workflows = [EXPIRED_WORKFLOW];
@@ -741,7 +903,11 @@ describe('🔴 a run whose storage write FAILED is not deleted by a refresh', ()
     await waitFor(() => expect(storageList.mock.calls.length).toBeGreaterThan(listsBefore));
 
     expect(screen.getByTestId('yt-history-row')).toBeInTheDocument();
+    // The full-panel replacement is NOT used while there are rows...
     expect(screen.queryByTestId('yt-history-loading')).not.toBeInTheDocument();
+    // ...and the banner that reports the reload IS, so the list is not silently
+    // presented as current while a read is outstanding.
+    expect(screen.getByTestId('yt-history-reloading')).toBeInTheDocument();
 
     // Let the hung read settle so nothing is left pending past the test.
     release();

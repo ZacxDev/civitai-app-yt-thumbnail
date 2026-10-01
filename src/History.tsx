@@ -41,9 +41,9 @@ import {
  *    the orchestrator; the stored form half is ours, does not expire, and still
  *    resumes.
  *  - it may not let a STORAGE problem hide generated images. `anon`/`denied`/`error`
- *    and a reload-in-progress are all BANNERS over the rows, never replacements for
- *    them, because on those paths the Buzz is already spent and the pictures are
- *    already in hand.
+ *    and a reload-in-progress are all BANNERS over the rows (`yt-history-reloading`
+ *    for the reload), never replacements for them, because on those paths the Buzz is
+ *    already spent and the pictures are already in hand.
  */
 export function HistorySurface({
   entries,
@@ -167,6 +167,13 @@ export function HistorySurface({
  * Returning early there would delete those pictures from the page and report a
  * storage problem as though the generation had produced nothing.
  *
+ * 🔴 THE RULE IS ABOUT THIS COMPONENT, AND IT USED TO BE WRITTEN AS IF IT HELD AT THE
+ * DATA LAYER TOO. It does not, and nothing here can make it: `loadHistory` decides
+ * which records exist, so a row it drops never reaches this function and there is
+ * nothing to put a banner over. Keeping an existing row across a reload is enforced
+ * there — `mergeUnsavedRecords` called inside a functional `setHistoryRecords`, over
+ * the list as it stands when the read resolves.
+ *
  * 🔴 THAT INCLUDES 'anon' AND 'loading', WHICH IS WHERE THIS WENT WRONG. `anon` was
  * an unconditional early return, so a mid-run token expiry — `classifyStorageError`
  * matches 'anon'/'sign in'/'not signed in' on a failed `set` — replaced the row with
@@ -174,7 +181,10 @@ export function HistorySurface({
  * above". `loading` was the same shape: every reload (the Show toggle and the error
  * banner's own Try again both call one) blanked the images even when rows existed.
  * Both are now gated on there being nothing to hide, like the `loading` FLAG beside
- * them already was.
+ * them already was — and `loading` now has a BANNER of its own below
+ * (`yt-history-reloading`), which it did NOT have when this paragraph first claimed
+ * one: narrowing the early return alone left a reload over an existing list with no
+ * indication at all, presenting the previous list as current.
  *
  * An `unavailable` ROW is none of those: it is a real past generation whose images
  * have aged out of the orchestrator. It STAYS VISIBLE, says so plainly, and Resume
@@ -253,6 +263,18 @@ function HistoryPanel({
           the viewer paid for on screen, and replacing them with this would be the
           exact deletion the header forbids. */}
       {state === 'anon' && signIn}
+
+      {/* 🔴 THE RELOAD INDICATOR THAT THE HEADERS ABOVE PROMISED AND THE CODE DID NOT
+          HAVE. Every other non-ready state had a banner here; `loading` had only the
+          full-panel replacement above, which is correctly gated on there being no
+          rows — so a reload over an EXISTING list said nothing at all and presented
+          the previous list as current. Not an Alert: nothing is wrong, and a warning
+          colour over images the viewer already owns would say otherwise. */}
+      {(state === 'loading' || loading) && (
+        <span style={fieldDescStyle(pal)} data-testid="yt-history-reloading">
+          Refreshing your generations…
+        </span>
+      )}
 
       {state === 'denied' && (
         <Alert color="warning" title="History needs storage access" data-testid="yt-history-denied">

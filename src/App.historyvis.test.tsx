@@ -94,6 +94,10 @@ const storageGet = vi.fn();
 const storageList = vi.fn();
 const storageSet = vi.fn();
 const storageDelete = vi.fn();
+// Hoisted so the toggle case below can assert the live half was refetched. An inline
+// `vi.fn()` in the hook factory is a NEW mock every render and records nothing a test
+// can read.
+const refetchWorkflows = vi.fn();
 
 const state = {
   viewer: { id: 2, username: 'dev' } as { id: number; username: string } | null,
@@ -127,7 +131,7 @@ vi.mock('@civitai/blocks-react', () => ({
     cursor: null,
     loading: false,
     error: state.workflowsError,
-    refetch: vi.fn(),
+    refetch: refetchWorkflows,
     cancel: vi.fn(),
   }),
   useAppStorage: () => ({
@@ -175,6 +179,11 @@ function stockStorage(records: Array<{ key: string; value: unknown }>) {
  * whenever there are rows, so an UNCONDITIONAL click would COLLAPSE it and every
  * assertion below would read as a missing row. Reading the label makes it race-free
  * either way round.
+ *
+ * 🔴 THE COST OF THAT CONDITION, STATED SO IT IS NOT FORGOTTEN: in every row-bearing
+ * case the panel is ALREADY open, so this helper presses nothing and `onToggle` — the
+ * one path that still drives a manual reload of both halves — goes unexercised. The
+ * 'Show RE-READS both halves' case below presses it deliberately for that reason.
  */
 async function openHistory(user: ReturnType<typeof userEvent.setup>) {
   const toggle = await screen.findByTestId('yt-history-toggle');
@@ -270,6 +279,43 @@ describe('the history surface — when it exists at all', () => {
     expect(await screen.findByTestId('yt-history-live-error')).toBeInTheDocument();
     expect(screen.getByTestId('yt-history-row')).toBeInTheDocument();
     expect(screen.getByTestId('yt-history-resume')).toBeInTheDocument();
+  });
+
+  it('🔴 pressing Show RE-READS both halves — the stored rows and the live queue', async () => {
+    /**
+     * 🔴 NOT REGRESSION COVERAGE — a BEHAVIOUR case for the path `openHistory` stopped
+     * reaching. Narrowing that helper to "click only when it says Show" was correct (an
+     * unconditional click COLLAPSES an auto-expanded panel), but it left `onToggle`'s
+     * `loadHistory()` + `refetchWorkflows()` exercised only where there are no rows —
+     * i.e. never on the surface that actually has something to reload. So this presses
+     * the toggle twice, deliberately, with rows present.
+     *
+     * Both calls are asserted because they are two different failures: dropping the
+     * `loadHistory()` leaves a stale STORED half (a row deleted in another tab), and
+     * dropping the `refetchWorkflows()` leaves a stale LIVE half (images that have
+     * since landed stay as skeletons). Either alone looks like "Show did nothing".
+     */
+    stockStorage([{ key: RECORD_KEY, value: RECORD }]);
+    state.workflows = [RUNNING_WORKFLOW];
+    const user = userEvent.setup();
+    render(<App />);
+
+    // Auto-expanded, because there are rows — so the toggle reads "Hide".
+    await screen.findByTestId('yt-history-row');
+    const toggle = screen.getByTestId('yt-history-toggle');
+    expect(toggle).toHaveTextContent(/hide/i);
+
+    await user.click(toggle);
+    await waitFor(() => expect(screen.queryByTestId('yt-history-row')).not.toBeInTheDocument());
+    const listsBefore = storageList.mock.calls.length;
+    const refetchesBefore = refetchWorkflows.mock.calls.length;
+
+    await user.click(screen.getByTestId('yt-history-toggle'));
+
+    await waitFor(() => expect(storageList.mock.calls.length).toBeGreaterThan(listsBefore));
+    expect(refetchWorkflows.mock.calls.length).toBeGreaterThan(refetchesBefore);
+    // ...and the rows come back into an open panel.
+    expect(await screen.findByTestId('yt-history-row')).toBeInTheDocument();
   });
 
   // 🔴 THE 'a note keeps the block up even with nothing in it' CASE IS DELETED, and

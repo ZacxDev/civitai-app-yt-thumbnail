@@ -235,19 +235,39 @@ export interface StoredRecord {
  * never contained this run, so the row and its images vanished permanently: the
  * join is the only renderer for them, so they did not come back on reload either.
  *
- * So a reload is a merge, not a replacement: anything the app knows it failed to
- * persist is carried across. Ordering is restored by `createdAt` descending, the
- * same newest-first order the inverted key gives the stored half, so a carried-over
- * row lands where it belongs rather than being pinned to the top.
+ * So a reload is a merge, not a replacement. 🔴 AND THE RULE IS ABOUT ROWS THAT
+ * EXIST, NOT ONLY ABOUT ROWS WE KNOW FAILED TO SAVE — this sentence used to say the
+ * narrower thing, and the narrower reading is what let a second bug through. A batch
+ * inserted AND successfully saved while a `loadHistory` was already in flight is in
+ * neither half that read can see: not in the stored listing (taken before the write)
+ * and not in the unsaved map (the write succeeded, so it was dropped from it). The
+ * caller therefore passes the CURRENT list as well, which is why `App.tsx` calls this
+ * from inside a functional `setHistoryRecords` rather than on a snapshot. Anything on
+ * screen that storage has not accounted for survives the reload.
  *
- * Stored WINS on a key collision — storage is the authority once it has the row.
+ * Ordering is restored by `createdAt` descending, the same newest-first order the
+ * inverted key gives the stored half, so a carried-over row lands where it belongs
+ * rather than being pinned to the top.
+ *
+ * Stored WINS on a key collision — storage is the authority once it has the row —
+ * and within `unsaved` the FIRST occurrence of a key wins, so a caller may
+ * concatenate several sources (the unsaved map, then the current list) without
+ * rendering the same key twice.
  */
 export function mergeUnsavedRecords(
   stored: ReadonlyArray<StoredRecord>,
   unsaved: ReadonlyArray<StoredRecord>,
 ): StoredRecord[] {
   const have = new Set(stored.map((e) => e.key));
-  const missing = unsaved.filter((e) => !have.has(e.key));
+  const missing: StoredRecord[] = [];
+  for (const e of unsaved) {
+    if (have.has(e.key)) continue;
+    // Added as we go, so a key repeated WITHIN `unsaved` is kept once. Two rows
+    // with the same key would be two React children with the same `key` prop and
+    // two renderings of one batch.
+    have.add(e.key);
+    missing.push(e);
+  }
   if (missing.length === 0) return [...stored];
   return [...stored, ...missing].sort((a, b) => b.record.createdAt - a.record.createdAt);
 }
@@ -333,6 +353,28 @@ export function batchStatus(workflows: readonly AppWorkflow[]): BatchStatus {
  * record write), so the pairing has to be taken at the `workflowIds` index — the
  * `.filter` that drops workflows the live page does not carry would otherwise shift
  * every later one. See {@link HistoryEntry.imageLabels}.
+ *
+ * 🔴 THE PAIRING IS ONLY AS GOOD AS THE WRITER, AND AN OLD ROW'S IS KNOWN WRONG.
+ * Records written before the two lists came off the same `submitted` array recorded
+ * `workflowIds` in COMPLETION order while `form.formats` held the ESTIMATE
+ * SURVIVORS in selection order. Measured against the released writer at `a6aae56`:
+ * `workflowIds = submittedIds` (pushed as each submit resolved) and
+ * `form.formats = formats.filter(viable)`, so such a row can carry MORE FORMATS
+ * THAN IDS — one submit failure shifts every later label by one — and a batch whose
+ * second format replied first pairs the two the wrong way round. Neither is
+ * repairable from the row: nothing in it records which format each id came from.
+ * Those rows age out with the orchestrator's images; this is a stated limitation,
+ * not a guard.
+ *
+ * The `?.label ?? null` below is NOT that case and does not fix it. It is reached
+ * only by a row carrying FEWER formats than ids, which NO shipped writer produces
+ * (`|formats| >= |ids|` above, and they are equal from this change on). It is here
+ * because `parseRecord` validates the two lists SEPARATELY and never relates their
+ * lengths, so `joinHistory` has to stay total over every shape `parseRecord`
+ * accepts — without the `?.` such a row throws a TypeError out of the join, which
+ * is the renderer for the whole surface. A totality guard at a parse boundary, with
+ * no writer-side bug behind it; `null` is a filename without a slug, not a wrong
+ * slug (see `candidateFileName`).
  */
 export function joinHistory(
   records: ReadonlyArray<StoredRecord>,
@@ -344,8 +386,9 @@ export function joinHistory(
     const paired = record.workflowIds
       .map((id, i): Pair | null => {
         const w = byId.get(id);
-        // `formats[i]` can genuinely be absent — a record written before the ids and
-        // the formats were derived from the same list may carry more ids than formats.
+        // `formats[i]` absent means a row with FEWER formats than ids, which no
+        // shipped writer produces — `parseRecord` simply never relates the two
+        // lengths, so the `?.` is what keeps this total. See the block above.
         return w === undefined ? null : { w, label: record.form.formats[i]?.label ?? null };
       })
       .filter((p): p is Pair => p !== null);
@@ -506,10 +549,22 @@ export function showHistory(args: {
  * makes. A skeleton count of 1 for a 3-format × 2-image run would understate what
  * is coming, which on this surface is a claim about what was paid for.
  *
- * Neither factor is floored at 1, because neither can be below it: `parseRecord`
- * refuses a record whose `formats` is empty, and `quantity` passes `clampQuantity`
- * (`QUANTITY_MIN` = 1) before it is stored. A `Math.max(1, …)` on them was
- * unreachable code pretending to be a safety net.
+ * Neither factor is floored at 1, and the two reasons are NOT the same strength —
+ * the sentence here used to blur them:
+ *
+ *  - `formats` is guaranteed by the PARSE BOUNDARY: `parseRecord` refuses a record
+ *    whose `formats` is empty, so no row that reaches this function can carry 0.
+ *  - `quantity` is guaranteed by the WRITER ONLY. `parseRecord` does not validate it
+ *    at all — `form` is cast wholesale (see that function) — so the claim is about
+ *    `formSnapshot`, which passes `quantity` through `clampQuantity`
+ *    (`QUANTITY_MIN` = 1) before it is stored. No shipped writer produces
+ *    `quantity === 0`; a hand-written row could.
+ *
+ * A `Math.max(1, …)` is still the wrong answer to the second one: it would invent a
+ * skeleton for a row that claims no images, on a surface where the tile count is a
+ * claim about what was paid for. If `quantity` ever has to be trusted from
+ * unvalidated JSON, the fix belongs in `parseRecord`, with the rest of the
+ * validation, not in a floor here.
  */
 export function skeletonCount(record: GenerationRecord, alreadyLanded: number): number {
   const expected = record.form.formats.length * record.form.quantity;
