@@ -849,11 +849,12 @@ describe('🔴 a run whose storage write FAILED is not deleted by a refresh', ()
     // Hide forces the render that picks that up — which re-runs the load effect under
     // the new (null) viewer id, i.e. the anon branch.
     await user.click(screen.getByTestId('yt-history-toggle'));
-    // The header's count is rendered whether the panel is open or not, and it is the
-    // badge that read 0.
-    await waitFor(() => expect(screen.getByTestId('yt-history')).toHaveTextContent(/Thumbnails\s*1/));
-
+    // Then Show, which is the click that calls `loadHistory` itself. (Measured: at
+    // f4df1a38 the list is still intact after the Hide — the anon branch runs on this
+    // second click — so there is nothing load-bearing to assert in between, and a
+    // `waitFor` on the badge here passes on its first attempt either way.)
     await user.click(screen.getByTestId('yt-history-toggle'));
+
     // 🔴 THE POINT: the row and its paid-for image are still there, with the sign-in
     // prompt as a BANNER above them rather than in place of them.
     expect(await screen.findByTestId('yt-history-row')).toBeInTheDocument();
@@ -862,6 +863,8 @@ describe('🔴 a run whose storage write FAILED is not deleted by a refresh', ()
       'https://image.civitai.com/done-a.jpg',
     );
     expect(screen.getByTestId('yt-history-anon')).toBeInTheDocument();
+    // And the header still counts it — the badge read "Thumbnails 0" at base.
+    expect(screen.getByTestId('yt-history')).toHaveTextContent(/Thumbnails\s*1/);
   });
 
   it('🔴 a RELOAD IN FLIGHT does not blank rows it already has', async () => {
