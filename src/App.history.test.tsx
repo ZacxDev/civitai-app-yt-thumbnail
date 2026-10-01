@@ -406,11 +406,9 @@ describe('history — cancel, and saving a past image', () => {
 
     const images = await screen.findAllByTestId('yt-history-img');
     expect(images).toHaveLength(2);
-    // The per-image ATTRIBUTION, which the alt text had dropped entirely.
-    expect(images[0]).toHaveAttribute('alt', expect.stringContaining('Clickbait'));
-    expect(images[1]).toHaveAttribute('alt', expect.stringContaining('Minimal'));
 
-    // ...and the FILENAME, which is the half that leaves the page.
+    // 🔴 THE FILENAME FIRST — it is the half that leaves the page, so it is the half
+    // that should go red. At c84f082 this asks for `yt-thumbnail-clickbait-2.jpg`.
     const saves = await screen.findAllByTestId('yt-history-save');
     await user.click(saves[1]);
     await waitFor(() =>
@@ -419,6 +417,11 @@ describe('history — cancel, and saving a past image', () => {
         filename: 'yt-thumbnail-minimal-2.jpg',
       }),
     );
+
+    // Then the on-page ATTRIBUTION, which the alt text had dropped entirely. (Measured
+    // separately at base: `alt="Generated result 1"` there, naming no format at all.)
+    expect(images[0]).toHaveAttribute('alt', expect.stringContaining('Clickbait'));
+    expect(images[1]).toHaveAttribute('alt', expect.stringContaining('Minimal'));
   });
 });
 
@@ -630,17 +633,21 @@ describe('🔴 a run whose storage write FAILED is not deleted by a refresh', ()
 
     const listsBefore = storageList.mock.calls.length;
     await user.click(retry);
-    // The refresh really ran...
+    // The refresh really ran, which is the only sync point this case needs...
     await waitFor(() => expect(storageList.mock.calls.length).toBeGreaterThan(listsBefore));
-    // ...and it RETRIED the write that failed, which is what "try again" should mean
-    // on a surface whose only problem was a rejected write.
-    await waitFor(() => expect(storageSet).toHaveBeenCalledTimes(2));
 
-    // 🔴 THE POINT: the row and the image the viewer already PAID FOR are still there.
+    // 🔴 THE POINT, AND ASSERTED FIRST SO IT IS WHAT GOES RED: the row and the image
+    // the viewer already PAID FOR are still there. (Ordered deliberately — with the
+    // retry-count assertion above these, the case failed at base on the RETRY and
+    // never reached the survival claim, so the survival claim was unproven.)
     expect(screen.getByTestId('yt-history-row')).toBeInTheDocument();
     expect(screen.getByTestId('yt-history-img')).toHaveAttribute('src', FRESH_IMAGE);
     // ...and the honest note about the SAVE is still beside them.
     expect(screen.getByTestId('yt-history-note')).toHaveTextContent(/couldn't save this run/i);
+
+    // Separately: the refresh RETRIED the write that failed, which is what "try again"
+    // should mean on a surface whose only problem was a rejected write.
+    await waitFor(() => expect(storageSet).toHaveBeenCalledTimes(2));
   });
 
   it('survives a token that expired mid-run — the ANON state is a banner, not a replacement', async () => {
