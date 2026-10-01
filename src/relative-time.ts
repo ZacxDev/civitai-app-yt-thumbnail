@@ -27,14 +27,27 @@ const WEEK_MS = 7 * DAY_MS;
  * Every bound is STRICT, so a value exactly on a boundary belongs to the band
  * ABOVE it: 60_000 is '1m ago', not 'just now'; exactly 7 days is a date.
  *
- * 🔴 A FUTURE TIMESTAMP IS CLAMPED TO 'just now', NOT RENDERED AS '-3m ago'.
- * `createdAt` is stamped from `Date.now()` in the viewer's OWN browser at submit
- * time, but the row is re-rendered against a `nowMs` that may come from a later
- * render after the machine's clock was corrected (NTP step, a laptop waking from
- * sleep, a deliberately-wrong clock) — so `createdAt > nowMs` is reachable
- * without anything being broken. Negative durations are the one case where a
- * literal reading of the ladder produces a string that is not merely imprecise
- * but false, so the clamp is the honest answer: the generation did just happen.
+ * 🔴 A FUTURE TIMESTAMP READS 'just now', NOT '-3m ago', AND THE LADDER ITSELF IS
+ * WHAT GUARANTEES IT — there is deliberately NO `Math.max(0, ...)` here. `createdAt`
+ * is stamped from `Date.now()` in the viewer's OWN browser at submit time, but the
+ * row is re-rendered against a `nowMs` from a later render, possibly after the
+ * machine's clock was corrected (NTP step, a laptop waking from sleep, a
+ * deliberately-wrong clock) — so `createdAt > nowMs` is reachable without anything
+ * being broken, and '-3m ago' on a surface about money is not an acceptable
+ * rendering of it.
+ *
+ * 🔴 THE CLAMP THAT USED TO BE ON THE LINE BELOW WAS DEAD CODE, AND A MUTATION RUN
+ * IS WHAT PROVED IT: deleting `Math.max(0, ...)` left all 11 cases in
+ * `relative-time.test.ts` GREEN — including both future-timestamp cases — because
+ * `diff < MINUTE_MS` is already true of EVERY negative number. So the clamp read as
+ * the thing making the future safe while contributing nothing, and the comment here
+ * claimed it was "the honest answer" to a case the first band had already absorbed.
+ * It is gone, the claim is corrected, and the behaviour is unchanged.
+ *
+ * What DOES have to hold is that the first band stays UNCONDITIONAL. A guard like
+ * `if (diff >= 0 && diff < MINUTE_MS)` would send a negative diff on to the minutes
+ * branch and print '-3m ago'; that mutant is run against the future cases in the test
+ * file, and it dies there.
  */
 export function relativeTime(
   createdAt: number | string | null | undefined,
@@ -42,8 +55,8 @@ export function relativeTime(
 ): string | null {
   const t = toEpochMs(createdAt);
   if (t === null) return null;
-  // Clamped at 0 — see the future-timestamp note above.
-  const diff = Math.max(0, nowMs - t);
+  const diff = nowMs - t;
+  // Unconditional, and load-bearing for a NEGATIVE `diff` — see above.
   if (diff < MINUTE_MS) return 'just now';
   if (diff < HOUR_MS) return `${Math.floor(diff / MINUTE_MS)}m ago`;
   if (diff < DAY_MS) return `${Math.floor(diff / HOUR_MS)}h ago`;

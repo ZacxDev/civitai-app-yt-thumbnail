@@ -18,8 +18,16 @@ import { absoluteTime, relativeTime } from './relative-time.js';
  *
  * INVARIANT GUARD, not regression coverage: the row rendered
  * `new Date(createdAt).toLocaleString()` before this change, so there is no prior
- * `relativeTime` for these to have been red against. What they pin is the ladder
- * and the clamp.
+ * `relativeTime` for these to have been red against. What they pin is the ladder and
+ * the future-timestamp behaviour — NOT "the clamp", which an earlier version of this
+ * sentence claimed and which a mutation run then proved was dead code (see the
+ * future-timestamp case for what happened).
+ *
+ * MUTATION RESULTS ACTUALLY RUN against this file: `<` -> `<=` on the minute boundary
+ * dies; `Math.floor` -> `Math.round` in the minutes band dies; deleting the `< WEEK`
+ * bound (so the days band swallows the absolute arm) dies; gating the first band on
+ * `diff >= 0` dies. The one that SURVIVED — deleting `Math.max(0, ...)` — is recorded
+ * above rather than hidden, and the dead expression it found is gone.
  */
 const NOW = Date.parse('2026-09-30T14:23:11.000Z') + 777;
 
@@ -99,14 +107,27 @@ describe('relativeTime — the band ladder', () => {
 });
 
 describe('relativeTime — clock skew and bad input', () => {
-  it('🔴 clamps a FUTURE timestamp to "just now" rather than counting backwards', () => {
+  it('🔴 a FUTURE timestamp reads "just now" rather than counting backwards', () => {
     // A clock correction between the submit that stamped `createdAt` and the render
     // that reads it is ordinary, and "-3m ago" / "NaN" on a surface about money is
     // not an acceptable rendering of it.
+    //
+    // 🔴 MUTATION-GRADED, AND THE FIRST MUTANT IT WAS GRADED WITH *SURVIVED* — which
+    // is why this comment exists. `relativeTime` originally clamped with
+    // `Math.max(0, nowMs - t)`; deleting that clamp left this whole file green,
+    // because `diff < MINUTE_MS` is already true of every negative number. The clamp
+    // was dead code reading as the guard for this case, so it is gone and the
+    // behaviour is produced by the first band being UNCONDITIONAL.
+    //
+    // The mutant that does bite is `if (diff >= 0 && diff < MINUTE_MS)`, which sends a
+    // negative diff on to the minutes branch and prints '-3m ago'. Run, and it fails
+    // on these three lines.
     expect(relativeTime(NOW + 3 * MINUTE, NOW)).toBe('just now');
-    // Far in the future is still clamped — not flipped into a date.
+    // Far in the future too — not flipped into a date by the `>= 7d` arm.
     expect(relativeTime(NOW + 400 * DAY, NOW)).toBe('just now');
+    // The shape of the wrong answer, named explicitly: no leading minus anywhere.
     expect(relativeTime(NOW + 3 * MINUTE, NOW)).not.toMatch(/-/);
+    expect(relativeTime(NOW + 400 * DAY, NOW)).not.toMatch(/-/);
   });
 
   it('returns null — never "Invalid Date" or "NaNm ago" — for a value that is not a time', () => {
