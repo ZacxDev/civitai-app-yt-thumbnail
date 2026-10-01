@@ -278,17 +278,12 @@ export function accountLabel(choice: AccountChoice): string {
   }
 }
 
-/**
- * Label the pool that PRIMARILY funded a generation
- * (`BlockWorkflowSnapshot.spentAccountType`). This is the largest-debit account,
- * NOT necessarily "the paid account": a gen covered mostly by free/earned Buzz
- * reports `blue`. `undefined` (a host predating the field, or no spend) -> null,
- * so the caller can skip the "funded from…" note.
- */
-export function spentAccountLabel(spent: BuzzAccountType | undefined): string | null {
-  if (!spent) return null;
-  return accountLabel(spent);
-}
+// 🔴 `spentAccountLabel` IS GONE WITH `SpentAccountNote`, ITS ONLY CALLER. It mapped a
+// `BlockWorkflowSnapshot.spentAccountType` to a label and `undefined` to `null` so the
+// alert could skip its "funded from…" line. The history row's `CostCell` asks
+// `accountLabel` directly off a pool it has already established is non-null, so the
+// nullable wrapper had no second user — only a test. Kept as an uncalled export it would
+// have been a second answer to a question `accountLabel` already answers.
 
 /**
  * Mirror of the manifest's `page.buzzBudgetPerGen`. MUST be kept in sync with
@@ -529,6 +524,16 @@ export type GenPhase =
  * `overallPhase` ranks `submitting` ABOVE `polling`, so a multi-format batch
  * whose first format is already polling while its third is still submitting
  * reports `submitting` — the gate does not open until every workflow is placed.
+ *
+ * 🔴 "STAYS SHUT" IS A CLAIM ABOUT EVERY WAY `runs` CAN BE CLEARED, NOT JUST ABOUT THE
+ * BUTTON, AND IT WAS FALSE WHEN THIS SENTENCE WAS FIRST WRITTEN. The phase is derived
+ * from `runs`, so ANYTHING that empties `runs` re-opens the window: `App.tsx`'s
+ * `yt-history-resume` is never disabled and calls `setRuns([])`, which dropped the phase
+ * to `idle` and re-enabled Generate while the first batch's `submit()` was still in
+ * flight — a measured double submit, with both batches charged. The two clearers are
+ * `switchMode` (gated by the control's own `disabled`) and `onResume` (now gated on this
+ * predicate itself). A third clearer added later re-opens it again, so check this list
+ * before adding one.
  */
 export function isSubmittingPhase(phase: GenPhase): boolean {
   return phase === 'estimating' || phase === 'submitting';
@@ -595,7 +600,11 @@ export interface FormatRun {
   estimatedCost: number | null;
   /** What the SERVER reported this run cost. `null` until it reports one. */
   actualCost: number | null;
-  spentAccount: BuzzAccountType | null;
+  // 🔴 NO `spentAccount` HERE. It was written from every succeeded snapshot and read by
+  // nothing once the `pm-spent` alert went: the funding pool now lives on the stored
+  // RECORD (`GenerationRecord.spentAccount`), because it has to survive a reload, and
+  // `spentPools` is what carries it from the snapshot to that record. A per-run copy was
+  // a second place for the same fact that no surface consulted.
   workflowId: string | null;
   imageUrls: string[];
   error: string | null;
@@ -609,7 +618,6 @@ export function initRun(formatId: string, label: string): FormatRun {
     phase: 'idle',
     estimatedCost: null,
     actualCost: null,
-    spentAccount: null,
     workflowId: null,
     imageUrls: [],
     error: null,

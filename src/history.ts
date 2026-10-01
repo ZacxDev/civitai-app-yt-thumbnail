@@ -267,6 +267,13 @@ export function parseRecord(raw: unknown): GenerationRecord | null {
  * Workflows with no pool reported yet are IGNORED rather than treated as
  * disagreement — a batch whose second format is still running has one pool known
  * and that is not a conflict.
+ *
+ * 🔴 SO THIS FUNCTION'S ANSWER IS PROVISIONAL, AND ONLY A CALLER THAT RECOMPUTES IT
+ * MAY ACT ON IT. Ignoring the unknowns is right for a RENDER — `joinHistory` runs on
+ * every render, so a bolt painted from one known pool is corrected the moment the
+ * second format reports. It is wrong for a WRITE: formats finish seconds apart, so the
+ * first answer is almost always alone, and a stamp is permanent. `spendPatches` is
+ * therefore the half that waits for every workflow; see its own note.
  */
 export function agreedSpentPool(
   workflowIds: readonly string[],
@@ -278,6 +285,17 @@ export function agreedSpentPool(
     if (pool !== undefined) seen.add(pool);
   }
   return seen.size === 1 ? [...seen][0] : null;
+}
+
+/** One row the caller should patch, plus whether storage will take the result. */
+export interface SpendPatch extends StoredRecord {
+  /**
+   * The patched record is past the host's per-value ceiling, so the `set` would be
+   * refused. The caller must still apply the patch IN MEMORY — that is what stops this
+   * function returning the row forever — and skip the write, saying so rather than
+   * letting the rejection disappear into a `.catch`.
+   */
+  tooLarge: boolean;
 }
 
 /**
@@ -293,17 +311,38 @@ export function agreedSpentPool(
  * disagrees — the first thing the server said about a batch is the thing we
  * recorded, and rewriting it would make the row's history depend on when it was
  * last looked at.
+ *
+ * 🔴 SO EVERY WORKFLOW IN THE BATCH MUST HAVE REPORTED BEFORE ANYTHING IS WRITTEN, AND
+ * THAT IS WHAT MAKES THE NEVER-RE-PATCH RULE SAFE. `agreedSpentPool` ignores a workflow
+ * with no pool yet, which is correct for the render it was written for and wrong here:
+ * composed with "never re-patch", it stamped the row from whichever format reported
+ * FIRST — the normal timeline, since formats finish seconds apart — so a 2-format batch
+ * funded from two pools asserted ONE of them, permanently, on a surface about the
+ * viewer's money. Measured: patch `wf-a='blue'`, then learn `wf-b='yellow'`, and the row
+ * rendered its whole cost as `blue`. Requiring the full set is what keeps the honest
+ * neutral bolt reachable; `agreedSpentPool` then decides agreement, as before.
+ *
+ * It is NOT a terminal-status check, deliberately: this module has no status for a
+ * workflow the live page has not delivered yet, and a batch whose last format never
+ * reports simply keeps the neutral bolt — the same answer it has today while running.
+ *
+ * 🔴 AND THE 64 KB CEILING IS RE-CHECKED, because the pool field is what can cross it.
+ * `recordFits` was consulted once, at submit, where the record carries no
+ * `spentAccount`; `,"spentAccount":"yellow"` is enough to push a row that fit then over
+ * now. One rule in one place — `recordFits` — asked a second time, at the second write.
  */
 export function spendPatches(
   records: ReadonlyArray<StoredRecord>,
   pools: Readonly<Record<string, BuzzAccountType>>,
-): StoredRecord[] {
-  const out: StoredRecord[] = [];
+): SpendPatch[] {
+  const out: SpendPatch[] = [];
   for (const entry of records) {
     if (entry.record.spentAccount !== undefined) continue;
+    if (!entry.record.workflowIds.every((id) => pools[id] !== undefined)) continue;
     const pool = agreedSpentPool(entry.record.workflowIds, pools);
     if (pool === null) continue;
-    out.push({ key: entry.key, record: { ...entry.record, spentAccount: pool } });
+    const record = { ...entry.record, spentAccount: pool };
+    out.push({ key: entry.key, record, tooLarge: !recordFits(record) });
   }
   return out;
 }
@@ -596,8 +635,12 @@ export function upsertOwnWorkflow(
  *           and dropping ours there hides output the viewer PAID for.
  *   cost    the page's number wins when it has one; ours fills a `null`. BOTH are
  *           the server's own figure (`snapshot.cost.total` / the projection), so
- *           neither is an estimate — see aggregateSpend's note on why an estimate
- *           may never stand in for a realized cost.
+ *           neither is an ESTIMATE, and an estimate may never stand in for a realized
+ *           cost: it prices the workflows that were ASKED for, which includes any that
+ *           failed and were never charged. `null` here means "not told yet", never
+ *           "free", and the row renders `—` for it. (This used to defer to
+ *           `aggregateSpend`'s note; that function was deleted with the `pm-spent`
+ *           alert, so the reason is stated here instead of pointed at.)
  *   status  a TERMINAL status wins over a non-terminal one, whichever side holds
  *           it. A stale page saying `processing` about a workflow we have already
  *           watched succeed would show a permanent skeleton; the reverse (our

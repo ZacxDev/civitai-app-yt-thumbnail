@@ -158,10 +158,9 @@ type GenMode = 'generate' | 'remix';
 /**
  * One Generate click's identity, as an object whose REFERENCE is the identity.
  *
- * Two questions are asked of it and they are NOT the same question — see the three
- * refs in `App` (`batchAbortRef` / `currentBatchRef` / `unmountedRef`) for why
- * collapsing them into one `cancelled` boolean was what made a second Generate
- * during polling unsafe:
+ * Two questions are asked of it and they are NOT the same question — see the two refs
+ * in `App` (`currentBatchRef` / `unmountedRef`) for why collapsing them into one
+ * `cancelled` boolean was what made a second Generate during polling unsafe:
  *
  *   `cancelled`   this batch may no longer SUBMIT (nothing spent yet, so dropping it
  *                 is free). Set by `switchMode` and `onResume`.
@@ -428,6 +427,18 @@ export function App() {
    * come after it — see `classifyStorageError`'s note on declaration order.
    */
   const historyOwnerRef = useRef<number | null>(null);
+  /**
+   * Keys whose spent-pool patch has a storage `set` IN FLIGHT.
+   *
+   * 🔴 THE CYCLE-BREAKER, AND IT HAS TO BE A REF. The effect that writes these patches
+   * depends on `historyRecords` and its own `.then` SETS `historyRecords`, so every
+   * unrelated change to the list — a prune, a reload, the Show toggle — recomputed the
+   * same patch set and re-issued a write whose first copy was still open (measured:
+   * three `set` calls for one row). The memory patch cannot land any sooner, because it
+   * IS what the `.then` does, so the only place to break the loop is here. State would
+   * not do: writing it would retrigger the very effect it is damping.
+   */
+  const spendWritesRef = useRef<Set<string>>(new Set());
   /** The unsaved map as the list shape everything else here speaks. */
   const unsavedRecords = useCallback(
     (): StoredRecord[] => [...unsavedRecordsRef.current].map(([key, record]) => ({ key, record })),
@@ -580,33 +591,41 @@ export function App() {
   // the consent grant lands (granted flips true) we auto-resume the submit.
   const consentPendingRef = useRef(false);
   /**
-   * 🔴 THREE FLAGS WHERE THERE USED TO BE ONE, AND THE SPLIT IS WHAT MAKES THE FORM
-   * SAFE TO LEAVE LIVE DURING POLLING. The single `{ cancelled }` token conflated
-   * three different questions, and answering all of them with "stop" was correct only
-   * because the form — and therefore every way of asking them — was dead through
-   * `polling`. With the form live they are all reachable, and they want different
-   * answers:
+   * 🔴 TWO FLAGS WHERE THERE USED TO BE ONE, AND THE SPLIT IS WHAT MAKES THE FORM SAFE
+   * TO LEAVE LIVE DURING POLLING. The single `{ cancelled }` token answered two
+   * different questions with "stop", which was correct only because the form — and
+   * therefore every way of asking them — was dead through `polling`. With the form live
+   * they are both reachable and they want different answers:
    *
-   *   1. MAY THIS BATCH STILL SUBMIT?           `batchAbortRef`-held token's
-   *      `cancelled`. Set by `switchMode` and `onResume`, which both mean "forget
-   *      the request I was assembling". A batch aborted here has spent NOTHING, so
-   *      abandoning it is free — and NOT abandoning it would submit, and charge for,
-   *      a request the viewer was just told was not submitted.
-   *   2. DOES `runs` BELONG TO THIS BATCH?      `currentBatchRef.current === tok`.
-   *      A SUPERSEDED batch (a second Generate started while it polled) keeps
-   *      polling — its history row is still filling in with pictures the viewer has
-   *      ALREADY PAID FOR — but may no longer write the run table, because `runs` is
-   *      keyed by formatId and both batches can hold the same format id.
-   *   3. IS THE COMPONENT STILL MOUNTED?        `unmountedRef`. The only thing that
-   *      genuinely stops a poll loop: there is no tree left to update.
+   *   1. IS THIS THE CURRENT BATCH — may it still SUBMIT, and does `runs` belong to it?
+   *      `currentBatchRef`. Its token's `cancelled` is set by `switchMode` and
+   *      `onResume`, which both mean "forget the request I was assembling": a batch
+   *      aborted there has spent NOTHING, so abandoning it is free, and NOT abandoning
+   *      it would submit and charge for a request the viewer was just told was not
+   *      submitted. The ref's IDENTITY (`currentBatchRef.current === tok`) is the other
+   *      half of the same fact — a SUPERSEDED batch keeps polling, because its history
+   *      row is filling in with pictures the viewer has ALREADY PAID FOR, but may no
+   *      longer write `runs`, which is keyed by formatId and which both batches can hold
+   *      the same id in.
+   *   2. IS THE COMPONENT STILL MOUNTED?  `unmountedRef`. The only thing that genuinely
+   *      stops a poll loop: there is no tree left to update. It is a BOOLEAN and not a
+   *      token precisely because N batches can be polling and a per-batch token cannot
+   *      stop loops it does not own.
    *
-   * 🔴 A NEW BATCH NO LONGER ABORTS THE OLD ONE. That is the behaviour change. It
-   * used to, and the consequence was a row frozen as a permanent skeleton with no
-   * cost and no images for a generation that was still running and still being
-   * charged — invisible before only because a second Generate was impossible.
+   * 🔴 THERE WAS A SEPARATE `batchAbortRef` HERE FOR QUESTION 1a AND IT IS DELETED. Both
+   * refs were assigned the same token on the same two lines of `runGeneration`, and the
+   * only two readers of `batchAbortRef` (`switchMode`, `onResume`) nulled
+   * `currentBatchRef` on the very next line — so the pair could never disagree about
+   * anything a reader could observe. Two names for one fact is a second place for it to
+   * be got wrong, not a distinction.
+   *
+   * 🔴 A NEW BATCH NO LONGER ABORTS THE OLD ONE. That is the behaviour change. It used
+   * to, and the consequence was a row that STOPPED FILLING IN — no cost and no images
+   * for a generation that was still running and still being charged. Not permanent: the
+   * Show toggle and the history panel's Refresh both call `refetchWorkflows`, so a
+   * manual refresh picks the finished workflow up off the live page. Invisible before
+   * only because a second Generate was impossible.
    */
-  const batchAbortRef = useRef<BatchToken | null>(null);
-  /** The batch whose state `runs` reflects. `null` once nothing owns it. */
   const currentBatchRef = useRef<BatchToken | null>(null);
   /** Unmounted — the one condition that stops a poll loop outright. */
   const unmountedRef = useRef(false);
@@ -644,7 +663,23 @@ export function App() {
   // once now, and this ref used to set `cancelled` on whichever token it was holding
   // — i.e. the newest — leaving every OTHER live loop running against an unmounted
   // tree. A boolean every loop reads covers all of them, however many there are.
+  //
+  // 🔴 THE SETUP LINE IS NOT DEFENSIVE TIDYING — WITHOUT IT THE FLAG LATCHES AT MOUNT
+  // AND THE WHOLE GENERATE PATH IS DEAD. `main.tsx` renders its root inside
+  // `<StrictMode>` and all three `<App/>` paths are inside it, so React's dev build
+  // runs this effect setup -> cleanup -> setup on the SAME instance: the cleanup fires
+  // once at mount, and with nothing resetting the ref it stays `true` forever. It then
+  // gates `runGeneration`'s post-estimate return, so every click priced the request and
+  // submitted nothing. Measured: a bare `<App/>` reached submit, the identical render
+  // wrapped in `<StrictMode>` did not. A ref written only in a cleanup is a ref that
+  // cannot survive a remount of any kind — a future `key` change or an offscreen
+  // re-mount would do the same thing — so the reset belongs here whatever React's dev
+  // double-invoke does. StrictMode's double-invoke is DEV-ONLY, so this is not
+  // established as a production-bundle defect; it killed Generate in `dev`,
+  // `dev:harness`, `dev:live` and `dev:tunnel`, i.e. in every surface this app can be
+  // verified in before submitting.
   useEffect(() => {
+    unmountedRef.current = false;
     return () => {
       unmountedRef.current = true;
     };
@@ -854,8 +889,11 @@ export function App() {
    *
    * The previous shape had no such split: a new batch set `pollCancelRef.current.cancelled`
    * and the old loop simply STOPPED, which protected `runs` by abandoning the old
-   * batch's row as a permanent skeleton with no cost — a batch the viewer had already
-   * paid for. That was invisible while the form was frozen through polling, because a
+   * batch's row — a batch the viewer had already paid for — with no cost and no images.
+   * Not permanently: `refetchWorkflows` runs on the Show toggle and on the history
+   * panel's Refresh, so a manual refresh picks the finished workflow up off the live
+   * page. The defect is that the row stopped filling in until the viewer went and asked
+   * again, which was invisible while the form was frozen through polling, because a
    * second batch could not be started.
    */
   const applySnapshotToRun = useCallback(
@@ -875,11 +913,13 @@ export function App() {
       const nowIso = new Date().toISOString();
       setOwnWorkflows((cur) => upsertOwnWorkflow(cur, snap, urls, nowIso));
       // 🔴 THE FUNDING POOL, RECORDED FOR EVERY BATCH INCLUDING A SUPERSEDED ONE.
-      // This is the only place `spentAccountType` ever reaches the app, and the
-      // history row for a batch the viewer has already paid for must get it whether
-      // or not another batch has since started. Keyed by workflowId, so two
-      // concurrent batches cannot overwrite each other's answer; written only when
-      // the server actually sent one, so a `pending` poll cannot erase a known pool.
+      // This is the only place `spentAccountType` reaches the app — the function used to
+      // read it TWICE, the second time into a `FormatRun.spentAccount` nothing consulted,
+      // and that field is deleted. The history row for a batch the viewer has already
+      // paid for must get it whether or not another batch has since started. Keyed by
+      // workflowId, so two concurrent batches cannot overwrite each other's answer;
+      // written only when the server actually sent one, so a `pending` poll cannot erase
+      // a known pool.
       if (snap.workflowId && snap.spentAccountType) {
         const id = snap.workflowId;
         const pool = snap.spentAccountType;
@@ -899,11 +939,6 @@ export function App() {
           // would erase a price we had already been told.
           ...(snap.cost?.total != null ? { actualCost: snap.cost.total } : {}),
           ...(urls.length > 0 ? { imageUrls: urls } : {}),
-          ...(next === 'succeeded'
-            ? // The pool that PRIMARILY funded this run (largest debit) — can be
-              // blue (free/earned), not necessarily the paid account.
-              { spentAccount: snap.spentAccountType ?? null }
-            : {}),
           ...(next === 'failed' || next === 'insufficient'
             ? { error: snap.error ?? 'Generation failed.' }
             : {}),
@@ -944,7 +979,8 @@ export function App() {
       // monotonic, collision-free) regardless of which batch is current, and refuses
       // to touch `runs` unless this batch still owns it. Abandoning the loop instead
       // — which is what every pre-change caller of `cancelled` did — left a paid-for
-      // batch rendering as a permanent skeleton.
+      // batch rendering as a skeleton with no cost until the viewer manually refreshed
+      // (the Show toggle and the panel's Refresh both call `refetchWorkflows`).
 
       // Backoff between normal (snapshot-returning) polls.
       const SCHEDULE_MS = [2000, 2000, 3000, 5000, 8000];
@@ -1086,7 +1122,6 @@ export function App() {
     // The previous batch keeps its own token and keeps polling; it simply stops being
     // `currentBatchRef`, which is all `runs` needs.
     const tok: BatchToken = { cancelled: false };
-    batchAbortRef.current = tok;
     currentBatchRef.current = tok;
 
     // The ONLY difference between the two modes is the body: a remix threads the
@@ -1459,7 +1494,7 @@ export function App() {
    * describes them. Their own history row is unaffected and keeps filling in.
    */
   const switchMode = useCallback((next: GenMode) => {
-    if (batchAbortRef.current) batchAbortRef.current.cancelled = true;
+    if (currentBatchRef.current) currentBatchRef.current.cancelled = true;
     currentBatchRef.current = null;
     consentPendingRef.current = false;
     setMode(next);
@@ -1935,22 +1970,57 @@ export function App() {
    * prune above, so it is deliberately silent rather than a banner over images the
    * viewer already owns.
    *
-   * 🟢 KNOWN AND ACCEPTED, two of them. (1) A record near the 64 KB ceiling can be
-   * pushed over it by this field; `recordFits` is not re-checked, the host rejects the
-   * write, and the `.catch` swallows it — the same outcome as any other rejected
-   * write, and the row still renders. (2) `historyRecords` is both a dependency and
-   * what the `.then` sets, so an unrelated change to the list (a prune, a reload)
-   * recomputes the patch set and can re-issue a write for a row whose first write is
-   * still in flight. One duplicate idempotent `set`; not worth a second ref to track.
+   * 🔴 THE CEILING IS RE-CHECKED HERE, AND IT WAS A SILENT WRITE LOSS BEFORE. A record
+   * inside the 64 KB per-value limit by fewer bytes than `,"spentAccount":"yellow"`
+   * costs FITS at submit and does not fit once this field is on it. `recordFits` was
+   * asked once, at submit; the host then rejected this write and the `.catch` swallowed
+   * the rejection, so the row lost its pool colour on the next reload with nothing on
+   * screen saying so. `spendPatches` now flags such a row (`tooLarge`), the doomed
+   * round trip is not made, and the viewer is told. This was written down as KNOWN AND
+   * ACCEPTED and the operator withdrew that acceptance: silent data loss on a money
+   * surface is not an accepted cost.
+   *
+   * 🔴 AND THE LIST IS NO LONGER ITS OWN TRIGGER FOR A WRITE ALREADY IN FLIGHT.
+   * `historyRecords` is both a dependency of this effect and what its `.then` sets, so
+   * anything that changed the list — a prune, a reload, the Show toggle — recomputed the
+   * same patch set and re-issued writes whose first copies were still open (measured:
+   * three `set` calls for one row). `spendWritesRef` holds the keys with a write in
+   * flight and they are skipped, which breaks the cycle at the only place it can be
+   * broken: the memory patch cannot land sooner, because it is what the `.then` does.
+   * The key is released in the same `.then` whatever the write's outcome, so a failure
+   * cannot wedge a row out of ever being patched again. This was the second KNOWN AND
+   * ACCEPTED item, and it is withdrawn too.
+   *
+   * 🔴 AND THE `alive` CANCELLATION IS GONE WITH IT, BECAUSE THE TWO TOGETHER WOULD HAVE
+   * BEEN A THIRD DEFECT. The skip-set is the only thing that can stop a duplicate write,
+   * and a cleanup that cancelled the memory patch while the key was still held would
+   * leave the row unpatched in memory with nothing scheduled to try again: storage would
+   * have the pool and the screen would not, until some unrelated change moved the list.
+   * This updater is safe to apply late on its own terms — it is functional, keyed, and
+   * only touches rows that still lack a pool — so there is nothing for a cancellation to
+   * protect. (The prune effect above keeps its `alive`; there it guards a
+   * delete-then-filter pair, which is a different shape.)
    */
   useEffect(() => {
-    const patches = spendPatches(historyRecords, spentPools);
+    const patches = spendPatches(historyRecords, spentPools).filter(
+      (p) => !spendWritesRef.current.has(p.key),
+    );
     if (patches.length === 0) return;
-    let alive = true;
+    // A `tooLarge` row would be refused by the host, so the write is not attempted — but
+    // the MEMORY patch below still applies to it, because that is what stops this effect
+    // returning the same row forever.
+    const writable = patches.filter((p) => !p.tooLarge);
+    if (writable.length < patches.length) {
+      setHistoryNote(
+        "This run is at its saved-size limit, so which Buzz pool funded it couldn't be saved. " +
+          'Everything else about the run is saved, and the figure above is correct.',
+      );
+    }
+    for (const p of writable) spendWritesRef.current.add(p.key);
     void Promise.all(
-      patches.map((p) => storageRef.current.set(p.key, p.record).catch(() => undefined)),
+      writable.map((p) => storageRef.current.set(p.key, p.record).catch(() => undefined)),
     ).then(() => {
-      if (!alive) return;
+      for (const p of writable) spendWritesRef.current.delete(p.key);
       const byKey = new Map(patches.map((p) => [p.key, p.record]));
       setHistoryRecords((cur) =>
         cur.map((e) => {
@@ -1961,9 +2031,6 @@ export function App() {
         }),
       );
     });
-    return () => {
-      alive = false;
-    };
   }, [historyRecords, spentPools]);
 
   /**
@@ -2003,16 +2070,40 @@ export function App() {
    * prompts, selected formats, checkpoint, LoRAs, quantity, spend-from, and the
    * remix source — and it works for an `unavailable` entry too, because the form
    * half is OURS and does not expire with the images.
+   *
+   * 🔴 AND IT IS REFUSED WHILE A CLICK IS STILL BEING PLACED, WHICH IS WHAT MAKES
+   * `isSubmittingPhase`'S "that window stays shut" TRUE RATHER THAN NEARLY TRUE. This
+   * button is never disabled, and `setRuns([])` below drops `overallPhase` to `idle` —
+   * so a Reuse mid-submit turned `busy` false and RE-ENABLED Generate while the first
+   * batch's `submit()` was still open. Measured as a real double submit: Generate
+   * disabled, one Reuse click, Generate enabled, second click, `submit()` called twice
+   * with the first still in flight. Both batches now get a history row and BOTH are
+   * charged, where the old shape at least dropped the superseded batch's id.
+   *
+   * 🔴 IT IS THE SAME PREDICATE THE BUTTON READS, NOT A SECOND ONE. `busy` is
+   * `isSubmittingPhase(phase)` and so is this; a parallel "am I submitting" flag would
+   * be a second place for the window to be defined differently. It covers
+   * `estimating`/`submitting` ONLY — the window where no workflow id exists yet — so it
+   * deliberately leaves Reuse live through `polling`, which is the state the operator
+   * chose to keep clickable.
    */
   const onResume = useCallback(
     (entry: HistoryEntry) => {
+      if (isSubmittingPhase(phase)) {
+        // Said out loud rather than silently ignored: a control that does nothing when
+        // clicked is indistinguishable from a broken one.
+        setHistoryNote(
+          'That generation is still being placed — wait for it to start, then press Reuse settings.',
+        );
+        return;
+      }
       const f = entry.record.form;
-      // 🔴 SAME SPLIT AS `switchMode`, AND THIS BUTTON WAS *ALREADY* REACHABLE
-      // MID-FLIGHT — it is never disabled, so a resume during polling was possible
-      // before this change too, and it killed the running batch's poll loop. Abort
+      // 🔴 SAME SPLIT AS `switchMode`, AND THIS BUTTON IS STILL REACHABLE MID-POLL —
+      // it is never disabled, so a resume during polling was possible before this
+      // change too, and it killed the running batch's poll loop. Abort
       // only what has not been submitted; release `runs`; leave every live loop
       // running so the row the viewer clicked Reuse INSIDE keeps its own pictures.
-      if (batchAbortRef.current) batchAbortRef.current.cancelled = true;
+      if (currentBatchRef.current) currentBatchRef.current.cancelled = true;
       currentBatchRef.current = null;
       consentPendingRef.current = false;
       setRuns([]);
@@ -2061,7 +2152,7 @@ export function App() {
       setLoraNote(null);
       setHistoryNote('Form restored. Nothing was submitted — press Generate when you are ready.');
     },
-    [customFormats],
+    [customFormats, phase],
   );
 
   /** Cancel one still-running workflow. A real money control at this price. */
@@ -3685,10 +3776,16 @@ function measureMenuBox(
 // workflow ids, and the history row's bolt is neutral in exactly the cases this
 // component returned `null` in.
 
+// The Generate button's label while the click is being PLACED.
+//
+// 🔴 NO `'polling'` ARM. There was one ("Generating…") and it became unreachable when
+// the button's `loading` gate moved from `isBusyPhase` to `isSubmittingPhase`: the only
+// call site renders this under `busy`, so `phase` here is `estimating` or `submitting`
+// and nothing else. The `'Working…'` fallback is the exhaustiveness default, not a
+// reachable state.
 function phaseLabel(phase: GenPhase): string {
   if (phase === 'estimating') return 'Estimating…';
   if (phase === 'submitting') return 'Submitting…';
-  if (phase === 'polling') return 'Generating…';
   return 'Working…';
 }
 

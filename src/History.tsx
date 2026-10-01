@@ -385,8 +385,11 @@ function HistoryRow({
           {/* 🔴 RELATIVE, WITH THE ABSOLUTE TIME IN `title` SO NO PRECISION IS LOST.
               "2m ago" is what a viewer wants from the row they just generated; a
               full `toLocaleString()` was the only thing on the line and read as
-              noise. A record with an unreadable `createdAt` renders '—' rather
-              than the string "Invalid Date" — see `relativeTime`. */}
+              noise. The `??` fallbacks catch a non-finite `createdAt`, which renders
+              '—' rather than the string "Invalid Date" — `parseRecord` refuses such a
+              record today, so this is one character of defence rather than a path with
+              a known caller; see `toEpochMs`, which is where the finite check lives and
+              why it is not deleted with the rest of the widened signature. */}
           {when ?? '—'}
         </span>
         {/* 🔴 REALIZED COST, the server's number for the workflows that reported
@@ -450,8 +453,14 @@ function HistoryRow({
                   `aria-label` is the ONLY accessible name an icon-only control has.
                   An icon with neither is not a tidier button, it is a button nobody
                   on a screen reader can identify — a regression in accessibility,
-                  not a visual change. `pm-icon-labels` in `App.history.test.tsx`
-                  asserts the pair on every icon-only control here. The testids and
+                  not a visual change. The guard is
+                  `src/App.inflight.test.tsx`'s "🔴 the icon-only controls carry BOTH a
+                  title and an aria-label", which asserts the exact wording on both
+                  controls here — not merely that the attributes exist. (This pointer
+                  previously named a `pm-icon-labels` testid in `App.history.test.tsx`;
+                  no such testid exists anywhere in the tree and the file was wrong
+                  too. The coverage was real; only the reference was not.)
+                  The testids and
                   both `onClick` payloads — including the `i + 1` index and the
                   per-image `imageLabels[i]` that stop a cinematic picture being
                   saved as `…-clickbait-3.jpg` — are byte-for-byte what they were. */}
@@ -556,11 +565,14 @@ function HistoryRow({
  * looks like. One rule, one place — `BuzzBolt` moved OUT of `App.tsx` for this.
  *
  * 🔴 AN UNKNOWN POOL IS NEUTRAL, NEVER A GUESS. `pool` is `null` for a record
- * written before the field existed, for a batch still running, and for a batch
- * whose workflows were funded from DIFFERENT pools (see `agreedSpentPool`). All
- * three map to `BuzzBolt`'s `'auto'` arm — `pal.textDim`, a bolt that does not
- * claim a pool — because a wrong colour here is a false statement about where the
- * viewer's money came from.
+ * written before the field existed, for a batch still running, for a batch whose
+ * workflows were funded from DIFFERENT pools, and — until every one of a batch's
+ * workflows has reported — for a batch that has only PART of the answer. All four map to
+ * `BuzzBolt`'s `'auto'` arm — `pal.textDim`, a bolt that does not claim a pool — because
+ * a wrong colour here is a false statement about where the viewer's money came from.
+ * `agreedSpentPool` decides agreement and `spendPatches` decides when there is enough of
+ * an answer to write down; the fourth case is the one that used to LATCH, stamping the
+ * row from whichever format replied first.
  *
  * 🔴 AND COLOUR IS NEVER THE ONLY CARRIER. The bolt is `aria-hidden`; the
  * accessible name beside it spells out "Buzz" and, when known, the pool — so a

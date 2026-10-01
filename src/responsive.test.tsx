@@ -1028,8 +1028,14 @@ describe('results and the editor, at width', () => {
    *    because each level was correct in isolation.
    *  - v3, below: rows are FULL WIDTH (nothing nests) and the images are
    *    INTRINSICALLY sized — `auto-fill` with an `IMAGE_MIN_PX` floor, so there is no
-   *    count left to be wrong and no width at which a tile can be narrower than the
-   *    floor, including a tier the SDK adds above `xl` tomorrow.
+   *    count left to be wrong.
+   *  - v3.1, which is what this now asserts: that floor is CLAMPED by `min(…, 100%)`.
+   *    A bare `minmax(300px, 1fr)` is a HARD floor — `auto-fill` drops to one column
+   *    and then stops, so a container narrower than 300px OVERFLOWS horizontally. The
+   *    base tier really is narrower: available width is blockWidth − 68 (two
+   *    `SHELL_PADDING`s at 24 and two `panelRowStyle` insets at 10), so this suite's
+   *    own 361px base fixture has 293px for a 300px floor, and a 360px phone ~292px.
+   *    `min(IMAGE_MIN_PX, 100%)` lets the single column fall back to the container.
    *
    * 🔴 SO THE CLAIM BEING WIDENED HERE IS "TIER-INDEPENDENT", AND IT NEEDS THE SAME
    * FOUR WIDTHS TO BE WORTH ANYTHING. A single-width run cannot tell an intrinsic
@@ -1038,10 +1044,13 @@ describe('results and the editor, at width', () => {
    * widths spanning phone to ultrawide, one expected string, asserted identical at
    * all four.
    *
-   * 🔴 jsdom LAYS NOTHING OUT. This is a claim about the STYLE CONTRACT the browser
-   * reads, never about a rendered tile size — see the PR body.
+   * 🔴 jsdom LAYS NOTHING OUT, AND THAT BOUNDS WHAT THE CLAMP CASE CAN CLAIM. These
+   * are assertions about the STYLE CONTRACT a browser reads, never about a rendered
+   * tile size or a measured overflow. The clamp is standard CSS and jsdom's CSSOM
+   * round-trips it verbatim (measured), but NO test here has seen the grid fit inside
+   * a 293px container — only that the rule a browser would act on is present.
    */
-  const INTRINSIC = `repeat(auto-fill, minmax(${IMAGE_MIN_PX}px, 1fr))`;
+  const INTRINSIC = `repeat(auto-fill, minmax(min(${IMAGE_MIN_PX}px, 100%), 1fr))`;
 
   it.each([
     [INSIDE.base],
@@ -1062,6 +1071,17 @@ describe('results and the editor, at width', () => {
     expect(grid.style.gridTemplateColumns).not.toMatch(/repeat\(\s*\d/);
     expect(screen.getByTestId('yt-history-grid').style.gridTemplateColumns).not.toMatch(
       /repeat\(\s*\d/,
+    );
+    // 🔴 AND THE FLOOR IS CLAMPED BY A PERCENTAGE OF THE CONTAINER — the structural
+    // half of the literal above, and the one that names the DEFECT rather than the
+    // current spelling. A bare px floor passes the `repeat(\d` guard and the
+    // `auto-fill` guard and still overflows the narrowest tier; only a `min(…, %)`
+    // inside the `minmax` lower bound can shrink. The regex is deliberately
+    // whitespace-tolerant and does not pin the argument ORDER, because `min()` is
+    // commutative and a future reword of the style must not fail a money-irrelevant
+    // assertion.
+    expect(grid.style.gridTemplateColumns).toMatch(
+      /minmax\(\s*min\(\s*(?:\d+px\s*,\s*100%|100%\s*,\s*\d+px)\s*\)\s*,/,
     );
   });
 

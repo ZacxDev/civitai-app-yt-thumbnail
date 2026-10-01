@@ -80,7 +80,9 @@ export interface BlockLayout {
    * a grid of images inside each row), so the counts MULTIPLIED: 3 × 3 at `lg` made
    * each thumbnail a ninth of the main column and 4 × 4 on an ultrawide block made it
    * a sixteenth — an ~85px 16:9 tile on a 1920px screen. The thumbnail grid is now
-   * `auto-fill` + a px floor, like this one, and owns its own constant
+   * `auto-fill` + a px floor like this one, except that ITS floor is clamped by
+   * `min(…, 100%)` because at 300px it exceeds the content width of the narrowest tier
+   * (this field's narrowest value, 124px, does not), and it owns its own constant
    * (`IMAGE_MIN_PX` in `ui-styles.ts`) rather than a per-tier number. Nothing in the
    * app lays out from a column COUNT any more, which is why the field is gone rather
    * than merely unused.

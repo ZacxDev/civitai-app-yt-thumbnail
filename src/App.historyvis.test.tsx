@@ -426,12 +426,13 @@ describe('the history surface — a batch that is still running', () => {
      * MULTIPLY: 3 columns of rows × 3 columns of images = each thumbnail a ninth of
      * the main column, 4 × 4 = a sixteenth (~85px wide on a 1920px screen). They are
      * now deliberately DIFFERENT rules, and the pair below is what stops either half
-     * regressing: one row per line, and an image grid with a px FLOOR instead of a
-     * count. `responsive.test.tsx` walks four widths to show the floor is
-     * tier-independent; this pins the shape at the base tier.
+     * regressing: one row per line, and an image grid whose column is a CLAMPED px
+     * floor instead of a count. `responsive.test.tsx` walks four widths to show the
+     * floor is tier-independent and carries the arithmetic behind the clamp; this pins
+     * the shape at the base tier.
      *
      * jsdom lays nothing out, so this is a claim about the STYLE CONTRACT, not about
-     * any rendered tile size.
+     * any rendered tile size and not about a measured overflow.
      */
     stockStorage([{ key: RECORD_KEY, value: { ...RECORD, workflowIds: ['wf-done'] } }]);
     state.workflows = [DONE_WORKFLOW];
@@ -443,7 +444,9 @@ describe('the history surface — a batch that is still running', () => {
     const rows = screen.getByTestId('yt-history-grid');
     const images = screen.getByTestId('yt-history-images');
     expect(rows.style.gridTemplateColumns).toBe('minmax(0, 1fr)');
-    expect(images.style.gridTemplateColumns).toBe(`repeat(auto-fill, minmax(${IMAGE_MIN_PX}px, 1fr))`);
+    expect(images.style.gridTemplateColumns).toBe(
+      `repeat(auto-fill, minmax(min(${IMAGE_MIN_PX}px, 100%), 1fr))`,
+    );
     // The two rules are NOT the same any more — asserted explicitly, because them
     // being the same is the defect.
     expect(images.style.gridTemplateColumns).not.toBe(rows.style.gridTemplateColumns);
@@ -483,7 +486,9 @@ describe('the history surface — a batch that is still running', () => {
     const skeleton = screen.getByTestId('yt-history-skeleton');
     expect(skeleton.style.gridTemplateColumns).toBe(images.style.gridTemplateColumns);
     // Not vacuous: both are the real intrinsic template, not two empty strings.
-    expect(skeleton.style.gridTemplateColumns).toBe(`repeat(auto-fill, minmax(${IMAGE_MIN_PX}px, 1fr))`);
+    expect(skeleton.style.gridTemplateColumns).toBe(
+      `repeat(auto-fill, minmax(min(${IMAGE_MIN_PX}px, 100%), 1fr))`,
+    );
     expect(skeleton.style.gap).toBe(images.style.gap);
   });
 });

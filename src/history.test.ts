@@ -281,6 +281,44 @@ describe('recordFits', () => {
     expect(r.form.formats[0].prompt.length).toBeLessThan(STORAGE_VALUE_MAX_BYTES);
     expect(recordFits(r)).toBe(false);
   });
+
+  it('🔴 the POOL FIELD can be what crosses the ceiling — the patch path has to re-check', () => {
+    // 🔴 THE SILENT WRITE LOSS, AT ITS BOUNDARY. `recordFits` was consulted once, at
+    // submit, where a record carries no `spentAccount`. The field costs
+    // `,"spentAccount":"yellow"` on the wire, so a row inside the ceiling by fewer
+    // bytes than that fits at submit and does NOT fit once the pool is patched in —
+    // and the host's rejection went into a `.catch` that swallowed it.
+    //
+    // THREE POINTS, not one: comfortably under, exactly ON the ceiling, and one field
+    // over. A single on-boundary fixture cannot tell a working check from one whose
+    // comparison is off by a byte in either direction.
+    const under = record({ workflowIds: ['a'] });
+    expect(recordFits(under)).toBe(true);
+    expect(recordFits({ ...under, spentAccount: 'yellow' })).toBe(true);
+
+    const onCeiling = record({ workflowIds: ['a'] });
+    const naked = new TextEncoder().encode(JSON.stringify(onCeiling)).length;
+    onCeiling.form.formats[0].prompt += 'x'.repeat(STORAGE_VALUE_MAX_BYTES - naked);
+    expect(new TextEncoder().encode(JSON.stringify(onCeiling)).length).toBe(
+      STORAGE_VALUE_MAX_BYTES,
+    );
+    expect(recordFits(onCeiling)).toBe(true);
+    // ...and the SAME record with the pool stamped on is over.
+    expect(recordFits({ ...onCeiling, spentAccount: 'yellow' })).toBe(false);
+
+    // 🔴 AND `spendPatches` MARKS IT RATHER THAN DROPPING IT. The caller must still
+    // patch MEMORY (that is what terminates its effect loop) while skipping the write
+    // the host would refuse, so the row has to come back flagged, not be filtered out.
+    const patches = spendPatches([{ key: 'k1', record: onCeiling }], { a: 'yellow' });
+    expect(patches).toHaveLength(1);
+    expect(patches[0].record.spentAccount).toBe('yellow');
+    expect(patches[0].tooLarge).toBe(true);
+    // The under-ceiling row is offered WITHOUT the flag — the control that `tooLarge`
+    // is computed rather than hardcoded.
+    const ok = spendPatches([{ key: 'k2', record: under }], { a: 'yellow' });
+    expect(ok).toHaveLength(1);
+    expect(ok[0].tooLarge).toBe(false);
+  });
 });
 
 // --- the join -------------------------------------------------------------
@@ -618,6 +656,35 @@ describe('🔴 spendPatches — the write that makes the pool survive a reload',
       a: 'yellow',
     });
     expect(got).toEqual([]);
+  });
+
+  it('🔴 a MIXED-POOL batch is never stamped with one pool, whatever ORDER the answers arrive in', () => {
+    // 🔴 THE COMPOSITION OF TWO RULES OVER TIME, which every case above tests in
+    // isolation and none of them together. `agreedSpentPool` ignores a workflow with
+    // no pool yet; `spendPatches` never re-patches a stamped row. Composed, the record
+    // was stamped from whichever format reported FIRST — and formats finish seconds
+    // apart, so that is the normal timeline rather than an edge — after which a later
+    // disagreement could never undo it.
+    const row = stored('k1', { workflowIds: ['wf-a', 'wf-b'] });
+
+    // wf-a has reported and wf-b has not. Writing here is the latch: the row would
+    // carry 'blue' permanently, including for the money that came from wf-b's pool.
+    expect(spendPatches([row], { 'wf-a': 'blue' })).toEqual([]);
+
+    // wf-b lands, and it DISAGREES. Because nothing was written above, the honest
+    // answer — a neutral bolt, i.e. no patch at all — is still reachable.
+    expect(spendPatches([row], { 'wf-a': 'blue', 'wf-b': 'yellow' })).toEqual([]);
+
+    // 🔴 AND THE AGREEING ARM STILL WRITES. Without this the gate would be satisfied
+    // by "never patch a multi-workflow batch", which loses the pool on every
+    // multi-format run.
+    const agreed = spendPatches([row], { 'wf-a': 'blue', 'wf-b': 'blue' });
+    expect(agreed).toHaveLength(1);
+    expect(agreed[0].record.spentAccount).toBe('blue');
+
+    // A single-workflow batch is unaffected: one known pool IS every pool.
+    const solo = spendPatches([stored('k2', { workflowIds: ['wf-a'] })], { 'wf-a': 'green' });
+    expect(solo.map((p) => p.record.spentAccount)).toEqual(['green']);
   });
 
   it('patches several rows in one pass and keeps them keyed apart', () => {

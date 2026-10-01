@@ -49,10 +49,7 @@ const WEEK_MS = 7 * DAY_MS;
  * branch and print '-3m ago'; that mutant is run against the future cases in the test
  * file, and it dies there.
  */
-export function relativeTime(
-  createdAt: number | string | null | undefined,
-  nowMs: number,
-): string | null {
+export function relativeTime(createdAt: number, nowMs: number): string | null {
   const t = toEpochMs(createdAt);
   if (t === null) return null;
   const diff = nowMs - t;
@@ -71,25 +68,29 @@ export function relativeTime(
  * reported, and this is the one place in the row where no precision is dropped.
  * `null` for a value that is not a time.
  */
-export function absoluteTime(createdAt: number | string | null | undefined): string | null {
+export function absoluteTime(createdAt: number): string | null {
   const t = toEpochMs(createdAt);
   return t === null ? null : new Date(t).toLocaleString();
 }
 
 /**
- * Epoch ms from whatever a stored record carried, or `null`.
+ * Epoch ms from a stored record's `createdAt`, or `null` when it is not a time.
  *
- * `GenerationRecord.createdAt` is typed `number` and `parseRecord` rejects a
- * non-finite one, so the string and nullish arms are not reachable from a parsed
- * record today. They are here because this module is the renderer's only
- * arithmetic on that field and an unparseable value must produce an absent
- * timestamp rather than the string "Invalid Date" on a surface about money.
+ * 🔴 THE STRING AND NULLISH ARMS ARE DELETED, AND THE SIGNATURES NARROWED WITH THEM.
+ * They existed for an `AppWorkflow`-style ISO value and a missing field, and nothing
+ * ever passed either: the only callers are `History.tsx`, on
+ * `GenerationRecord.createdAt`, which is typed `number` and which `parseRecord` refuses
+ * unless it is finite. A widened parameter on a module the money surface renders from
+ * is a claim that those shapes arrive, and they do not.
+ *
+ * 🔴 THE FINITE CHECK STAYS, AND IT IS NOT THE SAME KIND OF DEAD CODE. `NaN` and
+ * `Infinity` are `number`s, so the type cannot exclude them; with the check gone, a
+ * `NaN` falls past every band — each comparison is false — and lands on
+ * `new Date(NaN).toLocaleString()`, i.e. the literal string "Invalid Date" on a row
+ * about the viewer's money. `parseRecord` happens to forbid it, but nothing in THIS
+ * module enforces that, and `null` here is what the callers' `??` fallbacks render as
+ * '—'.
  */
-function toEpochMs(value: number | string | null | undefined): number | null {
-  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
-  if (typeof value === 'string') {
-    const parsed = Date.parse(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
+function toEpochMs(value: number): number | null {
+  return Number.isFinite(value) ? value : null;
 }

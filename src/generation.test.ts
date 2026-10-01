@@ -23,7 +23,6 @@ import {
   isTerminalStatus,
   phaseForError,
   phaseForSnapshot,
-  spentAccountLabel,
   submitErrorReason,
   type GenPhase,
 } from './generation.js';
@@ -154,19 +153,15 @@ describe('buildWorkflowBody', () => {
   });
 });
 
-describe('accountLabel / spentAccountLabel', () => {
+describe('accountLabel', () => {
   it('labels each account choice', () => {
     expect(accountLabel('auto')).toBe('Auto');
     expect(accountLabel('blue')).toBe('Blue');
     expect(accountLabel('green')).toBe('Green');
     expect(accountLabel('yellow')).toBe('Yellow');
   });
-  it('spentAccountLabel is the pool label, or null when absent', () => {
-    expect(spentAccountLabel('yellow')).toBe('Yellow');
-    expect(spentAccountLabel('blue')).toBe('Blue');
-    expect(spentAccountLabel('green')).toBe('Green');
-    expect(spentAccountLabel(undefined)).toBeNull();
-  });
+  // `spentAccountLabel`'s case went with the function: it lost its only caller when
+  // `SpentAccountNote` was deleted, and a test was the only thing still exercising it.
 });
 
 describe('isDisallowedAccountError', () => {

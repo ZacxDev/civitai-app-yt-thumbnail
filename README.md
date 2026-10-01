@@ -313,16 +313,28 @@ from that same closure, so nothing the form does afterwards can reach a workflow
 already been submitted. `overallPhase` ranks `submitting` above `polling`, so a
 multi-format batch does not re-open the form until every one of its workflows is placed.
 
+🔴 **And that gate is only shut if nothing else can re-open it.** `yt-history-resume`
+("Reuse settings") is never disabled and clears the run table, which dropped
+`overallPhase` to `idle` and re-enabled Generate while the first batch's `submit()` was
+still open — a measured double submit, both batches charged. `onResume` now **refuses**
+while `isSubmittingPhase` holds, reading the same predicate the button does, and says so
+in the history note. It stays live through `polling`, which is the window the operator
+deliberately left clickable.
+
 🔴 **What makes a SECOND batch safe is not that gate — it is the batch-token split.** The
-old single `{ cancelled }` token answered three different questions with "stop", which was
-only correct because the form was dead through `polling` and so none of them was
-reachable. They are now separate:
+old single `{ cancelled }` token answered two different questions with "stop", which was
+only correct because the form was dead through `polling` and so neither was reachable.
+They are now separate:
 
 | question | mechanism | who sets it |
 |---|---|---|
-| may this batch still **submit**? | the token's `cancelled` | `switchMode`, `onResume` — neither has spent anything yet |
-| does `runs` belong to this batch? | `currentBatchRef.current === tok` | every new `runGeneration` |
-| is the component mounted? | `unmountedRef` | the unmount effect — the only thing that stops a poll loop |
+| is this the **current** batch — may it still submit, and does `runs` belong to it? | the token's `cancelled`, and `currentBatchRef.current === tok` | `switchMode` and `onResume` cancel (neither has spent anything yet); every new `runGeneration` takes ownership |
+| is the component mounted? | `unmountedRef` | the mount effect, which **resets it on setup as well as setting it in cleanup** — without the reset it latches under `<StrictMode>`, which is what `main.tsx` mounts |
+
+A separate `batchAbortRef` used to hold the token for the first question. It was assigned
+the same token on the same two lines and its only two readers nulled `currentBatchRef` on
+the very next line, so the pair could never disagree about anything observable; it is
+deleted rather than kept as a second name for one fact.
 
 A **superseded** batch therefore keeps polling and keeps folding its snapshots into
 `ownWorkflows` (keyed by workflowId, monotonic, collision-free), so its own history row
@@ -359,12 +371,22 @@ levels (a grid of batch rows, and a grid of images inside each row) the counts
 on an ultrawide block made it a sixteenth — about an 85px-wide 16:9 tile on a 1920px
 screen. Each level was individually correct, which is why a per-tier assertion could not
 see it. Now: rows are **full width at every tier**, and the thumbnail grid is
-**intrinsically sized** — `repeat(auto-fill, minmax(IMAGE_MIN_PX, 1fr))`, the same shape
-the format grid already used — so there is no tier arithmetic left to get wrong and no
-width at which a tile can be narrower than the floor, including a tier the SDK adds
-above `xl` later. `layout.resultColumns` is gone with it: nothing laid out from a column
-count any more. The skeleton grid shares the **same** helper call, so a landing picture
-cannot reflow its own row.
+**intrinsically sized** — `repeat(auto-fill, minmax(min(IMAGE_MIN_PX, 100%), 1fr))`, the
+same shape the format grid already used — so there is no tier arithmetic left to get
+wrong, including at a tier the SDK adds above `xl` later. `layout.resultColumns` is gone
+with it: nothing laid out from a column count any more. The skeleton grid shares the
+**same** helper call, so a landing picture cannot reflow its own row.
+
+🔴 **The `min(…, 100%)` on that floor is the narrow-tier fix, and the sentence it
+replaces was wrong in the useful direction.** This paragraph used to claim "no width at
+which a tile can be narrower than the floor" — which is exactly the bug: a bare
+`minmax(300px, 1fr)` is a HARD lower bound, so `auto-fill` drops to one column and then
+stops, and a container narrower than 300px gets a 300px track plus a horizontal
+overflow. Content width here is blockWidth − 68 (two 24px shell insets, two 10px panel
+insets), so a 360px phone has ~292px and the suite's own 361px base fixture has 293px.
+Clamping the floor to the container is the standard spelling. **Not visually verified:**
+jsdom lays nothing out, so the tests assert the style string and no test has seen the
+grid render inside 293px.
 
 🔴 **The per-row status badge is gone, in ALL states, by an explicit product decision —
 and it has a cost worth knowing.** A FAILED batch now looks much like a succeeded one at

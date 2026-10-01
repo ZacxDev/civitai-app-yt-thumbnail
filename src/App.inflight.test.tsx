@@ -1,5 +1,6 @@
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AppWorkflow, BlockWorkflowSnapshot } from '@civitai/app-sdk/blocks';
@@ -32,9 +33,10 @@ import type { AppWorkflow, BlockWorkflowSnapshot } from '@civitai/app-sdk/blocks
  *     base. Graded by mutation: see each case's own note.
  *   'two batches at once'                        INVARIANT GUARD, mutation-graded.
  *     The mutant is the line this change deleted —
- *     `if (batchAbortRef.current) batchAbortRef.current.cancelled = true` at the top
- *     of `runGeneration` — and restoring it turns the first batch's row into a
- *     permanent skeleton, which these cases fail on.
+ *     `if (currentBatchRef.current) currentBatchRef.current.cancelled = true` at the top
+ *     of `runGeneration` — and restoring it stops the first batch's row filling in (no
+ *     cost, no images, until a manual refresh re-reads the live page), which these cases
+ *     fail on.
  *   'Cancel'                                     INVARIANT GUARD, and it REFUTES the
  *     premise it was written to confirm. See that block's own note.
  *   'a record written by the OLD shape'          INVARIANT GUARD for the new optional
@@ -82,10 +84,16 @@ const refetchWorkflows = vi.fn();
 
 /** A tiny real KV, so a record WRITTEN in one assertion can be READ in the next. */
 const store = new Map<string, unknown>();
-const storageSet = vi.fn(async (key: string, value: unknown) => {
+/**
+ * The default `storage.set`, NAMED because two cases below replace it to observe the
+ * pool-patch write and `beforeEach` has to put this one back. `mockClear()` would
+ * leave the replacement installed for every later case in the file.
+ */
+const defaultStorageSet = async (key: string, value: unknown) => {
   store.set(key, value);
   return { ok: true };
-});
+};
+const storageSet = vi.fn(defaultStorageSet);
 
 /**
  * Mutable per-test state, read fresh on every render.
@@ -199,6 +207,7 @@ beforeEach(() => {
   pollFn.mockReset();
   cancelFn.mockReset();
   storageSet.mockClear();
+  storageSet.mockImplementation(defaultStorageSet);
   refetchWorkflows.mockClear();
   estimateFn.mockResolvedValue(snap({ workflowId: 'est', cost: { total: ESTIMATE } }));
   cancelFn.mockResolvedValue({ ok: true });
@@ -653,8 +662,14 @@ describe('yt-history-cancel — reachability', () => {
    * MATRIX: GREEN at `ea9b7d2` — measured, not assumed. It is therefore an INVARIANT
    * GUARD, NOT regression coverage, and must not be counted as a fixed bug. What it
    * guards is a real and plausible future mistake: re-wiring this `loading` to the
-   * generation `busy`, which WOULD make the button dead. The second case below is the
-   * mutation control for exactly that.
+   * generation `busy`, which WOULD make the button dead.
+   *
+   * 🔴 ONE CASE, NOT TWO. A first case asserted only that a running batch's Cancel is
+   * enabled and fires with that batch's id, and `App.history.test.tsx` and the
+   * two-batch block above both already cover that. The TWO-SIDED case below is the real
+   * content: it asserts enabled-then-disabled-then-enabled across one round trip, so a
+   * `loading` wired to the generation flag fails its first assertion and a `loading`
+   * wired to nothing fails its second. Only a per-row pending flag satisfies both.
    */
   beforeEach(() => {
     state.workflows = [
@@ -662,28 +677,14 @@ describe('yt-history-cancel — reachability', () => {
     ];
   });
 
-  it('a running batch has a Cancel that is ENABLED and fires with that batch’s id', async () => {
-    submitFn.mockResolvedValue(snap({ workflowId: 'wf-a', status: 'processing' }));
-    const user = userEvent.setup();
-    render(<App />);
-    await screen.findByTestId('pm-generate');
-    await generateAndPoll(user, 'a red bicycle');
-
-    const cancel = await screen.findByTestId('yt-history-cancel');
-    // Both halves: the ATTRIBUTE (a `loading` Button renders `disabled`) and the
-    // BEHAVIOUR (the click actually reaches the handler). The attribute alone would
-    // pass against a button whose onClick was never wired.
-    expect(cancel).toBeEnabled();
-    await user.click(cancel);
-    await waitFor(() => expect(cancelFn).toHaveBeenCalledWith('wf-a'));
-  });
-
   it('🔴 it goes into its spinner only for ITS OWN cancel round trip', async () => {
     // The mutation control for the report above: if `loading` were re-wired to the
     // generation `busy`, the button would be disabled from the moment it appeared and
     // the FIRST assertion here would fail. If it were wired to nothing, the button
     // would stay enabled through the round trip and the SECOND would fail. Only a
-    // per-row pending flag satisfies both.
+    // per-row pending flag satisfies both. The click reaching the handler at all is
+    // asserted by the `cancel requested` note at the end, so the deleted
+    // enabled-and-fires case added nothing this one does not already carry.
     let releaseCancel: () => void = () => {};
     cancelFn.mockImplementation(
       () =>
@@ -1080,5 +1081,294 @@ describe('🔴 pm-spent is gone in every state, and its information is on the ro
     ]) {
       expect(within(row).queryByText(word)).not.toBeInTheDocument();
     }
+  });
+});
+
+// ===========================================================================
+
+describe('🔴 the pool patch: no silent write loss, and no duplicate in-flight write', () => {
+  /**
+   * 🔴 BOTH OF THESE WERE WRITTEN DOWN AS "KNOWN AND ACCEPTED" AND THE OPERATOR
+   * WITHDREW THAT. They are two different defects in the one effect that teaches a
+   * stored record which Buzz pool funded it:
+   *
+   *   (1) SILENT WRITE LOSS. `recordFits` was checked at submit — where the record has
+   *       no `spentAccount` — and never again, so a row inside the 64 KB ceiling by
+   *       fewer bytes than the field costs was pushed over by its own pool colour, the
+   *       host rejected the write and the `.catch` swallowed it.
+   *   (2) DUPLICATE IN-FLIGHT `set`. `historyRecords` is both the effect's dependency
+   *       and what its `.then` sets, so anything that changed the list — a reload, a
+   *       prune — recomputed the same patch and re-issued a write whose first copy was
+   *       still open.
+   *
+   * The boundary arithmetic for (1) lives in `history.test.ts` against the pure
+   * `spendPatches`/`recordFits` pair; what this file adds is that the APP consults it
+   * and SAYS SO, which no pure test can see.
+   */
+  it('🔴 issues ONE patch write even when the record list changes under an open one', async () => {
+    // The cycle, driven: hold the patch write open, then make `historyRecords` change
+    // identity (the Show toggle re-reads storage) while it is still pending.
+    let releasePatch: () => void = () => {};
+    const patchWrites: unknown[] = [];
+    storageSet.mockImplementation(async (key: string, value: unknown) => {
+      if ((value as { spentAccount?: unknown }).spentAccount !== undefined) {
+        patchWrites.push(value);
+        await new Promise<void>((resolve) => {
+          releasePatch = resolve;
+        });
+        store.set(key, value);
+        return { ok: true };
+      }
+      store.set(key, value);
+      return { ok: true };
+    });
+    submitFn.mockResolvedValue(snap({ workflowId: 'wf-a', status: 'processing' }));
+    pollFn.mockImplementation(async (id) =>
+      snap({
+        workflowId: id,
+        status: 'succeeded',
+        cost: { total: COST_1 },
+        imageUrls: ['https://image.civitai.com/a.jpg'],
+        spentAccountType: 'yellow',
+      }),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+    await generateAndPoll(user, 'a red bicycle');
+
+    // POSITIVE CONTROL: the patch write was attempted at all. A zero here would make
+    // "exactly one" indistinguishable from an effect wired to nothing.
+    await waitFor(() => expect(patchWrites).toHaveLength(1), { timeout: 5000 });
+
+    // Now churn the list while that write is open: close and re-open the surface, which
+    // calls `loadHistory` and replaces `historyRecords` with a fresh array.
+    await user.click(screen.getByTestId('yt-history-toggle'));
+    await user.click(screen.getByTestId('yt-history-toggle'));
+    await user.click(screen.getByTestId('yt-history-toggle'));
+    await user.click(screen.getByTestId('yt-history-toggle'));
+
+    // Still exactly one. Pre-fix this is 2+ — one per list change.
+    expect(patchWrites).toHaveLength(1);
+    releasePatch();
+    await waitFor(() => expect(storedRecords()[0]?.spentAccount).toBe('yellow'));
+  });
+
+  it('🔴 a record the pool field would push over the 64 KB ceiling is NOT written silently', async () => {
+    // The row is seeded at the boundary rather than generated: a record only reaches
+    // this state by having FIT at submit and being pushed over by the patch, which is
+    // exactly what seeding reproduces. The pool still has to arrive the only way it
+    // can — on a polled snapshot for a workflow this session submitted — so the batch
+    // below is a real generation whose record is padded to the ceiling first.
+    const { STORAGE_VALUE_MAX_BYTES } = await import('./history.js');
+    const patchWrites: string[] = [];
+    storageSet.mockImplementation(async (key: string, value: unknown) => {
+      if ((value as { spentAccount?: unknown }).spentAccount !== undefined) patchWrites.push(key);
+      store.set(key, value);
+      return { ok: true };
+    });
+    submitFn.mockResolvedValue(snap({ workflowId: 'wf-a', status: 'processing' }));
+    pollFn.mockImplementation(async (id) =>
+      snap({
+        workflowId: id,
+        status: 'succeeded',
+        cost: { total: COST_1 },
+        imageUrls: ['https://image.civitai.com/a.jpg'],
+        spentAccountType: 'yellow',
+      }),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+    await generateAndPoll(user, 'a red bicycle');
+
+    // POSITIVE CONTROL first: the unpadded row DID get its patch written. Without this
+    // the refusal below could be an effect that never fires at all.
+    await waitFor(() => expect(storedRecords()[0]?.spentAccount).toBe('yellow'), {
+      timeout: 5000,
+    });
+    expect(patchWrites).toHaveLength(1);
+
+    // Now the same row, unstamped again and grown to sit exactly ON the ceiling —
+    // which is the only way a record reaches this state: it FIT at submit and the pool
+    // field is what pushes it over. Storage wins on a key collision, so a reload hands
+    // the app the padded copy.
+    const [key] = [...store.keys()].filter((k) => k.startsWith(HISTORY_PREFIX));
+    const grown = JSON.parse(JSON.stringify(store.get(key))) as GenerationRecord;
+    delete grown.spentAccount;
+    const naked = new TextEncoder().encode(JSON.stringify(grown)).length;
+    grown.form.formats[0].prompt += 'x'.repeat(STORAGE_VALUE_MAX_BYTES - naked);
+    store.set(key, grown);
+    patchWrites.length = 0;
+    // Re-read, so `historyRecords` carries the padded record and the effect re-runs.
+    await user.click(screen.getByTestId('yt-history-toggle'));
+    await user.click(screen.getByTestId('yt-history-toggle'));
+
+    // The write the host would refuse is NOT issued...
+    await waitFor(() =>
+      expect(screen.getByTestId('yt-history-note')).toHaveTextContent(/size limit/i),
+    );
+    expect(patchWrites).toEqual([]);
+    // ...and the row still renders its cost, because the MEMORY patch is unconditional.
+    const cost = await screen.findByTestId('yt-history-cost');
+    await waitFor(() =>
+      expect(within(cost).getByTestId('yt-history-bolt')).toHaveAttribute(
+        'data-buzz-type',
+        'yellow',
+      ),
+    );
+  });
+});
+
+// ===========================================================================
+
+describe('🔴 the generate path survives StrictMode — the shape main.tsx actually mounts', () => {
+  /**
+   * 🔴 NO OTHER CASE IN THIS REPO RENDERS THE SHAPE THAT SHIPS. `main.tsx` wraps its
+   * root in `<StrictMode>` and all three `<App/>` paths sit inside it, so React's dev
+   * build runs every effect setup -> cleanup -> setup on the SAME instance. An
+   * unmount-latch effect whose CLEANUP sets a ref and whose SETUP never resets it
+   * therefore latches at MOUNT, and `runGeneration`'s `unmountedRef` gate — which sits
+   * between the estimate pass and the submit pass — then returns on every click.
+   *
+   * 836 tests and a clean `tsc` could not see it because every single one of them
+   * rendered a BARE `<App />`. That is the structural blindness this case closes, and
+   * it is why it asserts the money path rather than a ref.
+   *
+   * MATRIX: red at `c109c526` — 1 estimate call, 0 submit calls, 0 stored records.
+   * Green with `unmountedRef.current = false` as the effect's setup.
+   *
+   * 🔴 THE ESTIMATE ASSERTION IS THE POSITIVE CONTROL and comes first on purpose: a
+   * zero-submit run is otherwise indistinguishable from a case whose click never
+   * landed at all.
+   */
+  it('a Generate click inside StrictMode reaches submit and writes its row', async () => {
+    submitFn.mockResolvedValue(snap({ workflowId: 'wf-a', status: 'processing' }));
+    const user = userEvent.setup();
+    render(
+      <StrictMode>
+        <App />
+      </StrictMode>,
+    );
+    await screen.findByTestId('pm-generate');
+    await user.clear(screen.getByLabelText(/prompt/i));
+    await user.type(screen.getByLabelText(/prompt/i), 'a red bicycle');
+    await user.click(screen.getByTestId('pm-generate'));
+
+    // POSITIVE CONTROL: the click really did reach the money path.
+    await waitFor(() => expect(estimateFn).toHaveBeenCalled());
+    // ...and it did not stop at the gate.
+    await waitFor(() => expect(submitFn).toHaveBeenCalled(), { timeout: 3000 });
+    // The row the viewer paid for exists too — getting past the gate is only worth
+    // something if the record that outlives the component was written.
+    await waitFor(() => expect(storedRecords()).toHaveLength(1));
+    expect(storedRecords()[0].workflowIds).toEqual(['wf-a']);
+  });
+});
+
+// ===========================================================================
+
+describe('🔴 Reuse settings cannot re-open the submit window', () => {
+  /**
+   * 🔴 THE ESCAPE PATH THE "that window stays shut" CLAIM DID NOT COVER.
+   * `generation.ts`'s `isSubmittingPhase` note says the estimating/submitting window
+   * stays shut, and the straight second click above proves the BUTTON honours it. But
+   * `yt-history-resume` is never disabled and calls `setRuns([])`, which drops
+   * `overallPhase` to `idle` — so `busy` went false and Generate re-enabled while the
+   * first batch's `submit()` was still open. Both batches then get a row and BOTH are
+   * charged.
+   *
+   * MATRIX: red at `c109c526` — after the Reuse click, Generate is ENABLED and the
+   * refusal note is absent. Green with the `isSubmittingPhase` gate in `onResume`.
+   *
+   * Two-sided on purpose: the second half proves the gate is a WINDOW and not a
+   * deletion of the control, which a mutant that simply returns early from `onResume`
+   * would fail.
+   */
+  const RESUMABLE = {
+    v: 1,
+    batchId: 'resumable-1',
+    createdAt: Date.parse('2026-09-30T12:00:00.000Z'),
+    workflowIds: ['wf-old'],
+    form: {
+      mode: 'generate',
+      prompt: 'a green tractor',
+      promptEdits: {},
+      formats: [
+        {
+          id: 'tractorcam',
+          label: 'Tractorcam',
+          suffix: 'bold',
+          prompt: 'a green tractor, bold',
+        },
+      ],
+      checkpoint: { versionId: 2880272, modelId: 2563220, label: 'ChatGPT Images', baseModel: 'OpenAI' },
+      loras: [],
+      // 4 rather than the app's default of 1, so "the resume actually happened" is
+      // observable on a control the second batch cannot also be showing.
+      quantity: 4,
+      account: 'yellow',
+      sourceImage: null,
+    },
+  };
+
+  beforeEach(() => {
+    store.set(`${HISTORY_PREFIX}98299999999999:resumable-1`, RESUMABLE);
+    state.workflows = [
+      {
+        workflowId: 'wf-old',
+        status: 'succeeded',
+        images: [{ url: 'https://image.civitai.com/old.jpg', width: 1536, height: 864, nsfwLevel: 1 }],
+        cost: COST_2,
+        createdAt: '2026-09-30T12:01:00.000Z',
+      },
+    ];
+  });
+
+  it('a Reuse click mid-submit is REFUSED, and says so — then works once the batch is placed', async () => {
+    let release: (s: BlockWorkflowSnapshot) => void = () => {};
+    submitFn.mockImplementation(
+      () =>
+        new Promise<BlockWorkflowSnapshot>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+    // The stored row renders (the surface auto-opens), so there is a Reuse to click.
+    await screen.findByTestId('yt-history-resume');
+
+    await user.clear(screen.getByLabelText(/prompt/i));
+    await user.type(screen.getByLabelText(/prompt/i), 'a red bicycle');
+    await user.click(screen.getByTestId('pm-generate'));
+    // Mid-submit: no workflow id exists yet, so the window is shut.
+    await waitFor(() => expect(screen.getByTestId('pm-generate')).toBeDisabled());
+    expect(submitFn).toHaveBeenCalledTimes(1);
+
+    // THE ESCAPE PATH.
+    await user.click(screen.getAllByTestId('yt-history-resume')[0]);
+
+    // It stays shut...
+    expect(screen.getByTestId('pm-generate')).toBeDisabled();
+    // ...the form was NOT refilled behind the viewer's back...
+    expect(screen.getByLabelText(/prompt/i)).toHaveValue('a red bicycle');
+    expect(screen.getByTestId('pm-quantity')).toHaveValue('1');
+    // ...and the refusal is stated rather than being a dead button.
+    expect(screen.getByTestId('yt-history-note')).toHaveTextContent(/still being placed/i);
+    // No second order was placed.
+    expect(submitFn).toHaveBeenCalledTimes(1);
+
+    // THE OTHER SIDE: once the workflow is accepted the window opens and Reuse works.
+    release(snap({ workflowId: 'wf-a', status: 'processing' }));
+    await waitFor(() => expect(screen.getByTestId('pm-generate')).toBeEnabled(), { timeout: 3000 });
+    const rows = screen.getAllByTestId('yt-history-row');
+    const resumable = rows.find((r) => (r.textContent ?? '').includes('Tractorcam'));
+    expect(resumable).toBeDefined();
+    await user.click(within(resumable as HTMLElement).getByTestId('yt-history-resume'));
+    await waitFor(() => expect(screen.getByLabelText(/prompt/i)).toHaveValue('a green tractor'));
+    expect(screen.getByTestId('pm-quantity')).toHaveValue('4');
+    // Still exactly one submit — Reuse never submits, before or after the gate.
+    expect(submitFn).toHaveBeenCalledTimes(1);
   });
 });

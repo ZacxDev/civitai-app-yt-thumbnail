@@ -130,21 +130,16 @@ describe('relativeTime — clock skew and bad input', () => {
     expect(relativeTime(NOW + 400 * DAY, NOW)).not.toMatch(/-/);
   });
 
-  it('returns null — never "Invalid Date" or "NaNm ago" — for a value that is not a time', () => {
-    expect(relativeTime(null, NOW)).toBeNull();
-    expect(relativeTime(undefined, NOW)).toBeNull();
+  it('returns null — never "Invalid Date" or "NaNm ago" — for a number that is not a time', () => {
+    // 🔴 THE REACHABLE HALF ONLY. `NaN` and `Infinity` are `number`s, so the parameter
+    // type cannot exclude them and the finite check really does run; the `null`/
+    // `undefined`/ISO-string cases that used to sit here were deleted with the
+    // widened signature — nothing ever passed any of them. Without the check a `NaN`
+    // falls past every band and lands on `new Date(NaN).toLocaleString()`, i.e. the
+    // string "Invalid Date" on a row about money.
     expect(relativeTime(Number.NaN, NOW)).toBeNull();
     expect(relativeTime(Number.POSITIVE_INFINITY, NOW)).toBeNull();
-    expect(relativeTime('not a date', NOW)).toBeNull();
-    expect(relativeTime('', NOW)).toBeNull();
-  });
-
-  it('accepts an ISO string as well as epoch ms, and agrees between the two', () => {
-    // `GenerationRecord.createdAt` is epoch ms, but `AppWorkflow.createdAt` is ISO
-    // and the two must not need two helpers.
-    const t = ago(42 * MINUTE);
-    expect(relativeTime(new Date(t).toISOString(), NOW)).toBe('42m ago');
-    expect(relativeTime(t, NOW)).toBe('42m ago');
+    expect(relativeTime(Number.NEGATIVE_INFINITY, NOW)).toBeNull();
   });
 });
 
@@ -161,9 +156,8 @@ describe('absoluteTime', () => {
     expect(absoluteTime(a)).not.toBe(absoluteTime(b));
   });
 
-  it('returns null for a value that is not a time', () => {
-    expect(absoluteTime(null)).toBeNull();
+  it('returns null for a number that is not a time', () => {
     expect(absoluteTime(Number.NaN)).toBeNull();
-    expect(absoluteTime('nope')).toBeNull();
+    expect(absoluteTime(Number.POSITIVE_INFINITY)).toBeNull();
   });
 });
