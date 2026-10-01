@@ -4,7 +4,6 @@ import {
   ACCOUNT_DEFAULT_ORDER,
   PROMPT_MAX,
   aggregateEstimate,
-  aggregateSpend,
   composePrompt,
   failedRuns,
   hasSubmittablePrompt,
@@ -15,7 +14,6 @@ import {
   patchRun,
   pickDefaultAccount,
   promptWasTruncated,
-  runCandidates,
   userPromptRoom,
   type FormatRun,
 } from './generation.js';
@@ -27,7 +25,7 @@ import {
  * 🔴 RED-AT-BASE MATRIX. Every symbol imported here is NEW in this change:
  * at the base ref (origin/main, e2c3108) `generation.ts` exported none of
  * `composePrompt`, `initRun(s)`, `patchRun`, `aggregateEstimate`,
- * `aggregateSpend`, `overallPhase`, `runCandidates`, `failedRuns`,
+ * `overallPhase`, `failedRuns`,
  * `isPartialFailure`, `pickDefaultAccount` or `ACCOUNT_DEFAULT_ORDER`. This file
  * therefore goes red at base on an IMPORT/undefined error, which is a VACUOUS
  * red and proves nothing.
@@ -252,32 +250,15 @@ describe('cost aggregation', () => {
     expect(aggregateEstimate(runs)).toEqual({ total: 13, partial: true });
   });
 
-  it('🔴 sums SPEND only from runs the server actually priced', () => {
-    const runs = [
-      run({ formatId: 'a', phase: 'succeeded', estimatedCost: 13, actualCost: 11 }),
-      // Failed before it ever cost anything — it must contribute NOTHING, and
-      // must NOT contribute its estimate.
-      run({ formatId: 'b', phase: 'failed', estimatedCost: 29, actualCost: null }),
-    ];
-    expect(aggregateSpend(runs)).toBe(11);
-  });
-
-  it('🔴 NEVER falls back to the estimate when no run reported a cost', () => {
-    // Every estimate is known here; if aggregateSpend ever read estimatedCost
-    // the answer would be 42 and the viewer would be told they spent Buzz that
-    // was never debited.
-    const runs = [
-      run({ formatId: 'a', phase: 'failed', estimatedCost: 13, actualCost: null }),
-      run({ formatId: 'b', phase: 'failed', estimatedCost: 29, actualCost: null }),
-    ];
-    expect(aggregateSpend(runs)).toBeNull();
-    expect(aggregateSpend(runs)).not.toBe(42);
-  });
-
-  it('counts a server-reported zero as zero, not as unknown', () => {
-    const runs = [run({ formatId: 'a', phase: 'succeeded', actualCost: 0 })];
-    expect(aggregateSpend(runs)).toBe(0);
-  });
+  // 🔴 THE THREE `aggregateSpend` CASES THAT STOOD HERE WERE DELETED WITH THE
+  // FUNCTION — its only caller was the `pm-spent` alert the operator asked to be
+  // removed. They pinned a MONEY rule ("never fall back to the estimate when no run
+  // reported a cost"), and that rule did not go with them: the realized cost is read
+  // off the history row now, where `joinHistory` applies the identical rule to the
+  // same server figures and `history.test.ts > joinHistory` grades it — including the
+  // `null`-when-nothing-priced arm and the server-reported-zero arm. Left as a note
+  // rather than silently: a reader looking for the spend rule needs to be sent to
+  // where it now lives.
 });
 
 // ---------------------------------------------------------------------------
@@ -359,31 +340,16 @@ describe('overall phase', () => {
 
 // ---------------------------------------------------------------------------
 
-describe('candidate merging', () => {
-  it('🔴 keeps a failed run from discarding the other runs images', () => {
-    const runs = [
-      run({ formatId: 'cine', label: 'Cinematic', phase: 'succeeded', imageUrls: ['c1', 'c2'] }),
-      run({ formatId: 'game', label: 'Gaming', phase: 'failed', imageUrls: [] }),
-      run({ formatId: 'tech', label: 'Tech', phase: 'succeeded', imageUrls: ['t1'] }),
-    ];
-    expect(runCandidates(runs)).toEqual([
-      { url: 'c1', formatId: 'cine', formatLabel: 'Cinematic' },
-      { url: 'c2', formatId: 'cine', formatLabel: 'Cinematic' },
-      { url: 't1', formatId: 'tech', formatLabel: 'Tech' },
-    ]);
-  });
-
-  it('tags every candidate with the format that produced it', () => {
-    const runs = [
-      run({ formatId: 'a', label: 'Alpha', phase: 'succeeded', imageUrls: ['x'] }),
-      run({ formatId: 'b', label: 'Beta', phase: 'succeeded', imageUrls: ['y'] }),
-    ];
-    const got = runCandidates(runs);
-    expect(got.map((c) => c.formatLabel)).toEqual(['Alpha', 'Beta']);
-    // The tag must track the URL, not the index — a mutant that reads the
-    // label off the wrong run is caught because the labels differ.
-    expect(got.find((c) => c.url === 'y')?.formatLabel).toBe('Beta');
-  });
+describe('run reduction — failures and partial failure', () => {
+  // 🔴 THE TWO `runCandidates` CASES THAT OPENED THIS BLOCK WERE DELETED WITH THE
+  // FUNCTION AND ITS `Candidate` TYPE. They pinned that a failed run does not discard
+  // its siblings' images and that every image keeps the label of the format that
+  // produced it. Both claims moved to `joinHistory`, which is now the only thing that
+  // flattens images for the screen: `history.test.ts` asserts that a workflow missing
+  // from the live page does not drop or shift anyone else's images, and that
+  // `imageLabels` is paired at the `workflowIds` index — a STRONGER version of the
+  // label claim, since indexing by image position is exactly the bug that saved a
+  // cinematic picture as `yt-thumbnail-clickbait-3.jpg`.
 
   it('lists the terminal non-successes for the partial-failure note', () => {
     const runs = [

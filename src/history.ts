@@ -37,7 +37,14 @@
 
 import type { AppWorkflow, BlockWorkflowSnapshot } from '@civitai/app-sdk/blocks';
 
-import { buildWorkflowBody, type AccountChoice, type SourceImage } from './generation.js';
+import type { BuzzAccountType } from '@civitai/app-sdk/blocks';
+
+import {
+  BUZZ_ACCOUNT_TYPES,
+  buildWorkflowBody,
+  type AccountChoice,
+  type SourceImage,
+} from './generation.js';
 import type { CheckpointOption, LoraOption } from './models.js';
 
 /** Key prefix for a stored generation record. Bumped if the shape changes. */
@@ -140,6 +147,34 @@ export interface GenerationRecord {
   /** The workflows this one click produced — the join key, and the grouping. */
   workflowIds: string[];
   form: GenerationForm;
+  /**
+   * The Buzz pool that PRIMARILY funded this batch, once the server has said.
+   *
+   * 🔴 OPTIONAL, AND IT HAS TO BE, FOR TWO INDEPENDENT REASONS. (1) Every record
+   * ALREADY IN A VIEWER'S STORAGE was written before this field existed, so
+   * `undefined` is the normal case for a row from yesterday and must render a
+   * NEUTRAL bolt rather than a guessed colour. (2) Even for a new batch it is
+   * unknown AT WRITE TIME: the record is written the moment workflow ids exist —
+   * before anything has run — while the pool arrives on a SUCCEEDED
+   * `BlockWorkflowSnapshot` (`spentAccountType`) seconds to minutes later. The App
+   * therefore patches it in afterwards (see {@link spendPatches}).
+   *
+   * 🔴 IT IS NOT `form.account`. `form.account` is the pool the viewer ASKED to
+   * spend from and can be `'auto'`; this is the pool the server actually debited
+   * most from, which can differ from the request (a gen covered mostly by
+   * free/earned Buzz reports `blue` whatever was picked). Colouring the bolt from
+   * the request would be a false statement about where the money came from.
+   *
+   * `undefined` = not known. The field is never written as `null`: an absent key
+   * costs nothing in the 64 KB budget and a stored `null` would have to mean
+   * exactly the same thing as its absence.
+   */
+  spentAccount?: BuzzAccountType;
+}
+
+/** Is this one of the three pools a block can be told about? */
+function isBuzzAccountType(value: unknown): value is BuzzAccountType {
+  return typeof value === 'string' && (BUZZ_ACCOUNT_TYPES as readonly string[]).includes(value);
 }
 
 /**
@@ -209,7 +244,155 @@ export function parseRecord(raw: unknown): GenerationRecord | null {
     createdAt: r.createdAt,
     workflowIds,
     form: f as unknown as GenerationForm,
+    // 🔴 AN UNRECOGNISED POOL IS DROPPED, NOT A REASON TO REFUSE THE ROW. This
+    // field is decoration on a row whose load-bearing half (the form, the ids) is
+    // already validated above, so a row carrying `spentAccount: 'red'` — a pool a
+    // block may not be told about — or a number, or a typo, still renders, still
+    // resumes, and simply gets the neutral bolt a row from before this field
+    // existed gets. Refusing it would delete a past generation over a colour.
+    ...(isBuzzAccountType(r.spentAccount) ? { spentAccount: r.spentAccount } : {}),
   };
+}
+
+/**
+ * The spent pool a batch's workflows AGREE on, or `null`.
+ *
+ * 🔴 AGREEMENT IS REQUIRED, AND `null` IS THE HONEST ANSWER WITHOUT IT. One click
+ * submits N workflows and the server clamps each one's funding INDEPENDENTLY, so a
+ * 3-format batch really can be funded from two different pools. Painting the row's
+ * bolt with one of them would be a false statement about where the viewer's money
+ * came from; a neutral bolt is not. This is the same rule `SpentAccountNote` used
+ * to apply to the alert this replaced, which is why it is one function and not two.
+ *
+ * Workflows with no pool reported yet are IGNORED rather than treated as
+ * disagreement — a batch whose second format is still running has one pool known
+ * and that is not a conflict.
+ *
+ * 🔴 AND NO LIVE CALLER DEPENDS ON THAT RULE — THE RENDER PATH THIS NOTE USED TO NAME
+ * DOES NOT EXIST. `joinHistory` never calls this function: it reads
+ * `record.spentAccount ?? null` straight off the stored row (see its `spentAccount:`
+ * line), so no render recomputes a provisional answer and nothing is "corrected when
+ * the second format reports". This function's ONLY caller in the app is `spendPatches`
+ * below, and that caller requires EVERY workflow in the batch to have reported before
+ * it calls here — so `pools[id]` is never `undefined` on the live path and the
+ * `pool !== undefined` test below is unreachable from production code.
+ *
+ * It is kept, and NOT as defence-in-depth: it IS the contract stated above rather than
+ * a guard over it. Without it `seen` would collect `undefined` as though it were a
+ * pool. Measured by deleting it and running the whole suite: exactly 2 of 841 cases red,
+ * both of them this function's own, and both with the predicted failures — a
+ * partly-reported batch returned `null` where `'blue'` is correct (a disagreement that
+ * is not there), and an all-unknown batch returned `undefined` where `null` is correct.
+ * Nothing else in the suite moved. So those unit tests are its only exercisers, and the
+ * alternative is not a simpler function but a differently-wrong one.
+ *
+ * The ignore rule is wrong for a WRITE, which is why `spendPatches` does not rely on
+ * this function alone: formats finish seconds apart, so the first answer is almost
+ * always the only answer, and a stamp is permanent. See its own note.
+ */
+export function agreedSpentPool(
+  workflowIds: readonly string[],
+  pools: Readonly<Record<string, BuzzAccountType>>,
+): BuzzAccountType | null {
+  const seen = new Set<BuzzAccountType>();
+  for (const id of workflowIds) {
+    const pool = pools[id];
+    if (pool !== undefined) seen.add(pool);
+  }
+  return seen.size === 1 ? [...seen][0] : null;
+}
+
+/** One row the caller should patch, plus whether storage will take the result. */
+export interface SpendPatch extends StoredRecord {
+  /**
+   * The patched record is past the host's per-value ceiling, so the `set` would be
+   * refused. The caller must still apply the patch IN MEMORY — that is what stops this
+   * function returning the row forever — and skip the write, saying so rather than
+   * letting the rejection disappear into a `.catch`.
+   */
+  tooLarge: boolean;
+}
+
+/**
+ * Records that can LEARN their spent pool from what the app has been told, each
+ * returned as the record it should become.
+ *
+ * Pure, and deliberately returns ONLY the rows that change: the caller writes one
+ * storage `set` per returned row, so a function that returned every record would
+ * rewrite a viewer's whole history on every render. An empty result is the steady
+ * state and is what makes the caller's effect terminate.
+ *
+ * A row that ALREADY carries a pool is never re-patched, even if the map now
+ * disagrees — the first thing the server said about a batch is the thing we
+ * recorded, and rewriting it would make the row's history depend on when it was
+ * last looked at.
+ *
+ * 🔴 SO EVERY WORKFLOW IN THE BATCH MUST HAVE REPORTED BEFORE ANYTHING IS WRITTEN, AND
+ * THAT IS WHAT MAKES THE NEVER-RE-PATCH RULE SAFE. `agreedSpentPool` ignores a workflow
+ * with no pool yet, which is correct for the render it was written for and wrong here:
+ * composed with "never re-patch", it stamped the row from whichever format reported
+ * FIRST — the normal timeline, since formats finish seconds apart — so a 2-format batch
+ * funded from two pools asserted ONE of them, permanently, on a surface about the
+ * viewer's money. Measured: patch `wf-a='blue'`, then learn `wf-b='yellow'`, and the row
+ * rendered its whole cost as `blue`. Requiring the full set is what keeps the honest
+ * neutral bolt reachable; `agreedSpentPool` then decides agreement, as before.
+ *
+ * It is NOT a terminal-status check, deliberately: this module has no status for a
+ * workflow the live page has not delivered yet, and a batch whose last format never
+ * reports simply keeps the neutral bolt — the same answer it has today while running.
+ *
+ * 🔴 AND THAT NEUTRAL BOLT IS THEN PERMANENT FOR THAT ROW. The app-side half is
+ * unconditional: a pool is recorded ONLY from a snapshot that actually carries
+ * `spentAccountType` (`App.tsx` `applySnapshotToRun`), so a workflow whose pool never
+ * arrives contributes nothing, `every` above holds the WHOLE batch back, and no write is
+ * ever made. There is no later repair: the pool map is session state filled only by the
+ * SUBMIT poll loop, which runs for the batch being submitted and never re-polls an older
+ * one. So after a reload the map starts empty and no unstamped row can learn its pool
+ * again, whatever ended it — the write only ever happens in the session that submitted
+ * the batch, while that batch's own poll loop is still running.
+ *
+ * That already makes one trigger CERTAIN and host-independent: a batch still running
+ * when the viewer reloads or closes the tab keeps the neutral bolt for good, because
+ * nothing will ever poll it again.
+ *
+ * ⚠ THE OTHER TWO SHAPES ARE HOST-DEPENDENT AND THE DEPENDENCE IS UNVERIFIED: the
+ * shipped `yt-history-cancel` button (`History.tsx`), and one format of a multi-format
+ * batch failing while its siblings succeed. Both reach this rule ONLY IF the host leaves
+ * `spentAccountType` off the terminal snapshot — and whether it does is untested here,
+ * because every test of this path runs against the MOCK host. Note the poll loop does
+ * keep running after a cancel until it sees a terminal status, so the app does get one
+ * more snapshot; the open question is purely what that snapshot carries. If the host
+ * stamps a pool on it, these two shapes largely disappear; if it does not, any
+ * multi-format batch with one casualty keeps a grey bolt forever. This note asserts
+ * neither.
+ *
+ * 🔴 ACCEPTED BY THE OPERATOR, with both alternatives on the table: treating a terminal
+ * non-success as "reported", or reverting to a memory-only colour. Neither was taken. A
+ * neutral bolt means "we do not know", which is TRUE in every shape above, and both
+ * alternatives trade that for a row that can assert the WRONG pool on a surface about
+ * the viewer's money. `history.test.ts` pins the rule so it stays deliberate rather than
+ * incidental — what it pins is the app's behaviour given a missing pool, not when the
+ * host leaves one missing.
+ *
+ * 🔴 AND THE 64 KB CEILING IS RE-CHECKED, because the pool field is what can cross it.
+ * `recordFits` was consulted once, at submit, where the record carries no
+ * `spentAccount`; `,"spentAccount":"yellow"` is enough to push a row that fit then over
+ * now. One rule in one place — `recordFits` — asked a second time, at the second write.
+ */
+export function spendPatches(
+  records: ReadonlyArray<StoredRecord>,
+  pools: Readonly<Record<string, BuzzAccountType>>,
+): SpendPatch[] {
+  const out: SpendPatch[] = [];
+  for (const entry of records) {
+    if (entry.record.spentAccount !== undefined) continue;
+    if (!entry.record.workflowIds.every((id) => pools[id] !== undefined)) continue;
+    const pool = agreedSpentPool(entry.record.workflowIds, pools);
+    if (pool === null) continue;
+    const record = { ...entry.record, spentAccount: pool };
+    out.push({ key: entry.key, record, tooLarge: !recordFits(record) });
+  }
+  return out;
 }
 
 /** Would this record fit the host's 64 KB per-value ceiling? */
@@ -307,6 +490,14 @@ export interface HistoryEntry {
   imageLabels: Array<string | null>;
   /** Summed realized cost over the workflows that reported one; `null` when none did. */
   cost: number | null;
+  /**
+   * The pool that funded this batch, straight off the stored record — `null` for a
+   * row written before the field existed, for a batch still running, and for a
+   * batch whose workflows were funded from different pools. See
+   * {@link GenerationRecord.spentAccount}; the row paints a NEUTRAL bolt for all
+   * three, because none of them is "a different pool".
+   */
+  spentAccount: BuzzAccountType | null;
   /** True when the live queue knows nothing about ANY of this batch's workflows. */
   unavailable: boolean;
   /** Workflow ids that are still cancellable (pending/processing). */
@@ -402,6 +593,11 @@ export function joinHistory(
       imageUrls: found.flatMap((w) => w.images.map((i) => i.url)),
       imageLabels: paired.flatMap((p) => p.w.images.map(() => p.label)),
       cost: costs.length === 0 ? null : costs.reduce((sum, w) => sum + (w.cost as number), 0),
+      // From the RECORD, not the live half: `AppWorkflow` carries no funding
+      // information at all (the host drops "transactions" from the projection), so
+      // the stored row is the only place this can come from. `undefined` -> `null`
+      // so the renderer has one absent value to branch on.
+      spentAccount: record.spentAccount ?? null,
       unavailable: found.length === 0,
       cancellableIds: found
         .filter((w) => w.status === 'pending' || w.status === 'processing')
@@ -487,8 +683,12 @@ export function upsertOwnWorkflow(
  *           and dropping ours there hides output the viewer PAID for.
  *   cost    the page's number wins when it has one; ours fills a `null`. BOTH are
  *           the server's own figure (`snapshot.cost.total` / the projection), so
- *           neither is an estimate — see aggregateSpend's note on why an estimate
- *           may never stand in for a realized cost.
+ *           neither is an ESTIMATE, and an estimate may never stand in for a realized
+ *           cost: it prices the workflows that were ASKED for, which includes any that
+ *           failed and were never charged. `null` here means "not told yet", never
+ *           "free", and the row renders `—` for it. (This used to defer to
+ *           `aggregateSpend`'s note; that function was deleted with the `pm-spent`
+ *           alert, so the reason is stated here instead of pointed at.)
  *   status  a TERMINAL status wins over a non-terminal one, whichever side holds
  *           it. A stale page saying `processing` about a workflow we have already
  *           watched succeed would show a permanent skeleton; the reverse (our
@@ -625,42 +825,14 @@ export function oldestWorkflowTime(workflows: readonly AppWorkflow[]): number | 
   return oldest;
 }
 
-/** Human label for a batch status badge. */
-export function batchStatusLabel(status: BatchStatus): string {
-  switch (status) {
-    case 'running':
-      return 'Running';
-    case 'succeeded':
-      return 'Done';
-    case 'partial':
-      return 'Partly done';
-    case 'failed':
-      return 'Failed';
-    case 'expired':
-      return 'Expired';
-    case 'canceled':
-      return 'Canceled';
-    case 'unavailable':
-      return 'Images no longer available';
-  }
-}
-
-/** Badge colour for a batch status (the W6 pack's colour names). */
-export function batchStatusColor(status: BatchStatus): 'info' | 'success' | 'warning' | 'error' {
-  switch (status) {
-    case 'running':
-      return 'info';
-    case 'succeeded':
-      return 'success';
-    case 'partial':
-    case 'expired':
-    case 'canceled':
-    case 'unavailable':
-      return 'warning';
-    case 'failed':
-      return 'error';
-  }
-}
+// 🔴 `batchStatusLabel` AND `batchStatusColor` ARE GONE, DELIBERATELY AND WITH
+// THEIR TESTS. They existed for ONE caller — the status Badge on each history row —
+// and the operator asked for that badge to be removed in ALL states (see the
+// tradeoff note in `History.tsx`'s `HistoryRow`). Keeping two exported functions
+// and ~10 assertions about strings nothing renders would read as coverage of a
+// surface that no longer exists, which is worse than no coverage: it stops the next
+// person looking. `batchStatus` itself STAYS — `entry.status` still decides whether
+// a row shows skeletons.
 
 /**
  * A filename for a saved candidate. The host's Save As uses it verbatim, so it is

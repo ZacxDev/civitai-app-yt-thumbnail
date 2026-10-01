@@ -158,6 +158,7 @@ vi.mock('@civitai/blocks-react', () => ({
 }));
 
 const { App } = await import('./App.js');
+const { IMAGE_MIN_PX } = await import('./ui-styles.js');
 const { historyKey } = await import('./history.js');
 
 const RECORD_KEY = historyKey(RECORD.createdAt, RECORD.batchId);
@@ -344,7 +345,10 @@ describe('the history surface — a batch that is still running', () => {
     await openHistory(user);
 
     const row = await screen.findByTestId('yt-history-row');
-    expect(within(row).getByText('Running')).toBeInTheDocument();
+    // 🔴 NO 'Running' BADGE — the status badge was removed in ALL states. The skeleton
+    // count below IS the running signal now, which is the stronger claim anyway: it
+    // says how much is still coming, not merely that something is.
+    expect(within(row).queryByText('Running')).not.toBeInTheDocument();
     expect(within(row).getAllByTestId('yt-history-skeleton-tile')).toHaveLength(3);
     // No images yet, and no image GRID either — an empty grid would collapse the row.
     expect(within(row).queryByTestId('yt-history-img')).not.toBeInTheDocument();
@@ -408,16 +412,27 @@ describe('the history surface — a batch that is still running', () => {
     const row = await screen.findByTestId('yt-history-row');
     expect(within(row).getAllByTestId('yt-history-img')).toHaveLength(2);
     expect(within(row).getAllByTestId('yt-history-skeleton-tile')).toHaveLength(4);
-    // Running outranks done: there is still something to cancel.
-    expect(within(row).getByText('Running')).toBeInTheDocument();
+    // Running outranks done: there is still something to cancel. Asserted on the
+    // CANCEL BUTTON rather than on the badge word, which is gone in all states — and
+    // the button is the better witness, because it is the thing the status enables.
+    expect(within(row).getByTestId('yt-history-cancel')).toBeInTheDocument();
   });
 
-  it('the rows are a GRID, and the images inside them use the same column rule', async () => {
+  it('🔴 the rows are FULL WIDTH and the images are INTRINSICALLY sized, not counted', async () => {
     /**
-     * Not "the rows have a class": the assertion is that BOTH containers carry the
-     * template `galleryStyle(layout)` produces, which is the whole reason the results
-     * grid and the history rows were made one surface. `responsive.test.tsx` walks the
-     * four widths; this only pins that a row is a grid at all, at the base tier.
+     * 🔴 THIS ASSERTION INVERTED, AND THE INVERSION IS THE BUG FIX. It used to require
+     * the two containers to carry the SAME `galleryStyle(layout)` template — rows and
+     * images both `repeat(resultColumns, …)` — which is exactly what made the counts
+     * MULTIPLY: 3 columns of rows × 3 columns of images = each thumbnail a ninth of
+     * the main column, 4 × 4 = a sixteenth (~85px wide on a 1920px screen). They are
+     * now deliberately DIFFERENT rules, and the pair below is what stops either half
+     * regressing: one row per line, and an image grid whose column is a CLAMPED px
+     * floor instead of a count. `responsive.test.tsx` walks four widths to show the
+     * floor is tier-independent and carries the arithmetic behind the clamp; this pins
+     * the shape at the base tier.
+     *
+     * jsdom lays nothing out, so this is a claim about the STYLE CONTRACT, not about
+     * any rendered tile size and not about a measured overflow.
      */
     stockStorage([{ key: RECORD_KEY, value: { ...RECORD, workflowIds: ['wf-done'] } }]);
     state.workflows = [DONE_WORKFLOW];
@@ -428,7 +443,52 @@ describe('the history surface — a batch that is still running', () => {
     await screen.findByTestId('yt-history-row');
     const rows = screen.getByTestId('yt-history-grid');
     const images = screen.getByTestId('yt-history-images');
-    expect(rows.style.gridTemplateColumns).toBe('repeat(1, minmax(0, 1fr))');
-    expect(images.style.gridTemplateColumns).toBe(rows.style.gridTemplateColumns);
+    expect(rows.style.gridTemplateColumns).toBe('minmax(0, 1fr)');
+    expect(images.style.gridTemplateColumns).toBe(
+      `repeat(auto-fill, minmax(min(${IMAGE_MIN_PX}px, 100%), 1fr))`,
+    );
+    // The two rules are NOT the same any more — asserted explicitly, because them
+    // being the same is the defect.
+    expect(images.style.gridTemplateColumns).not.toBe(rows.style.gridTemplateColumns);
+    // And no column COUNT survives anywhere in either: a `repeat(<digit>, …)` here is
+    // the old multiplying rule coming back under any name.
+    expect(rows.style.gridTemplateColumns).not.toMatch(/repeat\(\s*\d/);
+    expect(images.style.gridTemplateColumns).not.toMatch(/repeat\(\s*\d/);
+  });
+
+  it('🔴 the SKELETON grid is sized identically to the IMAGE grid, so a landing picture cannot reflow the row', async () => {
+    // The invariant `ui-styles.ts` claims and the reason both call sites share ONE
+    // no-argument helper. A partly-delivered batch is the only state where both grids
+    // are on screen at once, so it is the only state in which this can be measured.
+    stockStorage([
+      {
+        key: RECORD_KEY,
+        value: {
+          ...RECORD,
+          workflowIds: ['wf-done', 'wf-running'],
+          form: {
+            ...RECORD.form,
+            formats: [
+              RECORD.form.formats[0],
+              { id: 'minimal', label: 'Minimal', suffix: 'clean', prompt: 'a red bicycle, clean' },
+            ],
+          },
+        },
+      },
+    ]);
+    state.workflows = [DONE_WORKFLOW, RUNNING_WORKFLOW];
+    const user = userEvent.setup();
+    render(<App />);
+    await openHistory(user);
+
+    await screen.findByTestId('yt-history-row');
+    const images = screen.getByTestId('yt-history-images');
+    const skeleton = screen.getByTestId('yt-history-skeleton');
+    expect(skeleton.style.gridTemplateColumns).toBe(images.style.gridTemplateColumns);
+    // Not vacuous: both are the real intrinsic template, not two empty strings.
+    expect(skeleton.style.gridTemplateColumns).toBe(
+      `repeat(auto-fill, minmax(min(${IMAGE_MIN_PX}px, 100%), 1fr))`,
+    );
+    expect(skeleton.style.gap).toBe(images.style.gap);
   });
 });

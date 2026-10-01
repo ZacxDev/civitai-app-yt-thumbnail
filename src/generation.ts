@@ -278,17 +278,12 @@ export function accountLabel(choice: AccountChoice): string {
   }
 }
 
-/**
- * Label the pool that PRIMARILY funded a generation
- * (`BlockWorkflowSnapshot.spentAccountType`). This is the largest-debit account,
- * NOT necessarily "the paid account": a gen covered mostly by free/earned Buzz
- * reports `blue`. `undefined` (a host predating the field, or no spend) -> null,
- * so the caller can skip the "funded from…" note.
- */
-export function spentAccountLabel(spent: BuzzAccountType | undefined): string | null {
-  if (!spent) return null;
-  return accountLabel(spent);
-}
+// 🔴 `spentAccountLabel` IS GONE WITH `SpentAccountNote`, ITS ONLY CALLER. It mapped a
+// `BlockWorkflowSnapshot.spentAccountType` to a label and `undefined` to `null` so the
+// alert could skip its "funded from…" line. The history row's `CostCell` asks
+// `accountLabel` directly off a pool it has already established is non-null, so the
+// nullable wrapper had no second user — only a test. Kept as an uncalled export it would
+// have been a second answer to a question `accountLabel` already answers.
 
 /**
  * Mirror of the manifest's `page.buzzBudgetPerGen`. MUST be kept in sync with
@@ -509,9 +504,39 @@ export type GenPhase =
   | 'insufficient'
   | 'account-rejected';
 
-/** Is a generation in flight (Generate should be disabled / show progress)? */
-export function isBusyPhase(phase: GenPhase): boolean {
-  return phase === 'estimating' || phase === 'submitting' || phase === 'polling';
+/**
+ * Is the click still being PLACED — i.e. is there a window in which clicking
+ * Generate again could double-submit the same intent?
+ *
+ * 🔴 THIS REPLACED `isBusyPhase`, WHICH ALSO INCLUDED `'polling'`, AND THE
+ * DIFFERENCE IS THE WHOLE POINT. `polling` means every workflow this click
+ * produces has already been accepted by the orchestrator and already has a price:
+ * nothing the form does from that moment can change what is in flight, because
+ * `runGeneration` built its bodies from ONE `formSnapshot` closure taken at click
+ * time (see App.tsx). Disabling the form through `polling` therefore bought no
+ * safety at all — it just locked the viewer out of the app for the 30–90s a
+ * generation takes, which is exactly when they want to line up the next one.
+ *
+ * `estimating`/`submitting` are different: a request is mid-flight WITHOUT a
+ * workflow id, so a second click there really can place a second order for the
+ * same intent before the first is visible anywhere. That window stays shut.
+ *
+ * `overallPhase` ranks `submitting` ABOVE `polling`, so a multi-format batch
+ * whose first format is already polling while its third is still submitting
+ * reports `submitting` — the gate does not open until every workflow is placed.
+ *
+ * 🔴 "STAYS SHUT" IS A CLAIM ABOUT EVERY WAY `runs` CAN BE CLEARED, NOT JUST ABOUT THE
+ * BUTTON, AND IT WAS FALSE WHEN THIS SENTENCE WAS FIRST WRITTEN. The phase is derived
+ * from `runs`, so ANYTHING that empties `runs` re-opens the window: `App.tsx`'s
+ * `yt-history-resume` is never disabled and calls `setRuns([])`, which dropped the phase
+ * to `idle` and re-enabled Generate while the first batch's `submit()` was still in
+ * flight — a measured double submit, with both batches charged. The two clearers are
+ * `switchMode` (gated by the control's own `disabled`) and `onResume` (now gated on this
+ * predicate itself). A third clearer added later re-opens it again, so check this list
+ * before adding one.
+ */
+export function isSubmittingPhase(phase: GenPhase): boolean {
+  return phase === 'estimating' || phase === 'submitting';
 }
 
 /**
@@ -575,7 +600,11 @@ export interface FormatRun {
   estimatedCost: number | null;
   /** What the SERVER reported this run cost. `null` until it reports one. */
   actualCost: number | null;
-  spentAccount: BuzzAccountType | null;
+  // 🔴 NO `spentAccount` HERE. It was written from every succeeded snapshot and read by
+  // nothing once the `pm-spent` alert went: the funding pool now lives on the stored
+  // RECORD (`GenerationRecord.spentAccount`), because it has to survive a reload, and
+  // `spentPools` is what carries it from the snapshot to that record. A per-run copy was
+  // a second place for the same fact that no surface consulted.
   workflowId: string | null;
   imageUrls: string[];
   error: string | null;
@@ -589,7 +618,6 @@ export function initRun(formatId: string, label: string): FormatRun {
     phase: 'idle',
     estimatedCost: null,
     actualCost: null,
-    spentAccount: null,
     workflowId: null,
     imageUrls: [],
     error: null,
@@ -677,20 +705,15 @@ export function estimateSignature(input: {
   ]);
 }
 
-/**
- * What was ACTUALLY spent, summed from the runs the SERVER reported a cost for.
- *
- * 🔴 NEVER falls back to the estimate. On a partial failure the estimate covers
- * workflows that never ran, so reporting it as spend would overstate the bill;
- * `null` (rendered as '—') is the honest answer when the server has told us
- * nothing yet. A run the server priced at 0 contributes 0 — that is the
- * server's word, not a guess of ours.
- */
-export function aggregateSpend(runs: readonly FormatRun[]): number | null {
-  const known = runs.filter((r) => r.actualCost != null && Number.isFinite(r.actualCost));
-  if (known.length === 0) return null;
-  return known.reduce((sum, r) => sum + (r.actualCost as number), 0);
-}
+// 🔴 `aggregateSpend` IS GONE WITH THE `pm-spent` ALERT THAT WAS ITS ONLY CALLER,
+// AND ITS RULE WENT WITH IT RATHER THAN BEING DROPPED. It summed realized cost
+// across `runs` and NEVER fell back to the estimate, because on a partial failure
+// the estimate covers workflows that never ran. The realized cost is now read off
+// the history row instead, where `joinHistory` applies the identical rule to the
+// same server figures — it sums only `AppWorkflow.cost` values that are finite
+// numbers and yields `null` (rendered '—') otherwise — and `history.test.ts` grades
+// it there. Keeping a second, uncalled summer of the same money would be two
+// answers to one question with only one of them on screen.
 
 /**
  * Collapse N run phases into the ONE phase the page chrome renders.
@@ -719,27 +742,15 @@ export function overallPhase(runs: readonly FormatRun[]): GenPhase {
   return 'idle';
 }
 
-/** One generated image, tagged with the format that produced it. */
-export interface Candidate {
-  url: string;
-  formatId: string;
-  formatLabel: string;
-}
-
-/**
- * Every image from every run, flattened into one gallery in run order and
- * tagged with its format. Runs that failed simply contribute nothing — they do
- * not remove anyone else's results.
- */
-export function runCandidates(runs: readonly FormatRun[]): Candidate[] {
-  const out: Candidate[] = [];
-  for (const r of runs) {
-    for (const url of r.imageUrls) {
-      out.push({ url, formatId: r.formatId, formatLabel: r.label });
-    }
-  }
-  return out;
-}
+// 🔴 `Candidate` AND `runCandidates` ARE GONE. They flattened `runs` into one
+// tagged gallery for the candidate grid, which was deleted when the results and
+// history surfaces merged (the grid was a SECOND rendering of images that `runs`
+// resets on every click, so a second Generate erased the first run's pictures).
+// Their last caller was the `pm-spent` alert's `candidates.length > 0` gate, which
+// the operator asked to be removed. The images and their per-format labels come off
+// `joinHistory` now — `imageUrls` paired with `imageLabels` at the `workflowIds`
+// index, which is the pairing that fixed the wrong-filename bug a flatten over
+// `runs` could not express.
 
 /** The runs that ended in a terminal non-success, for the partial-failure note. */
 export function failedRuns(runs: readonly FormatRun[]): FormatRun[] {

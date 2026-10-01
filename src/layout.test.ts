@@ -61,7 +61,6 @@ const CASES: readonly Case[] = [
       ultrawide: false,
       maxWidth: 640,
       formatMinCardPx: 124,
-      resultColumns: 1,
       rail: false,
       railWidth: 0,
       heroMinHeight: 104,
@@ -79,7 +78,6 @@ const CASES: readonly Case[] = [
       ultrawide: false,
       maxWidth: 640,
       formatMinCardPx: 124,
-      resultColumns: 1,
       rail: false,
       railWidth: 0,
       heroMinHeight: 104,
@@ -97,7 +95,6 @@ const CASES: readonly Case[] = [
       ultrawide: false,
       maxWidth: 1184,
       formatMinCardPx: 160,
-      resultColumns: 2,
       rail: false,
       railWidth: 0,
       heroMinHeight: 104,
@@ -115,7 +112,6 @@ const CASES: readonly Case[] = [
       ultrawide: false,
       maxWidth: 1184,
       formatMinCardPx: 160,
-      resultColumns: 2,
       rail: false,
       railWidth: 0,
       heroMinHeight: 104,
@@ -133,7 +129,6 @@ const CASES: readonly Case[] = [
       ultrawide: false,
       maxWidth: null,
       formatMinCardPx: 200,
-      resultColumns: 3,
       rail: true,
       railWidth: 340,
       heroMinHeight: 132,
@@ -151,7 +146,6 @@ const CASES: readonly Case[] = [
       ultrawide: false,
       maxWidth: null,
       formatMinCardPx: 200,
-      resultColumns: 3,
       rail: true,
       railWidth: 340,
       heroMinHeight: 132,
@@ -169,7 +163,6 @@ const CASES: readonly Case[] = [
       ultrawide: true,
       maxWidth: null,
       formatMinCardPx: 220,
-      resultColumns: 4,
       rail: true,
       railWidth: 400,
       heroMinHeight: 132,
@@ -223,13 +216,16 @@ describe('layoutForTier', () => {
         // And it is ignored ALL THE WAY DOWN, not just in the echoed flag: the
         // 4-column/400px-rail branch must be unreachable from a sub-xl tier.
         expect(clamped).toEqual(layoutForTier(tier, false));
-        expect(clamped.resultColumns).not.toBe(4);
+        // Two independent ultrawide-only numbers, so this is not one coincidence.
+        // (`resultColumns` used to be the third; it is gone — the thumbnail grid is
+        // intrinsically sized now and nothing lays out from a per-tier count.)
+        expect(clamped.formatMinCardPx).not.toBe(220);
         expect(clamped.railWidth).not.toBe(400);
       },
     );
 
     it('ultrawide=true at xl is honoured', () => {
-      expect(layoutForTier('xl', true).resultColumns).toBe(4);
+      expect(layoutForTier('xl', true).formatMinCardPx).toBe(220);
       expect(layoutForTier('xl', true).railWidth).toBe(400);
     });
 
@@ -278,16 +274,22 @@ describe('layoutForTier', () => {
       for (const l of all) expect(l.heroMinHeight).toBeGreaterThan(81);
     });
 
-    it('columns and card size never DECREASE as the block gets wider', () => {
+    it('card size never DECREASES as the block gets wider', () => {
+      // 🔴 `resultColumns` WAS THE OTHER HALF OF THIS AND IS GONE WITH THE FIELD.
+      // It ran 1/1/2/2/3/3/4 and the thumbnail grid laid out from it — which is what
+      // multiplied with the history ROW grid and squeezed a thumbnail down to a
+      // sixteenth of the main column. The thumbnail grid is now `auto-fill` with a
+      // tier-INDEPENDENT floor (`IMAGE_MIN_PX`), so there is no per-tier count left
+      // to grade a ladder on; `responsive.test.tsx` asserts the floor is identical at
+      // four widths instead, which is the replacement claim.
       for (let i = 1; i < all.length; i += 1) {
-        expect(all[i].resultColumns).toBeGreaterThanOrEqual(all[i - 1].resultColumns);
         expect(all[i].formatMinCardPx).toBeGreaterThanOrEqual(all[i - 1].formatMinCardPx);
       }
       // And it is not a flat ladder — a monotonicity check over seven equal values
       // passes vacuously.
-      expect(all[0].resultColumns).toBe(1);
-      expect(all[all.length - 1].resultColumns).toBe(4);
-      expect(new Set(all.map((l) => l.resultColumns)).size).toBe(4);
+      expect(all[0].formatMinCardPx).toBe(124);
+      expect(all[all.length - 1].formatMinCardPx).toBe(220);
+      expect(new Set(all.map((l) => l.formatMinCardPx)).size).toBe(4);
     });
 
     it('the TWO-column cap cannot gutter, at ANY width inside its own tiers', () => {
@@ -392,7 +394,7 @@ describe('layoutForTier', () => {
       // correct the day the SDK appends one rather than the day someone notices.
       const future = layoutForTier('2xl' as BlockSizeTier, true);
       expect(future.rail).toBe(true);
-      expect(future.resultColumns).toBe(4);
+      expect(future.formatMinCardPx).toBe(220);
       expect(future.railWidth).toBe(400);
       expect(future.ultrawide).toBe(true);
 
@@ -405,7 +407,7 @@ describe('layoutForTier', () => {
       // The other direction, and the reason "any tier that gets the rail" is not the
       // fix: `lg` spans 1184–1439, so no block ≥ULTRAWIDE_MIN ever reports it.
       expect(resolveBlockTier(ULTRAWIDE_MIN)).not.toBe('lg');
-      expect(layoutForTier('lg', true).resultColumns).toBe(3);
+      expect(layoutForTier('lg', true).formatMinCardPx).toBe(200);
       expect(layoutForTier('lg', true).railWidth).toBe(340);
       expect(layoutForTier('lg', true).ultrawide).toBe(false);
     });
