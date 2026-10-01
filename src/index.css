@@ -23,6 +23,34 @@ body {
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
 }
 
+/* A PENDING IMAGE TILE'S PULSE. The tile's box and its two colours come from
+   `skeletonTileStyle` (ui-styles.ts) off the app Palette; only the ANIMATION is
+   here, because keyframes cannot be expressed as an inline style. Deliberately
+   colourless, so there is no second copy of a palette value to keep in step.
+
+   Honoured, not assumed: a viewer who asked for reduced motion gets the same
+   static tile — a batch of four pulsing rectangles is exactly the kind of
+   repetitive movement that setting exists for. */
+@keyframes yt-skeleton-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.yt-skeleton {
+  animation: yt-skeleton-pulse 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .yt-skeleton {
+    animation: none;
+  }
+}
+
 /* Focus affordance for any raw textarea/button (the W6 /ui pack styles its own
    controls).
 
@@ -44,9 +72,11 @@ body {
    "inherit the text colour" is visible in both themes where a hardcoded hex would
    not be.
 
-   The rule is REACHABLE, not decorative. The app draws four raw controls itself: the
-   format card's checkbox button and the look-suffix <textarea> (FormatPicker.tsx),
-   and the images-per-format and Buzz-account radio buttons (App.tsx). Whether this
+   The rule is REACHABLE, not decorative. The app draws these raw controls itself: the
+   format card's checkbox button and the look-suffix <textarea> (FormatPicker.tsx), and
+   the Buzz-account trigger plus its menu items (App.tsx). Images-per-format used to be
+   a row of raw radio pills and is now the pack's <Select>, which styles its own focus —
+   so that surface left this rule's reach when it became a dropdown. Whether this
    outline also wins over the W6 pack's own focus styling on the PACK's components is
    not measured — jsdom performs no cascade — and is not claimed here.
 

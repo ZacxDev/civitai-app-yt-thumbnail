@@ -24,13 +24,14 @@ import {
   Card,
   Group,
   SegmentedControl,
+  Select,
   Slider,
   Stack,
   Textarea,
   TextInput,
   injectBlocksStyles,
 } from '@civitai/blocks-react/ui';
-import type { BlockWorkflowSnapshot, BuzzAccountType } from '@civitai/app-sdk/blocks';
+import type { AppWorkflow, BlockWorkflowSnapshot, BuzzAccountType } from '@civitai/app-sdk/blocks';
 
 import {
   ACCOUNT_CHOICES,
@@ -43,6 +44,7 @@ import {
   clampQuantity,
   clearPromptEdit,
   effectivePrompt,
+  estimateSignature,
   failedRuns,
   formatCost,
   hasBudgetedScope,
@@ -100,6 +102,7 @@ import {
   checkpointFromPick,
   familyHasLoras,
   loraFromPick,
+  lorasForCheckpoint,
   removeLora,
   setLoraWeight,
   type CheckpointOption,
@@ -120,21 +123,25 @@ import {
   HISTORY_PAGE_SIZE,
   HISTORY_PREFIX,
   batchBodies,
-  batchStatusColor,
-  batchStatusLabel,
   candidateFileName,
   historyKey,
   joinHistory,
+  mergeLiveWorkflows,
+  mergeUnsavedRecords,
   oldestWorkflowTime,
   orphanedKeys,
   parseRecord,
   recordFits,
+  upsertOwnWorkflow,
   type GenerationForm,
   type GenerationRecord,
   type HistoryEntry,
+  type StoredRecord,
 } from './history.js';
+import { HistorySurface } from './History.js';
 import { layoutForTier, type BlockLayout } from './layout.js';
 import { BUZZ_TYPE_COLOR, paletteFor, parseHex, type Palette } from './palette.js';
+import { fieldDescStyle, fieldLabelStyle, fieldStyle, panelRowStyle } from './ui-styles.js';
 import { useUltrawide } from './useUltrawide.js';
 
 /**
@@ -148,6 +155,32 @@ import { useUltrawide } from './useUltrawide.js';
  * checkpoint/LoRA picks, and the Buzz account picker; only the body differs.
  */
 type GenMode = 'generate' | 'remix';
+
+/**
+ * How long the live cost preview waits after the last price-relevant change before
+ * asking the server.
+ *
+ * 🔴 IT IS A RATE LIMIT ON SOMEONE ELSE'S BACKEND, not a perceived-latency tweak.
+ * A LoRA weight slider fires an `onChange` per pixel of travel; without this, one
+ * drag is dozens of `estimate()` calls per selected format. Short enough that a
+ * deliberate change (a dropdown, a checkpoint pick) feels immediate.
+ *
+ * Exported so a test drives the real timer rather than guessing at it — a spec that
+ * hardcoded its own number would go green against a debounce that had been changed
+ * to something unusable.
+ */
+export const ESTIMATE_DEBOUNCE_MS = 250;
+
+/**
+ * Every images-per-format the picker offers, DERIVED from the two constants that
+ * state the server's bounds rather than written out. `QUANTITY_MIN`..`QUANTITY_MAX`
+ * inclusive — a hardcoded `[1, 2, 3, 4]` was a second copy of the cap that would
+ * not move if the cap did.
+ */
+export const QUANTITY_CHOICES: readonly number[] = Array.from(
+  { length: QUANTITY_MAX - QUANTITY_MIN + 1 },
+  (_, i) => QUANTITY_MIN + i,
+);
 
 // Inject the W6 component pack's stylesheet at module init (before first paint)
 // to avoid the documented one-frame FOUC (the pack's components also call
@@ -351,9 +384,38 @@ export function App() {
   // The STORED half: batch records read back from useAppStorage, newest-first
   // (the key encodes an inverted timestamp precisely so the listing IS that
   // order — see history.ts historyKey).
-  const [historyRecords, setHistoryRecords] = useState<
-    Array<{ key: string; record: GenerationRecord }>
-  >([]);
+  const [historyRecords, setHistoryRecords] = useState<StoredRecord[]>([]);
+  /**
+   * 🔴 THE RECORDS ON SCREEN THAT STORAGE DOES NOT HAVE. A batch row is inserted
+   * optimistically, before `set()` is acknowledged, because it is the surface the
+   * viewer's images appear in — so when that write REJECTS the row exists in memory
+   * only, and `loadHistory` REPLACES `historyRecords` with what storage holds.
+   * Without this map the error banner's own "Try again" button (and the Show toggle,
+   * and any later reload) therefore DELETED the run and its paid-for images, with no
+   * way back: the join is their only renderer.
+   *
+   * A ref rather than state on purpose: nothing renders from it, and making it state
+   * would put it in `loadHistory`'s dependency list, whose stability is load-bearing
+   * (see that callback's note about the unbounded re-render loop).
+   *
+   * 🔴 IT IS ONE VIEWER'S DATA AND THE MAP ITSELF DOES NOT SAY WHOSE — see
+   * `historyOwnerRef` just below and the effect that maintains it, which drop both
+   * halves of the surface on a change of signed-in id.
+   */
+  const unsavedRecordsRef = useRef<Map<string, GenerationRecord>>(new Map());
+  /**
+   * WHOSE SURFACE THE TWO HALVES ABOVE CURRENTLY ARE: the last non-null `viewer.id`
+   * seen. Written by the effect further down (which also does the dropping, and
+   * carries the reasoning); READ by `loadHistory`, which fences every one of its
+   * state writes on it. Declared up here with the data it labels so both readers
+   * come after it — see `classifyStorageError`'s note on declaration order.
+   */
+  const historyOwnerRef = useRef<number | null>(null);
+  /** The unsaved map as the list shape everything else here speaks. */
+  const unsavedRecords = useCallback(
+    (): StoredRecord[] => [...unsavedRecordsRef.current].map(([key, record]) => ({ key, record })),
+    [],
+  );
   // 🔴 A FIRST-CLASS STATE, NOT A SWALLOWED REJECTION. The apps:storage scopes
   // have never been consented in production — history is the first surface to
   // touch them — so a scope-denied read/write is a REALISTIC first run, not an
@@ -363,7 +425,18 @@ export function App() {
     'loading' | 'ready' | 'anon' | 'denied' | 'error'
   >('loading');
   const [historyNote, setHistoryNote] = useState<string | null>(null);
-  const [historyOpen, setHistoryOpen] = useState(false);
+  /**
+   * THE VIEWER'S OWN Show/Hide choice, or `null` for "they have not made one".
+   *
+   * 🔴 THREE-VALUED ON PURPOSE, because the default has to depend on whether there is
+   * anything to show. This is the results surface now, so a viewer who HAS rows must
+   * not have to find a "Show" button to see images they already paid for — but it was
+   * `useState(false)`, set true only at submit, so on a RETURNING visit every past
+   * generation was collapsed behind a toggle. `null` resolves to "open iff there are
+   * rows" (`historyOpenEffective`); an explicit Hide is still honoured, and still
+   * honoured across a reload of the rows.
+   */
+  const [historyOpen, setHistoryOpen] = useState<boolean | null>(null);
   const [historyBusyKey, setHistoryBusyKey] = useState<string | null>(null);
   const [saveNote, setSaveNote] = useState<string | null>(null);
 
@@ -381,6 +454,53 @@ export function App() {
   // own way to fail. The page chrome is derived from the array, never stored
   // alongside it, so a partial failure cannot leave the two disagreeing.
   const [runs, setRuns] = useState<FormatRun[]>([]);
+  /**
+   * THE LIVE COST PREVIEW, held as runs of its own so the price shown before a
+   * click and the price shown during one come out of the SAME reducer.
+   *
+   * 🔴 IT IS A SEPARATE ARRAY FROM `runs`, NOT AN EARLY WRITE INTO IT. `runs` is
+   * the money-path state machine: `overallPhase` reads it to decide whether the
+   * page is busy, and `runCandidates`/`aggregateSpend` read it for what was
+   * delivered and charged. Priming it with preview rows would put the button into
+   * `estimating` with nothing in flight and let a preview's `null` cost look like
+   * a failed estimate on a real run.
+   */
+  const [previewRuns, setPreviewRuns] = useState<FormatRun[]>([]);
+  /**
+   * WHICH PREVIEW REQUEST IS THE CURRENT ONE. Monotonic, bumped when a new preview
+   * is scheduled, compared after the await.
+   *
+   * 🔴 THIS IS THE OUT-OF-ORDER GUARD AND IT IS NOT THE DEBOUNCE. The debounce
+   * stops a request being SENT for every keystroke of a slider drag; it does
+   * nothing about two requests that are already in flight. N parallel `estimate()`
+   * calls settle in whatever order the backend feels like, so without this a
+   * SLOW request for quantity 1 lands after a fast one for quantity 4 and the
+   * button quotes the price of a generation the viewer is no longer asking for —
+   * on a control whose whole job is telling them what they are about to spend.
+   */
+  const previewSeqRef = useRef(0);
+  /**
+   * THE APP'S OWN VIEW OF THE WORKFLOWS IT HAS DRIVEN THIS SESSION, keyed by
+   * workflowId — see history.ts's `upsertOwnWorkflow` for why the live queue alone
+   * cannot answer for a batch submitted seconds ago.
+   *
+   * 🔴 CUMULATIVE, AND NEVER CLEARED BY A NEW GENERATE. Clearing it is the bug:
+   * `runs` IS reset per click, and when the results grid read `runs` the previous
+   * batch's images disappeared the instant the next run started.
+   *
+   * 🔴 IF YOU EVER ADD A CAP OR A RESET HERE, READ THIS FIRST — being unbounded is
+   * load-bearing for something that is not about rendering. `loadHistory` re-`set()`s
+   * every record still in `unsavedRecordsRef`, and it does NOT consult the prune. A
+   * key that `orphanedKeys` deleted can only come back if it is still in that map AND
+   * something selects it again — and today it cannot be selected, because selection
+   * goes through `liveWorkflows`, and the ids of a pruned batch are still sitting in
+   * THIS object forever, so the row never falls out of the live half in the first
+   * place. Bound this, or clear it, and resurrection-after-delete becomes reachable:
+   * a pruned key still held as unsaved would be written back and re-rendered. The
+   * fix at that point is to drop pruned keys from `unsavedRecordsRef` in the prune
+   * effect, not to re-tune this.
+   */
+  const [ownWorkflows, setOwnWorkflows] = useState<Record<string, AppWorkflow>>({});
   // True once the viewer has picked a Buzz account themselves. Until then the
   // app is free to apply the blue -> green -> yellow default on their behalf;
   // after it, their choice is never silently overwritten.
@@ -397,6 +517,17 @@ export function App() {
   // True while a host picker modal is open, so the trigger button shows progress
   // and we don't fire a second open over the first.
   const [pickerBusy, setPickerBusy] = useState(false);
+  /**
+   * Set when switching to a checkpoint family with NO LoRAs dropped the viewer's
+   * selection — see `onChangeModel`.
+   *
+   * 🔴 IT IS THE WHOLE JUSTIFICATION FOR HIDING THE FIELD. Removing rows the viewer
+   * chose, and then removing the control they were in, is a silent edit to what they
+   * are about to pay for unless it is stated. `null` whenever nothing was dropped —
+   * a family that simply never had LoRAs selected gets no note, because nothing
+   * happened.
+   */
+  const [loraNote, setLoraNote] = useState<string | null>(null);
 
   // --- Editor state ---
   // The gallery image being edited (its URL) + the overlay spec. The overlay
@@ -458,7 +589,26 @@ export function App() {
   // price, the spend line and the gallery can never disagree with each other
   // after a partial failure.
   const phase = overallPhase(runs);
-  const { total: estimatedCost, partial: estimatePartial } = aggregateEstimate(runs);
+  /**
+   * 🔴 ONE NUMBER, TWO CONTROLS. The Generate button's price and the Buzz picker's
+   * price are the SAME expression, read here once — they were already forbidden from
+   * disagreeing and that has not changed with the preview.
+   *
+   * WHICH runs price it, and why each way round:
+   *   busy          -> `runs`. A click is in flight; its prices are what the server
+   *                    just quoted for the request actually being submitted.
+   *   otherwise     -> the preview, when there is one, so that changing the
+   *                    checkpoint / LoRAs / quantity / formats AFTER a finished run
+   *                    re-prices the button instead of leaving the last run's bill
+   *                    on it.
+   *   no preview    -> `runs`, which for an unconsented viewer is `[]`:
+   *                    `aggregateEstimate([])` is `{ total: null, partial: false }`,
+   *                    i.e. EXACTLY today's unpriced button. `estimate()` 403s
+   *                    without the scope, so they never get a preview and must not
+   *                    be prompted for consent to obtain one.
+   */
+  const priceRuns = previewRuns.length > 0 && !isBusyPhase(overallPhase(runs)) ? previewRuns : runs;
+  const { total: estimatedCost, partial: estimatePartial } = aggregateEstimate(priceRuns);
   const actualCost = aggregateSpend(runs);
   const candidates = runCandidates(runs);
   const failed = failedRuns(runs);
@@ -618,6 +768,18 @@ export function App() {
     (formatId: string, snap: BlockWorkflowSnapshot) => {
       const next = phaseForSnapshot(snap);
       const urls = imageUrlsFrom(snap);
+      // 🔴 EVERY snapshot the app sees is also folded into its OWN view of the live
+      // queue, because the history row for this batch is what renders the images and
+      // `useAppWorkflows`'s page does not know about a workflow submitted seconds
+      // ago. Functional, and keyed on workflowId, for the same reason `patchRun` is:
+      // N workflows reply out of order.
+      //
+      // No `if (snap.workflowId)` here: `upsertOwnWorkflow` is the EXPORTED boundary
+      // and owns that predicate, returning `current` unchanged (same reference, so
+      // React bails out) for an id-less snapshot. A copy of the rule at the call site
+      // was a second place for it to be got wrong.
+      const nowIso = new Date().toISOString();
+      setOwnWorkflows((cur) => upsertOwnWorkflow(cur, snap, urls, nowIso));
       setRuns((cur) =>
         patchRun(cur, formatId, {
           phase: next,
@@ -720,6 +882,47 @@ export function App() {
   );
 
   /**
+   * 🔴 THE ONE DESCRIPTION OF THE CLICK, AND EVERYTHING IS BUILT FROM IT.
+   *
+   * It was defined inside `runGeneration`; it is hoisted here because the live cost
+   * preview needs the SAME bodies. A second "cheap body just for pricing" is
+   * precisely how a preview ends up quoting a price for a request that differs from
+   * the one Generate sends — and the viewer would have no way to tell.
+   *
+   * Three consumers, one function: the submitted bodies, the stored history record
+   * (so a resume reproduces what ran), and the preview's estimate bodies.
+   *
+   * 🔴 THE LoRAs GO THROUGH `lorasForCheckpoint`. A family with no LoRAs can never
+   * carry one on the wire, whatever the selection state says — see that function for
+   * the submit bug this closes and why the rule may not be duplicated here.
+   */
+  const formSnapshot = useCallback(
+    (fmts: readonly Format[], acct: AccountChoice): GenerationForm => ({
+      mode,
+      prompt,
+      promptEdits: { ...promptEdits },
+      formats: fmts.map((f) => ({
+        id: f.id,
+        label: f.label,
+        suffix: f.suffix,
+        prompt: effectivePrompt(prompt, f, promptEdits),
+      })),
+      checkpoint,
+      loras: lorasForCheckpoint(checkpoint.baseModel, loras),
+      quantity: clampQuantity(quantity),
+      account: acct,
+      sourceImage: mode === 'remix' ? sourceImage : null,
+    }),
+    [mode, prompt, promptEdits, checkpoint, loras, quantity, sourceImage],
+  );
+
+  /** ONE format's wire body, from the snapshot above. */
+  const bodyFor = useCallback(
+    (fmt: Format, acct: AccountChoice) => batchBodies(formSnapshot([fmt], acct))[0],
+    [formSnapshot],
+  );
+
+  /**
    * ONE Generate click -> N workflows, one per selected format.
    *
    * The shape is deliberately TWO PASSES rather than N independent pipelines:
@@ -762,30 +965,14 @@ export function App() {
     // path by which a prompt can reach this body, which is what stops the field
     // and the wire from disagreeing about the string being paid for.
     //
-    // 🔴 ONE RULE, ONE PLACE — AND IT IS WHAT MAKES RESUME EXACT. The form
-    // snapshot below is not a parallel description of the click for history's
-    // benefit; it IS the thing the bodies are built from. `bodyFor` asks
-    // `batchBodies` for one format's body, the history record stores the same
-    // snapshot, and a resume rebuilds bodies from that stored snapshot with the
-    // same function. A second body-builder written "for history" is precisely
-    // how a resume ends up reproducing something the original never sent.
-    const formSnapshot = (fmts: readonly Format[], acct: AccountChoice): GenerationForm => ({
-      mode,
-      prompt,
-      promptEdits: { ...promptEdits },
-      formats: fmts.map((f) => ({
-        id: f.id,
-        label: f.label,
-        suffix: f.suffix,
-        prompt: effectivePrompt(prompt, f, promptEdits),
-      })),
-      checkpoint,
-      loras: [...loras],
-      quantity: clampQuantity(quantity),
-      account: acct,
-      sourceImage: mode === 'remix' ? sourceImage : null,
-    });
-    const bodyFor = (fmt: Format, acct: AccountChoice) => batchBodies(formSnapshot([fmt], acct))[0];
+    // 🔴 ONE RULE, ONE PLACE — AND IT IS WHAT MAKES RESUME EXACT. `formSnapshot`
+    // (hoisted above, because the live preview shares it) is not a parallel
+    // description of the click for history's benefit; it IS the thing the bodies are
+    // built from. `bodyFor` asks `batchBodies` for one format's body, the history
+    // record stores the same snapshot, and a resume rebuilds bodies from that stored
+    // snapshot with the same function. A second body-builder written "for history" —
+    // or "just for pricing" — is precisely how a resume or a preview ends up
+    // reproducing something the original never sent.
 
     setRuns(initRuns(formats).map((r) => ({ ...r, phase: 'estimating' as GenPhase })));
 
@@ -847,12 +1034,17 @@ export function App() {
     // workflows together — if we do not write down which ids this click
     // produced, a 3-format run reappears in history as three unrelated rows at
     // three unrelated prices. See history.ts's header.
-    const submittedIds: string[] = [];
-
-    await Promise.all(
+    //
+    // 🔴 RETURNED, NOT PUSHED, AND THAT IS WHAT ALIGNS THE RECORD. `Promise.all`
+    // preserves the INPUT order whatever order the requests settle in, whereas the
+    // `push` this replaces recorded ids in COMPLETION order. So the record paired
+    // `workflowIds[i]` with whichever backend replied first, and its `form.formats`
+    // was filtered on `viable` — survived the ESTIMATE — rather than on what actually
+    // submitted, so it could name a format that never ran.
+    const settled = await Promise.all(
       viable.map(async (r) => {
         const fmt = formats.find((f) => f.id === r.formatId);
-        if (!fmt) return;
+        if (!fmt) return null;
         let snap: BlockWorkflowSnapshot;
         try {
           snap = await submit(bodyFor(fmt, acct));
@@ -861,20 +1053,22 @@ export function App() {
           // template and the server's reason rides on `.snapshot.error`.
           const msg = submitErrorReason(err);
           const failPhase = phaseForError(msg);
-          if (tok.cancelled) return;
+          if (tok.cancelled) return null;
           setRuns((cur) => patchRun(cur, fmt.id, { phase: failPhase, error: msg }));
           if (failPhase === 'account-rejected') handleAccountRejected();
-          return;
+          return null;
         }
-        if (tok.cancelled) return;
-        if (snap.workflowId) submittedIds.push(snap.workflowId);
+        if (tok.cancelled) return null;
         // A host can return an instant terminal snapshot (cached / instant-fail).
         applySnapshotToRun(fmt.id, snap);
         if (!isTerminalStatus(snap.status) && snap.workflowId) {
           runPollLoop(fmt.id, snap.workflowId, tok);
         }
+        return snap.workflowId ? { formatId: fmt.id, workflowId: snap.workflowId } : null;
       }),
     );
+    const submitted = settled.filter((s): s is { formatId: string; workflowId: string } => s != null);
+    const submittedIds = submitted.map((s) => s.workflowId);
 
     // ---- Write the history record ----
     // Only once something actually submitted: a record with no workflowIds is a
@@ -890,10 +1084,11 @@ export function App() {
         // THE SAME SNAPSHOT the bodies above were built from, under the pool
         // ACTUALLY submitted with (`acct`, not `account` — which may still hold
         // the picker's pre-default value). Only the formats that actually
-        // submitted are recorded, so resuming a partially-failed batch reproduces
-        // what ran, not what was attempted.
+        // SUBMITTED are recorded — the ids and these formats are in the same
+        // order, both derived from `submitted` — so resuming a partially-failed
+        // batch reproduces what ran, not what was attempted.
         form: formSnapshot(
-          formats.filter((f) => viable.some((r) => r.formatId === f.id)),
+          formats.filter((f) => submitted.some((s) => s.formatId === f.id)),
           acct,
         ),
       };
@@ -904,9 +1099,27 @@ export function App() {
         // unaffected — only its resume record is lost.
         setHistoryNote('This run was too large to save to history; it still generated normally.');
       } else {
+        // 🔴 ON SCREEN BEFORE THE ROUND TRIP, AND THAT IS THE POINT OF THE WHOLE
+        // RESTRUCTURE. This row is now the surface the viewer's images appear in, so
+        // it has to exist the moment there are workflow ids — not when a host KV
+        // write finally acknowledges. Auto-opened for the same reason: a viewer must
+        // not have to find a "Show" button to see what they just bought.
+        //
+        // 🔴 AND IT IS RECORDED AS UNSAVED FIRST, WHICH IS WHAT MAKES THAT SAFE. The
+        // optimistic insert ALONE only survived until the next reload of the stored
+        // half — and on a rejected write the panel offers a "Try again" button that
+        // performs exactly one. That read replaces `historyRecords` with what storage
+        // holds, which never contained this run, so the row and its images went away
+        // permanently. `unsavedRecordsRef` is what carries them across; see
+        // `mergeUnsavedRecords`. The comment this replaces claimed a rejected write
+        // "leaves the pictures up", which was true of the first paint and false after
+        // one click of the only affordance on offer.
+        unsavedRecordsRef.current.set(key, record);
+        setHistoryRecords((cur) => [{ key, record }, ...cur]);
+        setHistoryOpen(true);
         try {
           await storageRef.current.set(key, record);
-          setHistoryRecords((cur) => [{ key, record }, ...cur]);
+          unsavedRecordsRef.current.delete(key);
           setHistoryState('ready');
         } catch (err) {
           // A storage failure must NEVER look like a generation failure — the
@@ -925,18 +1138,17 @@ export function App() {
       // The live half needs re-reading before the new workflows can be joined.
       refetchWorkflows();
     }
+    // The form values (mode/prompt/promptEdits/checkpoint/loras/quantity/
+    // sourceImage) are no longer listed here: they reach this callback only through
+    // `formSnapshot`/`bodyFor`, whose own dependency lists carry them. Listing them
+    // twice would be a second copy of "what a click depends on".
   }, [
-    mode,
-    prompt,
-    promptEdits,
-    checkpoint,
-    loras,
     account,
     balance,
-    quantity,
-    sourceImage,
     selectedFormatIds,
     availableFormats,
+    formSnapshot,
+    bodyFor,
     estimate,
     submit,
     applySnapshotToRun,
@@ -988,6 +1200,94 @@ export function App() {
       void runGeneration();
     }
   }, [granted, runGeneration]);
+
+  // ---- THE LIVE COST PREVIEW ----
+  //
+  // 🔴 GATED ON `granted`, AND IT MUST NOT PROMPT. `estimate()` itself 403s with
+  // "block lacks ai:write:budgeted scope" on an unconsented token (measured against
+  // the live backend 2026-09-28; see `proceed` below). Asking for consent on page
+  // LOAD so a price can be shown is the thing this app deliberately does not do:
+  // the scope authorises SPENDING, and a permission dialog before the viewer has
+  // typed anything is how a page-money app gets declined. An unconsented viewer
+  // therefore keeps exactly the old behaviour — no price until their first
+  // Generate, which is where the consent round trip already lives.
+
+  /**
+   * The preview's inputs, read at CALL time rather than listed as dependencies.
+   *
+   * The effect below must depend on PRIMITIVES only. `selectedFormats` is rebuilt
+   * every render, `bodyFor` changes identity on every keystroke (its snapshot
+   * carries the prompt), and `estimate` comes off a hook a mocked host re-creates
+   * per render — any of the three in a dependency array turns this into a request
+   * per render. The trigger is `priceSignature`; these are just the values it needs.
+   */
+  const previewRef = useRef({ formats: selectedFormats, account, bodyFor, estimate });
+  previewRef.current = { formats: selectedFormats, account, bodyFor, estimate };
+
+  // WHAT COUNTS AS A PRICE CHANGE — one pure function, see `estimateSignature`.
+  //
+  // 🔴 THE SAME `lorasForCheckpoint` THE BODY GOES THROUGH. The priced body comes from
+  // `formSnapshot`, which filters; feeding the RAW selection here made this a second,
+  // differently-shaped answer to "what prices a request" — it would schedule a
+  // re-estimate for a LoRA change that cannot reach the wire at all. Harmless only
+  // because a LoRA-free family drops them downstream; one rule, one place.
+  const priceSignature = estimateSignature({
+    formatIds: selectedFormats.map((f) => f.id),
+    checkpointVersionId: checkpoint.versionId,
+    loras: lorasForCheckpoint(checkpoint.baseModel, loras),
+    quantity,
+    mode,
+    sourceImageUrl: sourceImage?.url ?? null,
+  });
+
+  useEffect(() => {
+    if (!ready || !granted) return;
+
+    // 🔴 THE SEQUENCE IS TAKEN HERE, NOT IN THE TIMER. Scheduling a new preview
+    // INVALIDATES every earlier one immediately — including requests already in
+    // flight, which the debounce's `clearTimeout` cannot reach. The comparison after
+    // the await is what stops a slow earlier response overwriting a newer price.
+    const seq = previewSeqRef.current + 1;
+    previewSeqRef.current = seq;
+
+    // No stale number may survive an input change. A price for the PREVIOUS
+    // quantity sitting on the button for the second it takes to re-estimate is a
+    // false statement about what the next click costs; an unpriced button is not.
+    setPreviewRuns(initRuns(previewRef.current.formats));
+
+    const timer = setTimeout(() => {
+      const { formats, account: acct, bodyFor: body, estimate: price } = previewRef.current;
+      if (formats.length === 0) return;
+      void (async () => {
+        // A throw and a returned failure are treated ALIKE here, and both leave the
+        // run priceless rather than terminal: this path may never block, fail or
+        // even annotate a Generate click. The server re-prices at submit regardless,
+        // and `runGeneration` does its own estimate pass — so the worst a broken
+        // preview can do is show no number.
+        const costs = await Promise.all(
+          formats.map(async (fmt) => {
+            try {
+              const est = await price(body(fmt, acct));
+              if (est.status === 'failed' || est.error) return null;
+              return est.cost?.total ?? null;
+            } catch {
+              return null;
+            }
+          }),
+        );
+        if (seq !== previewSeqRef.current) return;
+        let next = initRuns(formats);
+        formats.forEach((fmt, i) => {
+          next = patchRun(next, fmt.id, { estimatedCost: costs[i] });
+        });
+        setPreviewRuns(next);
+      })();
+    }, ESTIMATE_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+    // 🔴 PRIMITIVES ONLY — see `previewRef`. `priceSignature` is the whole of
+    // "something that changes the price changed".
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, granted, priceSignature]);
 
   // Switch the generation path. Cancels every in-flight poll and clears the
   // run table so a stale failure never shows under the new mode. The remix
@@ -1200,13 +1500,50 @@ export function App() {
    * The listing is already newest-first because the key encodes an INVERTED
    * timestamp; there is no sort option on `list()` and there does not need to be.
    * Rows that don't parse are dropped rather than rendered half-formed.
+   *
+   * 🔴 IT IS A MERGE, NOT A REPLACEMENT, AND THAT IS A MONEY RULE. The rule is about
+   * every row that EXISTS, not only the ones we know failed to save. Overwriting the
+   * list with the stored half deleted paid-for images two different ways:
+   *
+   *  - records whose `set()` rejected live in memory only (`unsavedRecordsRef`), and
+   *    the button that deleted them was the "Try again" whose entire purpose is to
+   *    recover. So every still-unsaved record is RETRIED here (this read IS the viewer
+   *    asking us to try the storage again) and carried across either outcome.
+   *  - a batch inserted AND SAVED while this read was in flight is in neither half it
+   *    can see: not in the listing (taken before the write) and not in the unsaved map
+   *    (the write succeeded). So the merge runs INSIDE a functional setter, over the
+   *    list as it stands when the read resolves — never over a snapshot taken before
+   *    the awaits.
+   *
+   * 🔴 AND THE RESULTING STATE IS GATED ON WHETHER ANYTHING IS STILL UNSAVED. A
+   * `set()` that keeps rejecting (host KV quota exhausted, say — `list`/`get` still
+   * succeed) used to land on `ready` regardless, which withdrew the banner and the
+   * "Try again" button and reported no problem while the record was still unpersisted
+   * and still about to die with the iframe.
    */
   const loadHistory = useCallback(async () => {
     if (viewerId == null) {
+      // 🔴 NO OWNER FENCE ON THIS BRANCH, AND IT NEEDS NONE: there is no `await`
+      // between here and the `return`, so the whole branch runs in the caller's tick
+      // and no change of id can land in the middle of it. Fencing it would be worse
+      // than useless — `viewerId` is null here, so a fence written as "still the id
+      // this call started under" would never match the owner and would delete exactly
+      // the rows the expiry case below exists to keep.
       setHistoryState('anon');
-      setHistoryRecords([]);
+      // 🔴 THE UNSAVED HALF SURVIVES AN ANON READ TOO, AND SO DOES THE STORED HALF.
+      // A token that expires mid-run takes `viewerId` with it and this is the path
+      // that then runs; it reads nothing, so it has nothing to replace the list WITH.
+      // Passing `[]` as the stored half dropped every already-saved row — Hide then
+      // Show after an expiry collapsed the surface to "Thumbnails 0".
+      setHistoryRecords((cur) => mergeUnsavedRecords(cur, unsavedRecords()));
       return;
     }
+    // 🔴 THE VIEWER THIS READ BELONGS TO, CAPTURED BEFORE THE FIRST `await`. Both state
+    // writes that can happen after an await are fenced on it still being the owner —
+    // the merge, and the `catch` — and `historyOwnerRef` carries why the effect's clear
+    // is not enough on its own. `viewerId` is already fixed per callback identity; the
+    // alias exists to narrow it to `number` and to name what it is for at each fence.
+    const mine = viewerId;
     setHistoryState('loading');
     try {
       const store = storageRef.current;
@@ -1220,11 +1557,79 @@ export function App() {
           }
         }),
       );
-      setHistoryRecords(
-        loaded.filter((e): e is { key: string; record: GenerationRecord } => e.record !== null),
+      const stored = loaded.filter((e): e is StoredRecord => e.record !== null);
+      // Retry the writes that never landed. A success drops the record from the
+      // unsaved map (storage owns it now); a failure leaves it there.
+      //
+      // 🔴 `held` IS SNAPSHOTTED BEFORE THE RETRY AND IS WHAT THE MERGE USES. Reading
+      // the map again afterwards would drop exactly the records whose retry SUCCEEDED:
+      // they are no longer unsaved, but they are also not in `stored`, which was read
+      // before they were written. The row would vanish on the one outcome that fixed it.
+      const held = unsavedRecords();
+      // 🔴 THE RETRY'S OUTCOME IS KEPT, NOT SWALLOWED. The first rejection decides the
+      // state below, and it is CLASSIFIED rather than flattened to 'error' so a scope
+      // denial and an expired token keep saying the thing that names their own fix.
+      const failures: unknown[] = [];
+      await Promise.all(
+        held.map(async ({ key, record }) => {
+          try {
+            await store.set(key, record);
+            unsavedRecordsRef.current.delete(key);
+          } catch (err) {
+            // Still unsaved, still rendered — and now still REPORTED.
+            failures.push(err);
+          }
+        }),
       );
-      setHistoryState('ready');
+      // 🔴 THE FENCE, AND IT IS THE ONE THAT MATTERS FOR DISCLOSURE. Without it this
+      // merge writes `mine`'s rows into the list the CURRENT viewer is looking at, and
+      // the `...cur` arm then makes them STICK: a row that is in neither the new
+      // viewer's `stored` half nor the (cleared) unsaved map is re-carried by `cur` on
+      // every subsequent reload, forever.
+      //
+      // There is deliberately NO fence before the retry writes above, and the reason is
+      // not that one would be harmless: `held` is read after the last `await` with no
+      // yield before the `set()` calls are issued, so on a change of id the effect's
+      // `clear()` has already emptied it and there is nothing to write. A second fence
+      // there could not change an outcome, so it would be a guard no test can kill.
+      if (historyOwnerRef.current !== mine) return;
+      // `held` first so an in-memory record beats the on-screen copy of itself, then
+      // `cur` for anything that appeared while the awaits were pending.
+      setHistoryRecords((cur) => mergeUnsavedRecords(stored, [...held, ...cur]));
+      const firstFailure = failures[0];
+      if (firstFailure !== undefined) {
+        setHistoryState(classifyStorageError(firstFailure));
+      } else if (unsavedRecordsRef.current.size > 0) {
+        // Nothing WE retried reported a failure, but the map is not empty. THREE
+        // different things put us here and only two of them want anything done:
+        //
+        //  - our own retry rejected with a value that is literally `undefined`, which
+        //    `failures[0] !== undefined` above cannot see. The record IS still unsaved,
+        //    so 'error' — the only state that renders "Try again" — is exactly right,
+        //    and this branch is the only thing that produces it.
+        //  - a submit landed while this read was in flight and its own write ALREADY
+        //    rejected, so `s` is the 'denied'/'anon'/'error' that submit's own `catch`
+        //    set. Here the work is the `s === 'loading'` test KEEPING that state: what
+        //    this branch exists for is to stop the unconditional `setHistoryState
+        //    ('ready')` below from clobbering a more specific state that is still true.
+        //  - a submit landed and its write is still PENDING — nothing has failed. Then
+        //    `s` is the 'loading' this call set and this paints 'error', with a "Try
+        //    again", over a read that fully succeeded. That is an overcautious FALSE
+        //    ALARM and it is not defended here; it is accepted because it self-corrects
+        //    the moment that write settles — the line after that `await` sets 'ready',
+        //    its `catch` a classified state — and because telling it apart needs
+        //    an in-flight-write count this surface has no other use for.
+        //
+        // Reachable at all because the Show toggle calls `loadHistory` and stays
+        // clickable during a generate.
+        setHistoryState((s) => (s === 'loading' ? 'error' : s));
+      } else {
+        setHistoryState('ready');
+      }
     } catch (err) {
+      // Fenced too: a read that fails AFTER the id moved must not put an error state
+      // over the new viewer's own, successful load.
+      if (historyOwnerRef.current !== mine) return;
       setHistoryState(classifyStorageError(err));
     }
     // \U0001f534 KEYED ON THE VIEWER *ID*, A PRIMITIVE \u2014 NOT ON THE `viewer`
@@ -1237,7 +1642,47 @@ export function App() {
     // documented stable across renders and `classifyStorageError` is a
     // dependency-free useCallback, so with a primitive here the whole chain is
     // stable and the effect runs on mount and on a real viewer change only.
-  }, [viewerId, classifyStorageError]);
+    // `unsavedRecords` is dependency-free too, for the same reason.
+  }, [viewerId, classifyStorageError, unsavedRecords]);
+
+  /**
+   * 🔴 BOTH HALVES OF THE HISTORY SURFACE BELONG TO ONE VIEWER, AND NOTHING ELSE
+   * KEYS THEM TO ONE. `unsavedRecordsRef` is re-`set()` by `loadHistory` under
+   * whatever viewer is signed in when it next runs, and the merge there carries the
+   * CURRENT list across a reload. Both are keyed on nothing. If `viewer` ever changed
+   * to a DIFFERENT id in a live iframe, viewer A's records would be written into
+   * viewer B's storage and rendered to them.
+   *
+   * 🔴 IT TAKES TWO PARTS AND THIS EFFECT IS ONLY ONE OF THEM. This effect runs
+   * BETWEEN reads: it drops both halves at the moment the id changes. That alone does
+   * nothing about a read that was ALREADY IN FLIGHT under the old id — it resolves
+   * afterwards and merges viewer A's rows straight into the list viewer B is looking
+   * at, which the `...cur` arm then re-carries on every later reload. The second part
+   * is therefore in `loadHistory`: it captures the id it started under (`mine`) and
+   * returns without touching state if this ref has moved. The ref is declared up with
+   * `unsavedRecordsRef` so both parts can see it.
+   *
+   * 🔴 WHETHER THE HOST DOES THAT IS NOT ESTABLISHED. We could not determine whether
+   * `blocks-react` ever swaps `viewer` to another id without remounting the block, and
+   * this does not claim it cannot: it closes the class instead of answering the
+   * question, because the data is someone else's and the path is a money path.
+   *
+   * 🔴 `null` IS NOT A SWAP, AND THAT DISTINCTION IS LOAD-BEARING. A token that
+   * expires mid-run takes `viewerId` with it — see `loadHistory`'s anon branch — and
+   * the unsaved half surviving exactly that is the whole reason a rejected write no
+   * longer deletes paid-for images. Only a non-null id that differs from the last
+   * non-null one counts. This effect leaves the ref alone on a null, which is also
+   * what lets a read that started before the expiry still finish: its `mine` still
+   * matches the owner, because the owner did not change — only the token did.
+   */
+  useEffect(() => {
+    if (viewerId == null) return;
+    const prev = historyOwnerRef.current;
+    historyOwnerRef.current = viewerId;
+    if (prev == null || prev === viewerId) return;
+    unsavedRecordsRef.current.clear();
+    setHistoryRecords([]);
+  }, [viewerId]);
 
   useEffect(() => {
     if (!ready) return;
@@ -1249,7 +1694,20 @@ export function App() {
    * Recomputed on render rather than stored, so the two halves can never be left
    * disagreeing by a missed update.
    */
-  const historyEntries = joinHistory(historyRecords, workflows);
+  /**
+   * 🔴 THE LIVE HALF IS THE FETCHED PAGE *PLUS WHAT THE APP KNOWS ITSELF*. Both the
+   * join and the prune read this, never `workflows` directly, and they have to read
+   * the same thing:
+   *
+   *  - the JOIN needs it or the batch just submitted renders `unavailable` — no
+   *    status, no skeleton, no images — because the page predates it.
+   *  - the PRUNE needs it or that same record is inside the fetched window,
+   *    matches no live workflow, and gets DELETED seconds after being written.
+   *
+   * See `mergeLiveWorkflows` for why the merge can only ever add information.
+   */
+  const liveWorkflows = mergeLiveWorkflows(workflows, ownWorkflows);
+  const historyEntries = joinHistory(historyRecords, liveWorkflows);
 
   /**
    * Prune storage rows no live workflow matches, so the halves cannot drift.
@@ -1259,10 +1717,23 @@ export function App() {
    * page on the first render. A failed delete is deliberately silent: it is
    * hygiene, not a user-facing operation, and a noisy toast about it would be
    * worse than the stale row.
+   *
+   * 🟢 KNOWN AND ACCEPTED: `alive` CAN CANCEL THE HALF THAT UPDATES THE SCREEN. A
+   * reload sets `historyState` to 'loading', and `historyState` is a dep here — so a
+   * reload started mid-prune runs this cleanup, the `delete()` calls still go out, and
+   * the `setHistoryRecords` filter is skipped. The resolving reload then finds the key
+   * absent from the stored half but present in `cur`, and its `[...held, ...cur]` arm
+   * re-renders a row storage no longer has. It is NOT re-written to storage, and the
+   * next prune pass removes it, so the cost is one duplicate `delete()` and a row that
+   * lingers for one cycle. Left as-is deliberately: the alternatives are to drop the
+   * cancellation (which would make this effect write state for deps it no longer has)
+   * or to teach the merge which keys were pruned (state this surface has no other use
+   * for), and neither is worth it for a self-healing flash of a row the viewer did
+   * generate. Written down here because it had not been.
    */
   useEffect(() => {
-    if (historyState !== 'ready' || historyLoading || workflows.length === 0) return;
-    const stale = orphanedKeys(historyRecords, workflows, oldestWorkflowTime(workflows));
+    if (historyState !== 'ready' || historyLoading || liveWorkflows.length === 0) return;
+    const stale = orphanedKeys(historyRecords, liveWorkflows, oldestWorkflowTime(liveWorkflows));
     if (stale.length === 0) return;
     let alive = true;
     void Promise.all(
@@ -1275,7 +1746,7 @@ export function App() {
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [historyState, historyLoading, workflows, historyRecords]);
+  }, [historyState, historyLoading, workflows, ownWorkflows, historyRecords]);
 
   /**
    * 🔴 SAVE A RAW CANDIDATE — the real download, and the ONLY one this block has.
@@ -1357,7 +1828,13 @@ export function App() {
         return missing.length === 0 ? cur : [...cur, ...missing];
       });
       setSelectedFormatIds(f.formats.map((x) => x.id));
-      setHistoryOpen(false);
+      // 🔴 THE SURFACE STAYS OPEN. It used to `setHistoryOpen(false)` — harmless when
+      // this was a collapsible archive, a deletion now that it is where the images
+      // live: "Reuse settings" hid the row it was clicked in, and every picture on the
+      // page with it.
+      // The LoRA note goes, though: "N LoRAs were removed" is about a model CHANGE,
+      // and leaving it up would caption a resume that restored LoRAs intact.
+      setLoraNote(null);
       setHistoryNote('Form restored. Nothing was submitted — press Generate when you are ready.');
     },
     [customFormats],
@@ -1411,15 +1888,43 @@ export function App() {
   // meaning is defined in the dev shim and unverified against the prod host.
   // The LoRA picker below keeps its filter, and should: a LoRA really must match
   // the checkpoint's family.
+  //
+  // 🔴 IT ALSO CLEARS THE LoRAs WHEN THE NEW FAMILY HAS NONE, AND SAYS SO. Before
+  // this it set the checkpoint and left `loras` alone: an SDXL LoRA stayed selected
+  // under an OpenAI checkpoint, rode into `additionalResources`, and the server
+  // rejected the whole generation with nothing on screen naming the cause. That was
+  // survivable while the LoRA field stayed visible with a disabled Add button —
+  // the viewer could at least SEE the stale rows. The field is now HIDDEN for such a
+  // family, which would make the state invisible, so the clear is what makes hiding
+  // it safe rather than a way to lose a generation silently.
+  //
+  // 🔴 DELIBERATELY NOT AN EFFECT ON `checkpoint`. A resume restores a checkpoint AND
+  // its LoRAs together; an effect watching the checkpoint would fire on that restore
+  // and wipe the very LoRAs it just put back. This is the one place a HUMAN changes
+  // the family, so it is the one place that clears.
   const onChangeModel = useCallback(async () => {
     setPickerBusy(true);
     try {
       const picked = await openResourcePicker({ resourceType: 'Checkpoint' });
-      if (picked) setCheckpoint(checkpointFromPick(picked));
+      if (!picked) return;
+      const next = checkpointFromPick(picked);
+      setCheckpoint(next);
+      // Computed OUTSIDE the updater: a `setState` call inside another updater is a
+      // side effect in a function React is free to run twice.
+      const kept = lorasForCheckpoint(next.baseModel, loras);
+      const dropped = loras.length - kept.length;
+      setLoras(kept);
+      setLoraNote(
+        dropped > 0
+          ? `${next.baseModel || 'That model'} doesn't take LoRAs, so ${dropped} selected ${
+              dropped === 1 ? 'LoRA was' : 'LoRAs were'
+            } removed.`
+          : null,
+      );
     } finally {
       setPickerBusy(false);
     }
-  }, [openResourcePicker]);
+  }, [openResourcePicker, loras]);
 
   // Open the host's resource picker filtered to LoRAs, in the checkpoint's
   // base-model family. Append the pick (deduped + MAX_LORAS-capped via addLora).
@@ -2001,29 +2506,31 @@ export function App() {
 
   // Quantity — how many candidates per generation (server cap 4). Multiple
   // candidates cost proportionally; the estimate reflects it.
+  //
+  // 🔴 A DROPDOWN, NOT A ROW OF PILLS, AND IT SHARES A LINE WITH THE BUZZ PICKER.
+  // Four pills plus a two-line cost disclosure took a whole band of the rail to
+  // express one small number. The pack's `Select` wraps a NATIVE `<select>` and
+  // therefore cannot render icons — irrelevant for the digits 1–4, and the reason
+  // the Buzz picker beside it is still a custom listbox.
+  //
+  // 🔴 THE OPTIONS ARE BUILT FROM `QUANTITY_MIN`/`QUANTITY_MAX`, and the value still
+  // goes through `clampQuantity` on the way in AND out. The literal `[1, 2, 3, 4]`
+  // this replaces was a second statement of the server cap that a change to
+  // QUANTITY_MAX would not have moved.
   const quantityBlock = (
     <div style={fieldStyle}>
-      <span style={fieldLabelStyle}>Images per format</span>
-      {/* 🔴 COST DISCLOSURE — kept deliberately while other copy was cut.
-          Quantity and format count MULTIPLY: this is images per format, per
-          run, and each one is charged. */}
-      <span style={fieldDescStyle(pal)}>1–{QUANTITY_MAX} per format. Each image costs Buzz.</span>
-      <div role="radiogroup" aria-label="Number of images" style={pickerRowStyle}>
-        {[1, 2, 3, 4].slice(0, QUANTITY_MAX - QUANTITY_MIN + 1).map((n) => (
-          <button
-            key={n}
-            type="button"
-            role="radio"
-            aria-checked={clampQuantity(quantity) === n}
-            disabled={busy}
-            onClick={() => setQuantity(n)}
-            data-testid={`pm-quantity-${n}`}
-            style={pickerBtnStyle(clampQuantity(quantity) === n, busy, pal)}
-          >
-            {n}
-          </button>
-        ))}
-      </div>
+      <Select
+        label="Images per format"
+        /* 🔴 COST DISCLOSURE — kept deliberately while other copy was cut.
+           Quantity and format count MULTIPLY: this is images per format, per run,
+           and each one is charged. */
+        description="Each image costs Buzz."
+        value={String(clampQuantity(quantity))}
+        disabled={busy}
+        onChange={(v) => setQuantity(clampQuantity(Number(v)))}
+        options={QUANTITY_CHOICES.map((n) => ({ value: String(n), label: String(n) }))}
+        data-testid="pm-quantity"
+      />
     </div>
   );
 
@@ -2134,140 +2641,67 @@ export function App() {
         </Alert>
       )}
 
+      {/* 🔴 THE CANDIDATE GRID USED TO BE HERE AND IS DELIBERATELY GONE. It was a
+          SECOND rendering of the same images, built from `runs` — and because
+          `initRuns` resets `runs` on every Generate, starting a second run erased
+          the first run's pictures from the page. The images now live in exactly one
+          place, the history surface, whose newest row IS the in-flight batch. What
+          survives here is the post-spend REPORTING, which belongs next to the button
+          that caused it.
+
+          🔴 STILL GATED ON `candidates`, not on `phase`. `runCandidates(runs)` is
+          "did this click actually deliver anything", which is the condition under
+          which a spend line is a true statement. */}
       {candidates.length > 0 && (
-        <Stack gap={8}>
-          {/* 🔴 SPEND IS THE SERVER'S NUMBER, SUMMED OVER THE RUNS THAT
-              REPORTED ONE. It never falls back to the estimate, so a partial
-              failure cannot inflate it into a bill for work that never ran —
-              `formatCost(null)` renders '—'. */}
-          <Alert color="success" title="Done" data-testid="pm-spent">
-            Spent <strong>{formatCost(actualCost)}</strong> Buzz
-            <SpentAccountNote runs={runs} />.
-          </Alert>
-          <span style={fieldLabelStyle}>
-            {candidates.length} candidate{candidates.length === 1 ? '' : 's'}
-          </span>
-          {/* 🔴 THE GRID IS THE POINT OF GENERATING FOUR. It used to be
-              `repeat(2, …)` at EVERY width — two 170px thumbnails on a phone,
-              and two of them in a 640px column on a 1600px block. The column
-              count now comes from `layoutForTier`: 1 on a phone, 2 mid, 3 at
-              `lg`/`xl`, 4 ultrawide, so candidates are actually comparable
-              side by side. */}
-          {/* No `data-columns` here: `galleryStyle`'s `gridTemplateColumns` already
-              carries the count, in the form a browser acts on. */}
-          <div style={galleryStyle(layout)} data-testid="yt-results-grid">
-            {candidates.map((c, i) => (
-              <div key={c.url} style={galleryItemStyle}>
-                <div style={{ position: 'relative' }}>
-                  <img
-                    src={c.url}
-                    alt={`Generated result — ${c.formatLabel}`}
-                    style={imageStyle}
-                    data-testid="pm-result-img"
-                  />
-                  {/* Each candidate carries the format that made it — with N
-                      formats in one grid, an untagged image is unusable for
-                      deciding which format to keep paying for. */}
-                  <span style={candidateTagStyle(pal)} data-testid="pm-result-format">
-                    {c.formatLabel}
-                  </span>
-                </div>
-                {/* 🔴 TWO BUTTONS THAT DO GENUINELY DIFFERENT THINGS, LABELLED
-                    SO. "Save image" is the RAW candidate going through the
-                    host's SAVE_IMAGE bridge — a real file, every time. "Add
-                    text" opens the canvas editor, whose export is a local
-                    `blob:` the same bridge refuses (https-only allowlist), so
-                    that path still ends in the honest right-click note. Two
-                    buttons that looked alike and behaved differently is exactly
-                    what #15 was cleaning up; this keeps them distinguishable. */}
-                <Group gap={6} wrap={false}>
-                  <Button
-                    size="sm"
-                    onClick={() => void onSaveCandidate(c.url, i + 1, c.formatLabel)}
-                    data-testid={`pm-save-${i}`}
-                  >
-                    Save image
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="light"
-                    onClick={() => setEditing(c.url)}
-                    data-testid={`pm-edit-${i}`}
-                  >
-                    Add text
-                  </Button>
-                </Group>
-              </div>
-            ))}
-          </div>
-          {saveNote && (
-            <span style={fieldDescStyle(pal)} data-testid="pm-save-note">
-              {saveNote}
-            </span>
-          )}
-        </Stack>
+        /* 🔴 SPEND IS THE SERVER'S NUMBER, SUMMED OVER THE RUNS THAT REPORTED ONE.
+           It never falls back to the estimate, so a partial failure cannot inflate
+           it into a bill for work that never ran — `formatCost(null)` renders '—'. */
+        <Alert color="success" title="Done" data-testid="pm-spent">
+          Spent <strong>{formatCost(actualCost)}</strong> Buzz
+          <SpentAccountNote runs={runs} />.
+        </Alert>
       )}
     </>
   );
 
-  // THUMBNAIL HISTORY — past generations, their realized cost, a real save, and
-  // Resume. Collapsed by default: it is a returning-visit surface, and expanding
-  // it by default would push the generate form down for the common first run.
+  // THE RESULTS + HISTORY SURFACE — this run's images, past generations, their
+  // realized cost, a real save, the editor entry point, and Resume. See `History.tsx`.
+  //
+  // 🔴 OPEN WHENEVER THERE ARE ROWS, not only after a submit. This is where generated
+  // images appear, so collapsing it is hiding output the viewer paid for; the only
+  // thing that keeps it shut is a first run with nothing in it yet (where it would
+  // push the form down for no benefit) or the viewer's own Hide.
+  const historyOpenEffective = historyOpen ?? historyEntries.length > 0;
   const historyBlock = (
-    <div style={fieldStyle} data-testid="yt-history">
-      <Group justify="space-between" align="center" gap={8}>
-        <span style={fieldLabelStyle}>
-          History{' '}
-          <Badge color="info" variant="light">
-            {historyEntries.length}
-          </Badge>
-        </span>
-        <Group gap={6}>
-          <Button
-            variant="subtle"
-            size="sm"
-            onClick={() => {
-              setHistoryOpen((open) => {
-                if (!open) {
-                  void loadHistory();
-                  refetchWorkflows();
-                }
-                return !open;
-              });
-            }}
-            data-testid="yt-history-toggle"
-          >
-            {historyOpen ? 'Hide' : 'Show'}
-          </Button>
-        </Group>
-      </Group>
-
-      {historyNote && (
-        <span style={fieldDescStyle(pal)} data-testid="yt-history-note">
-          {historyNote}
-        </span>
-      )}
-
-      {historyOpen && (
-        <HistoryPanel
-          entries={historyEntries}
-          state={historyState}
-          loading={historyLoading}
-          liveError={historyError}
-          busyKey={historyBusyKey}
-          onResume={onResume}
-          onCancel={(e) => void onCancelWorkflow(e)}
-          onSave={(url, i, label) => void onSaveCandidate(url, i, label)}
-          onSignIn={() => requestSignIn()}
-          onRefresh={() => {
-            void loadHistory();
-            refetchWorkflows();
-          }}
-          pal={pal}
-          layout={layout}
-        />
-      )}
-    </div>
+    <HistorySurface
+      entries={historyEntries}
+      state={historyState}
+      loading={historyLoading}
+      liveError={historyError}
+      busyKey={historyBusyKey}
+      note={historyNote}
+      saveNote={saveNote}
+      open={historyOpenEffective}
+      onToggle={() => {
+        const next = !historyOpenEffective;
+        if (next) {
+          void loadHistory();
+          refetchWorkflows();
+        }
+        setHistoryOpen(next);
+      }}
+      onResume={onResume}
+      onCancel={(e) => void onCancelWorkflow(e)}
+      onSave={(url, i, label) => void onSaveCandidate(url, i, label)}
+      onEdit={(url) => setEditing(url)}
+      onSignIn={() => requestSignIn()}
+      onRefresh={() => {
+        void loadHistory();
+        refetchWorkflows();
+      }}
+      pal={pal}
+      layout={layout}
+    />
   );
 
   // The inputs, in two halves. 🔴 SPLIT RATHER THAN ONE `controls` CONSTANT
@@ -2285,35 +2719,62 @@ export function App() {
   const inputsAfterFormats = (
     <>
       {modelBlock}
-      <LoraSelector
-        selected={loras}
-        capReached={loraCapReached}
-        familyHasLoras={familyHasLoras(checkpoint.baseModel)}
-        baseModel={checkpoint.baseModel}
-        pickerBusy={pickerBusy}
-        onAdd={() => void onAddLora()}
-        onRemove={onRemoveLora}
-        onWeight={onLoraWeight}
-        pal={pal}
-      />
-      {quantityBlock}
-      {!anon && (
-        <AccountPicker
-          value={account}
-          onChange={(v) => {
-            // A manual pick freezes the blue -> green -> yellow default: from
-            // here on the app never silently reassigns their pool.
-            accountTouchedRef.current = true;
-            setAccount(v);
-          }}
-          balance={balance}
-          disabled={busy}
-          cost={estimatedCost}
-          costPartial={estimatePartial}
-          portalTo={rootRef}
+      {/* 🔴 THE WHOLE FIELD IS GONE FOR A FAMILY WITH NO LoRAs. It used to render a
+          permanently-disabled Add button plus a sentence explaining why — a control
+          that can never do anything, occupying the same space as one that can. The
+          only thing left behind is the note saying what was REMOVED, and only when
+          something actually was: `onChangeModel` clears the selection, and a clear
+          nobody is told about is a silent edit to the request.
+          🔴 THIS HIDES THE FIELD ON FIRST LOAD FOR *EVERY* VIEWER, AND THAT IS THE
+          OPERATOR'S DECISION — NOT A BUG TO FIX. `DEFAULT_CHECKPOINT.baseModel` is
+          'OpenAI' and `LORA_FREE_BASE_MODELS` contains 'OpenAI', so the default model
+          is LoRA-free and nobody sees the selector until they pick another family.
+          He was shown exactly that and reaffirmed it; do not re-add an explanatory
+          sentence here (that is the control-that-does-nothing this replaced). */}
+      {familyHasLoras(checkpoint.baseModel) ? (
+        <LoraSelector
+          selected={loras}
+          capReached={loraCapReached}
+          pickerBusy={pickerBusy}
+          onAdd={() => void onAddLora()}
+          onRemove={onRemoveLora}
+          onWeight={onLoraWeight}
           pal={pal}
         />
+      ) : (
+        loraNote && (
+          <span style={fieldDescStyle(pal)} data-testid="pm-lora-cleared">
+            {loraNote}
+          </span>
+        )
       )}
+      {/* 🔴 TWO SMALL CONTROLS, ONE LINE — and it WRAPS rather than shrinking. Both
+          are `minWidth: 0` flex items with a floor: below that width they stack, so
+          the Buzz trigger never becomes a sliver of a truncated account name with a
+          price the viewer cannot read. A CSS grid with a fixed two-column template
+          could not do that without a second breakpoint rule. */}
+      <div style={spendRowStyle} data-testid="yt-spend-row">
+        <div style={spendCellStyle}>{quantityBlock}</div>
+        {!anon && (
+          <div style={spendCellStyle}>
+            <AccountPicker
+              value={account}
+              onChange={(v) => {
+                // A manual pick freezes the blue -> green -> yellow default: from
+                // here on the app never silently reassigns their pool.
+                accountTouchedRef.current = true;
+                setAccount(v);
+              }}
+              balance={balance}
+              disabled={busy}
+              cost={estimatedCost}
+              costPartial={estimatePartial}
+              portalTo={rootRef}
+              pal={pal}
+            />
+          </div>
+        )}
+      </div>
       {submitBlock}
     </>
   );
@@ -2344,10 +2805,15 @@ export function App() {
                 </Stack>
               </aside>
               <main style={mainColumnStyle} data-testid="yt-main">
+                {/* 🔴 THE HISTORY SURFACE MOVED ABOVE THE FORMAT PICKER, because it
+                    is now where the results are. It used to sit last, below the
+                    picker, which was right while a separate candidate grid held the
+                    images and is wrong now that this IS the grid: the app's primary
+                    object has to be the first thing in the column. */}
                 <Stack gap={16}>
                   {resultsBlock}
-                  {formatsBlock}
                   {historyBlock}
+                  {formatsBlock}
                 </Stack>
               </main>
             </div>
@@ -2359,7 +2825,10 @@ export function App() {
 
   // Below `lg` everything is one column, in the order it is used — except the
   // results, which jump to the top once they exist (phase 2: the app's primary
-  // object is the first thing on screen).
+  // object is the first thing on screen). The history surface is part of "the
+  // results" now, so it sits with them and NOT at the bottom: a viewer on a phone
+  // must not have to scroll past every input to reach the images they just bought.
+  // It renders nothing at all until there is something in it — see `showHistory`.
   return (
     <div {...rootProps}>
       <div style={contentStyle(layout)} {...contentProps(layout)}>
@@ -2367,208 +2836,14 @@ export function App() {
           <Stack gap={16}>
             {hero}
             {resultsBlock}
+            {historyBlock}
             {inputsBeforeFormats}
             {formatsBlock}
             {inputsAfterFormats}
-            {historyBlock}
           </Stack>
         </Card>
       </div>
     </div>
-  );
-}
-
-/**
- * THUMBNAIL HISTORY — the rendered join.
- *
- * 🔴 EVERY NON-READY STATE IS EXPLICIT, because each has a DIFFERENT fix and
- * three of them would otherwise render as the same empty grid:
- *
- *   'anon'    `useAppWorkflows` ERRORS for an anonymous viewer and `useAppStorage`
- *             REJECTS their writes, so there is no history and there never could
- *             be one. That is a sign-in prompt, not an empty list — an
- *             empty-looking grid here reads as "you have no generations", which
- *             is a false statement about someone who may have plenty.
- *   'denied'  The apps:storage scopes are consent-gated and have NEVER been
- *             consented in production — this feature is the first thing to touch
- *             them — so "the app was not granted storage" is a realistic FIRST
- *             RUN, not an edge case. It gets its own message naming the grant.
- *   'error'   Everything else, still actionable (a retry).
- *
- * An `unavailable` ROW is none of those: it is a real past generation whose
- * images have aged out of the orchestrator. It STAYS VISIBLE, says so plainly,
- * and Resume still works — the form half is ours and does not expire.
- */
-function HistoryPanel({
-  entries,
-  state,
-  loading,
-  liveError,
-  busyKey,
-  onResume,
-  onCancel,
-  onSave,
-  onSignIn,
-  onRefresh,
-  pal,
-  layout,
-}: {
-  entries: readonly HistoryEntry[];
-  state: 'loading' | 'ready' | 'anon' | 'denied' | 'error';
-  loading: boolean;
-  liveError: Error | null;
-  busyKey: string | null;
-  onResume: (entry: HistoryEntry) => void;
-  onCancel: (entry: HistoryEntry) => void;
-  onSave: (url: string, index: number, label?: string) => void;
-  onSignIn: () => void;
-  onRefresh: () => void;
-  pal: Palette;
-  layout: BlockLayout;
-}) {
-  if (state === 'anon') {
-    return (
-      <Stack gap={8} data-testid="yt-history-anon">
-        <span style={fieldDescStyle(pal)}>
-          Sign in to see your past generations, save their images and reuse their settings.
-        </span>
-        <Button variant="light" size="sm" onClick={onSignIn} data-testid="yt-history-signin">
-          Sign in
-        </Button>
-      </Stack>
-    );
-  }
-
-  if (state === 'denied') {
-    return (
-      <Alert color="warning" title="History needs storage access" data-testid="yt-history-denied">
-        This app hasn&apos;t been granted storage access, so it can&apos;t keep a record of your
-        generations. Grant it from the Civitai permissions dialog and reopen this panel.
-      </Alert>
-    );
-  }
-
-  if (state === 'error') {
-    return (
-      <Stack gap={8}>
-        <Alert color="warning" title="Couldn't load your history" data-testid="yt-history-error">
-          Your generations still ran and were still charged — this is only the record of them.
-        </Alert>
-        <Button variant="light" size="sm" onClick={onRefresh}>
-          Try again
-        </Button>
-      </Stack>
-    );
-  }
-
-  if (state === 'loading' || loading) {
-    return (
-      <span style={fieldDescStyle(pal)} data-testid="yt-history-loading">
-        Loading your generations…
-      </span>
-    );
-  }
-
-  return (
-    <Stack gap={12}>
-      {/* The LIVE half failing is reported SEPARATELY from the stored half. The
-          rows below are still rendered from storage, and Resume still works on
-          every one of them — saying "history is broken" would be false. */}
-      {liveError && (
-        <Alert color="warning" title="Couldn't reach the generation queue" data-testid="yt-history-live-error">
-          Statuses, images and costs below may be missing or out of date. Resume still works.
-        </Alert>
-      )}
-
-      {entries.length === 0 ? (
-        <span style={fieldDescStyle(pal)} data-testid="yt-history-empty">
-          Nothing here yet. Your generations will be listed here once you run one.
-        </span>
-      ) : (
-        entries.map((entry) => (
-          <div key={entry.key} style={loraRowStyle(pal)} data-testid="yt-history-row">
-            <Group justify="space-between" align="center" gap={8}>
-              <Group gap={6} align="center">
-                <Badge color={batchStatusColor(entry.status)} variant="light">
-                  {batchStatusLabel(entry.status)}
-                </Badge>
-                <span style={fieldDescStyle(pal)} data-testid="yt-history-when">
-                  {new Date(entry.record.createdAt).toLocaleString()}
-                </span>
-              </Group>
-              {/* 🔴 REALIZED COST, the server's number for the workflows that
-                  reported one — never the estimate. At 209 Buzz an image this
-                  is the figure people actually want from a history list. */}
-              <span style={fieldDescStyle(pal)} data-testid="yt-history-cost">
-                {entry.cost == null ? '—' : `${formatCost(entry.cost)} Buzz`}
-              </span>
-            </Group>
-
-            <span style={fieldDescStyle(pal)} data-testid="yt-history-formats">
-              {entry.record.form.formats.map((f) => f.label).join(' · ')} ·{' '}
-              {entry.record.form.checkpoint.label} · {entry.record.form.quantity}×
-            </span>
-
-            {entry.unavailable && (
-              <span style={fieldDescStyle(pal)} data-testid="yt-history-unavailable">
-                These images are no longer available, but the settings are — Resume refills the
-                form.
-              </span>
-            )}
-
-            {entry.imageUrls.length > 0 && (
-              <div style={galleryStyle(layout)} data-testid="yt-history-images">
-                {entry.imageUrls.map((url, i) => (
-                  <div key={url} style={galleryItemStyle}>
-                    <img
-                      src={url}
-                      alt={`Past generation ${i + 1}`}
-                      style={imageStyle}
-                      data-testid="yt-history-img"
-                    />
-                    <Button
-                      size="sm"
-                      variant="light"
-                      onClick={() => onSave(url, i + 1, entry.record.form.formats[0]?.label)}
-                      data-testid="yt-history-save"
-                    >
-                      Save image
-                    </Button>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <Group gap={6}>
-              {/* 🔴 RESUME DOES NOT SUBMIT. It refills the form and stops, with
-                  the cost preview showing — see the App's `onResume`. The label
-                  says "Reuse settings" rather than "Run again" for exactly that
-                  reason: a money control must not read like a re-run button. */}
-              <Button
-                size="sm"
-                variant="light"
-                onClick={() => onResume(entry)}
-                data-testid="yt-history-resume"
-              >
-                Reuse settings
-              </Button>
-              {entry.cancellableIds.length > 0 && (
-                <Button
-                  size="sm"
-                  variant="subtle"
-                  color="error"
-                  loading={busyKey === entry.key}
-                  onClick={() => onCancel(entry)}
-                  data-testid="yt-history-cancel"
-                >
-                  Cancel
-                </Button>
-              )}
-            </Group>
-          </div>
-        ))
-      )}
-    </Stack>
   );
 }
 
@@ -2581,8 +2856,6 @@ function HistoryPanel({
 function LoraSelector({
   selected,
   capReached,
-  familyHasLoras: familySupported,
-  baseModel,
   pickerBusy,
   onAdd,
   onRemove,
@@ -2591,10 +2864,6 @@ function LoraSelector({
 }: {
   selected: readonly LoraOption[];
   capReached: boolean;
-  /** Does the current checkpoint's base-model family have ANY LoRAs? */
-  familyHasLoras: boolean;
-  /** The current checkpoint's base-model family, named in the explanation. */
-  baseModel: string;
   pickerBusy: boolean;
   onAdd: () => void;
   onRemove: (versionId: number) => void;
@@ -2613,7 +2882,7 @@ function LoraSelector({
       {selected.length > 0 && (
         <Stack gap={8} style={loraListStyle}>
           {selected.map((l) => (
-            <div key={l.versionId} style={loraRowStyle(pal)} data-testid="pm-lora-row">
+            <div key={l.versionId} style={panelRowStyle(pal)} data-testid="pm-lora-row">
               <div style={loraRowHeadStyle}>
                 <span style={loraNameStyle} title={l.label}>
                   {l.label}
@@ -2645,31 +2914,26 @@ function LoraSelector({
         </Stack>
       )}
 
-      {/* Add a LoRA — opens the host's resource picker filtered to LoRAs.
-          🔴 DISABLED, WITH A REASON, ON A FAMILY THAT HAS NONE. The alternative
-          is a button that opens a grid of LoRAs from OTHER families (the catalog
-          widens the browse rather than showing an empty result), every one of
-          which the server rejects as incompatible after the viewer has picked
-          it. An explained dead control beats a live one that can only fail. */}
+      {/* Add a LoRA — opens the host's resource picker filtered to `baseModel`.
+          🔴 THE FAMILY-WITH-NO-LoRAs CASE IS NOT HANDLED HERE ANY MORE: the caller
+          does not render this field at all for such a family, which is strictly
+          better than the disabled button + explanation this replaced. What the
+          catalog would otherwise do is why that mattered — `filterCardsByFamily`
+          falls back to the FULL card set on an unmatched family, so a live Add button
+          there offers LoRAs the server rejects after the viewer has committed to a
+          pick. */}
       <span style={loraAddWrapStyle}>
         <Button
           variant="light"
           size="sm"
-          disabled={capReached || !familySupported}
+          disabled={capReached}
           loading={pickerBusy}
           onClick={onAdd}
           data-testid="pm-lora-add"
         >
           + Add LoRA
         </Button>
-        {!familySupported && (
-          <span style={fieldDescStyle(pal)} data-testid="pm-lora-unsupported">
-            {baseModel} models don&apos;t take LoRAs. Switch to another model above to add them.
-          </span>
-        )}
-        {familySupported && capReached && (
-          <span style={fieldDescStyle(pal)}>Max {MAX_LORAS} LoRAs selected.</span>
-        )}
+        {capReached && <span style={fieldDescStyle(pal)}>Max {MAX_LORAS} LoRAs selected.</span>}
       </span>
     </div>
   );
@@ -3104,7 +3368,12 @@ function AccountPicker({
 
   return (
     <div style={fieldStyle}>
-      <span style={fieldLabelStyle}>Spend from</span>
+      {/* 🔴 THE VISIBLE LABEL IS "Buzz"; THE ACCESSIBLE NAME IS NOT. The trigger's
+          `aria-label` below still reads "Spend from <account>, <cost>" — a
+          screen-reader user gets no layout to tell them this dropdown is about
+          which wallet pays, so shortening the accessible name to the bare word
+          would remove the only thing that said so. Two names, on purpose. */}
+      <span style={fieldLabelStyle}>Buzz</span>
       {/* Kept short, but the "preference, not a guarantee" half stays: this is
           the control that decides whose Buzz is debited. */}
       <span style={fieldDescStyle(pal)} id={ACCOUNT_DESC_ID}>
@@ -3542,38 +3811,6 @@ function heroSubStyle(pal: Palette): React.CSSProperties {
   return { fontSize: 13, color: pal.heroSubFg };
 }
 
-/**
- * The format tag overlaid on each candidate. With N formats in one grid, an
- * untagged image cannot be traced back to the format that produced it.
- *
- * The scrim is `overlay` at 78% rather than a flat colour, because it sits on an
- * arbitrary generated image — but the PAIR that is graded is `overlayFg` on a
- * fully opaque `overlay` (18.31:1 in both themes), which is the worst case for
- * legibility only if the image underneath is lighter, never darker.
- */
-function candidateTagStyle(pal: Palette): React.CSSProperties {
-  return {
-    position: 'absolute',
-    left: 6,
-    bottom: 6,
-    padding: '2px 8px',
-    borderRadius: 999,
-    fontSize: 11,
-    fontWeight: 600,
-    background: withAlpha(pal.overlay, 0.78),
-    color: pal.overlayFg,
-    pointerEvents: 'none',
-  };
-}
-
-const imageStyle: React.CSSProperties = {
-  width: '100%',
-  aspectRatio: '16 / 9',
-  objectFit: 'cover',
-  borderRadius: 8,
-  display: 'block',
-};
-
 function canvasStyle(pal: Palette): React.CSSProperties {
   return {
     width: '100%',
@@ -3612,16 +3849,6 @@ function sourceThumbStyle(pal: Palette): React.CSSProperties {
   };
 }
 
-// Field chrome. The Model + LoRA controls match the pack's own input surface
-// because both sit on the same app palette, not because they share a CSS var.
-const fieldStyle: React.CSSProperties = { display: 'grid', gap: 4 };
-const fieldLabelStyle: React.CSSProperties = { fontSize: 14, fontWeight: 600 };
-function fieldDescStyle(pal: Palette): React.CSSProperties {
-  // 🔴 NO `opacity` HERE EITHER. It used to be `text-dimmed` at `opacity: 0.8`,
-  // i.e. a contrast ratio nothing could assert. `textDim` is a real token: 7.84:1
-  // on `page` dark, 6.62:1 light.
-  return { fontSize: 12, color: pal.textDim };
-}
 function currentModelStyle(pal: Palette): React.CSSProperties {
   return {
     flex: 1,
@@ -3688,6 +3915,24 @@ function previewEditedStyle(pal: Palette): React.CSSProperties {
 function previewCountStyle(pal: Palette): React.CSSProperties {
   return { fontSize: 10, color: pal.textDim, justifySelf: 'end' };
 }
+
+/**
+ * Images-per-format and the Buzz picker, side by side.
+ *
+ * 🔴 A WRAPPING FLEX ROW, NOT A TWO-COLUMN GRID, AND THE DIFFERENCE IS THE NARROW
+ * CASE. `flexBasis` + `flexWrap` means the pair drops to two lines as soon as a
+ * cell would go under ~180px; a `repeat(2, 1fr)` grid instead keeps squeezing, and
+ * what gets squeezed is the Buzz trigger — the control carrying the account name
+ * AND the price. `minWidth: 0` on the cells is what lets the pack's controls shrink
+ * to their share at all rather than forcing the row wider than the rail.
+ */
+const spendRowStyle: React.CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: 12,
+  alignItems: 'flex-start',
+};
+const spendCellStyle: React.CSSProperties = { flex: '1 1 180px', minWidth: 0 };
 
 // The Buzz-account menu: a trigger + an absolutely positioned popup.
 const accountWrapStyle: React.CSSProperties = { position: 'relative', marginTop: 4 };
@@ -3758,52 +4003,6 @@ function accountBalanceStyle(pal: Palette): React.CSSProperties {
   return { marginLeft: 'auto', fontSize: 12, fontWeight: 500, color: pal.textDim };
 }
 
-// The pill chrome (the quantity row — the Buzz account moved to the menu above).
-const pickerRowStyle: React.CSSProperties = {
-  display: 'flex',
-  flexWrap: 'wrap',
-  gap: 6,
-  marginTop: 4,
-};
-function pickerBtnStyle(
-  selected: boolean,
-  disabled: boolean,
-  pal: Palette,
-): React.CSSProperties {
-  return {
-    padding: '6px 14px',
-    borderRadius: 999,
-    border: '1px solid ' + (selected ? pal.brand : pal.border),
-    background: selected ? pal.brand : pal.surface,
-    color: selected ? pal.brandFg : pal.text,
-    fontSize: 13,
-    fontWeight: 600,
-    cursor: disabled ? 'not-allowed' : 'pointer',
-    opacity: disabled ? 0.6 : 1,
-  };
-}
-
-/**
- * The results grid.
- *
- * 🔴 IT USED TO BE `repeat(2, …)` AT EVERY WIDTH, with a comment claiming two
- * columns "keep each preview readable at the block's usual width". That was two
- * ~170px thumbnails on a phone and two ~300px ones inside a 640px column on a
- * 1600px block. The count is now `layoutForTier`'s, so generating four candidates
- * produces four comparable ones.
- */
-function galleryStyle(layout: BlockLayout): React.CSSProperties {
-  return {
-    display: 'grid',
-    gridTemplateColumns: `repeat(${layout.resultColumns}, minmax(0, 1fr))`,
-    gap: 10,
-  };
-}
-const galleryItemStyle: React.CSSProperties = {
-  display: 'grid',
-  gap: 6,
-};
-
 // Color inputs (editor) — native, themed minimally.
 const colorLabelStyle: React.CSSProperties = { display: 'grid', gap: 2 };
 function colorInputStyle(pal: Palette): React.CSSProperties {
@@ -3820,16 +4019,6 @@ function colorInputStyle(pal: Palette): React.CSSProperties {
 
 // The LoRA list + rows.
 const loraListStyle: React.CSSProperties = { marginTop: 4 };
-function loraRowStyle(pal: Palette): React.CSSProperties {
-  return {
-    display: 'grid',
-    gap: 6,
-    padding: '8px 10px',
-    borderRadius: 8,
-    border: `1px solid ${pal.border}`,
-    background: pal.surface,
-  };
-}
 const loraRowHeadStyle: React.CSSProperties = {
   display: 'flex',
   justifyContent: 'space-between',

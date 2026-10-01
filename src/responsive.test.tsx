@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -648,7 +648,7 @@ describe.each([
     expect(hero.style.color).toBe(rgb(own.heroFg));
   });
 
-  it('the model field, a selected format card and a quantity pill all read this theme', async () => {
+  it('the model field and a selected format card (ground, border, brand check) all read this theme', async () => {
     setBlockWidth(INSIDE.md);
     uninstall = installMockMoneyHost({ ...VIEWER, theme });
     render(<App />);
@@ -671,17 +671,21 @@ describe.each([
     expect(selected!.style.borderColor).toBe(rgb(own.brandTintBorder));
     expect(selected!.style.backgroundColor).not.toBe(rgb(other.brandTint));
 
-    // The brand pill: brand ground + brandFg text. Quantity 1 is selected by
-    // default.
-    const pill = screen.getByTestId('pm-quantity-1');
-    expect(pill.style.backgroundColor).toBe(rgb(own.brand));
-    expect(pill.style.color).toBe(rgb(own.brandFg));
-    expect(pill.style.backgroundColor).not.toBe(rgb(other.brand));
-
-    // And an UNSELECTED pill is the plain surface, so the two states differ.
-    const off = screen.getByTestId('pm-quantity-2');
-    expect(off.style.backgroundColor).toBe(rgb(own.surface));
-    expect(off.style.backgroundColor).not.toBe(pill.style.backgroundColor);
+    // 🔴 THE `brand`/`brandFg` PAIR MOVED SURFACE AND THIS CASE FOLLOWED IT. It used
+    // to be graded on the selected images-per-format PILL (`pm-quantity-1` brand
+    // ground, `pm-quantity-2` plain surface). That control is the pack's `<Select>`
+    // now — auto-themed by the pack, so the app paints no colour on it and there is
+    // nothing of OURS to grade there. The selected format card's check badge is the
+    // app's remaining `brand`-on-`brandFg` surface, so it is what carries the pair.
+    // Dropping the assertion instead would have left `brand`/`brandFg` ungraded in
+    // Guard A's blind spot (it checks provenance, never contrast).
+    const check = within(selected!).getByTestId('yt-format-check');
+    expect(check.style.backgroundColor).toBe(rgb(own.brand));
+    expect(check.style.color).toBe(rgb(own.brandFg));
+    expect(check.style.backgroundColor).not.toBe(rgb(other.brand));
+    // ...and it is a DIFFERENT ground from the card it sits on, so this is not two
+    // reads of one token.
+    expect(check.style.backgroundColor).not.toBe(selected!.style.backgroundColor);
   });
 
   it('the rail ground comes from THIS theme, at lg', async () => {
@@ -1000,16 +1004,27 @@ describe('results and the editor, at width', () => {
     // the same number on the same element; the template is what the browser lays
     // out from, so the attribute was a second copy of one fact and is gone from the
     // shipped DOM.
+    //
+    // 🔴 THE ELEMENT MOVED (`yt-results-grid` → `yt-history-images`) BUT THE CLAIM IS
+    // THE SAME FUNCTION'S OUTPUT: the candidate grid and the history rows both call
+    // `galleryStyle(layout)`, which is exactly why they were made one surface.
     await generate(width as number);
-    const grid = screen.getByTestId('yt-results-grid');
+    const grid = screen.getByTestId('yt-history-images');
     expect(grid.style.gridTemplateColumns).toBe(`repeat(${columns}, minmax(0, 1fr))`);
+    // The ROWS use the same ladder, so a second column rule cannot creep in for them.
+    expect(screen.getByTestId('yt-history-grid').style.gridTemplateColumns).toBe(
+      `repeat(${columns}, minmax(0, 1fr))`,
+    );
   });
 
   it('the results land ABOVE the controls once they exist', async () => {
     // Phase 2: the app's primary object is the first thing on screen. Asserted
-    // structurally (document order), not by looking for a heading.
+    // structurally (document order), not by looking for a heading. Still true after
+    // the surfaces merged — and it is the reason the history block moved up the
+    // column: it used to be LAST, which was fine while a separate grid held the
+    // images and would now put them below every input.
     await generate(INSIDE.md);
-    const results = screen.getByTestId('yt-results-grid');
+    const results = screen.getByTestId('yt-history-images');
     const prompt = screen.getByLabelText(/prompt/i);
     expect(
       results.compareDocumentPosition(prompt) & Node.DOCUMENT_POSITION_FOLLOWING,
@@ -1019,7 +1034,7 @@ describe('results and the editor, at width', () => {
   it('the editor puts the canvas beside its controls at lg', async () => {
     const user = await generate(INSIDE.lg);
     restoreImageLoad = installImageLoad();
-    await user.click(screen.getByTestId('pm-edit-0'));
+    await user.click(screen.getAllByTestId('yt-history-edit')[0]);
     const split = await screen.findByTestId('pm-editor-split');
     expect(split).toHaveAttribute('data-layout', 'side-by-side');
     expect(split.style.gridTemplateColumns).toBe('minmax(0, 3fr) minmax(0, 2fr)');
@@ -1032,7 +1047,7 @@ describe('results and the editor, at width', () => {
   it('the editor stacks on a narrow block', async () => {
     const user = await generate(INSIDE.base);
     restoreImageLoad = installImageLoad();
-    await user.click(screen.getByTestId('pm-edit-0'));
+    await user.click(screen.getAllByTestId('yt-history-edit')[0]);
     const split = await screen.findByTestId('pm-editor-split');
     expect(split).toHaveAttribute('data-layout', 'stacked');
     expect(split.style.gridTemplateColumns).toBe('minmax(0, 1fr)');

@@ -95,7 +95,7 @@ export function FormatPicker({
                     by something else: this badge (brandFg on brand, 6.55:1 dark /
                     4.90:1 light) plus `aria-checked` above. */}
                 {isOn && (
-                  <span style={checkStyle(pal)} aria-hidden="true">
+                  <span style={checkStyle(pal)} aria-hidden="true" data-testid="yt-format-check">
                     ✓
                   </span>
                 )}
@@ -409,6 +409,12 @@ function previewPlaceholderStyle(pal: Palette): React.CSSProperties {
   };
 }
 
+/**
+ * The selected-card tick. Carries a `data-testid` purely so the dual-theme guard can
+ * grade `brand` text on `brandFg` somewhere: this is the app's only remaining surface
+ * that paints that pair, now that images-per-format is the pack's auto-themed
+ * `<Select>` rather than a row of brand pills.
+ */
 function checkStyle(pal: Palette): React.CSSProperties {
   return {
     position: 'absolute',

@@ -635,6 +635,49 @@ export function aggregateEstimate(runs: readonly FormatRun[]): {
 }
 
 /**
+ * THE ONE ANSWER TO "HAS ANYTHING THAT CHANGES THE PRICE CHANGED?"
+ *
+ * The live cost preview re-estimates when this string changes and at no other
+ * time, so what is in here IS the app's definition of a price-relevant input.
+ * It exists as a pure function for two reasons:
+ *
+ *  - the effect that drives the preview must depend on a PRIMITIVE. Every object
+ *    it would otherwise watch (the resolved formats array, the checkpoint, the
+ *    LoRA list) is rebuilt on every render, so an effect keyed on them re-runs
+ *    every render — the same unbounded-spin class the storage ref's comment
+ *    documents, except here each spin would fire a network request.
+ *  - it is the seam a test can pin. "The estimate fires when quantity changes and
+ *    not when the prompt does" is a statement about this function.
+ *
+ * 🔴 THE PROMPT IS DELIBERATELY ABSENT. The prompt text does not price a
+ * generation — the CLI's own dry-run says the prompt is not even sent with the
+ * estimate — and including it would re-price on every keystroke, spending the
+ * viewer's rate limit to learn nothing. Format SELECTION is in, because formats
+ * multiply the request count and therefore the bill.
+ *
+ * 🔴 THE BUZZ ACCOUNT IS ALSO ABSENT, and for a different reason: it decides WHOSE
+ * Buzz is debited, not HOW MUCH. Re-estimating on a pool change would fire a
+ * request whose answer is known to be identical.
+ */
+export function estimateSignature(input: {
+  formatIds: readonly string[];
+  checkpointVersionId: number;
+  loras: ReadonlyArray<{ versionId: number; weight: number }>;
+  quantity: number;
+  mode: 'generate' | 'remix';
+  sourceImageUrl: string | null;
+}): string {
+  return JSON.stringify([
+    input.mode,
+    input.checkpointVersionId,
+    clampQuantity(input.quantity),
+    [...input.formatIds],
+    input.loras.map((l) => [l.versionId, l.weight]),
+    input.sourceImageUrl ?? '',
+  ]);
+}
+
+/**
  * What was ACTUALLY spent, summed from the runs the SERVER reported a cost for.
  *
  * 🔴 NEVER falls back to the estimate. On a partial failure the estimate covers

@@ -256,7 +256,7 @@ describe('App money path (e2e)', () => {
     expect(screen.queryByAltText(/generated result/i)).not.toBeInTheDocument();
   });
 
-  it('quantity pill -> params.quantity rides on the submit body', async () => {
+  it('the quantity dropdown -> params.quantity rides on the submit body', async () => {
     const user = userEvent.setup();
     const submittedBodies: Array<{ params?: { quantity?: number } }> = [];
     uninstall = installMockMoneyHost({
@@ -274,17 +274,22 @@ describe('App money path (e2e)', () => {
     render(<App />);
     await screen.findByTestId('pm-generate');
 
-    // Pick 3 candidates, then generate.
-    await user.click(screen.getByTestId('pm-quantity-3'));
-    expect(screen.getByTestId('pm-quantity-3')).toHaveAttribute('aria-checked', 'true');
+    // Pick 3 candidates, then generate. 🔴 MARKUP SHAPE CHANGED, THE CLAIM DID NOT:
+    // images-per-format is the pack's `<Select>` (a native `<select>`) instead of a
+    // row of `aria-checked` radio pills, so it is driven with `selectOptions` and read
+    // as a VALUE. What is asserted below is what this case has always asserted — the
+    // number on the wire.
+    await user.selectOptions(screen.getByTestId('pm-quantity'), '3');
+    expect(screen.getByTestId('pm-quantity')).toHaveValue('3');
     await user.type(screen.getByLabelText(/prompt/i), 'a cat');
     await user.click(screen.getByTestId('pm-generate'));
 
     await screen.findByAltText(/generated result/i, {}, { timeout: 5000 });
     // The REAL proof: the clamped quantity reached the host on the submit body.
     expect(submittedBodies.at(-1)?.params?.quantity).toBe(3);
-    // And every candidate from the snapshot landed in the gallery.
-    expect(screen.getAllByTestId('pm-result-img').length).toBeGreaterThan(0);
+    // And every candidate from the snapshot landed in the gallery — which is now the
+    // unified results/history surface.
+    expect(screen.getAllByTestId('yt-history-img').length).toBeGreaterThan(0);
   });
 
   it('Remix mode: the generationSource upload seeds the body as sourceImage', async () => {
@@ -351,8 +356,11 @@ describe('App money path (e2e)', () => {
     await user.click(screen.getByTestId('pm-generate'));
     await screen.findByAltText(/generated result/i, {}, { timeout: 5000 });
 
-    // Open the editor on the first candidate.
-    await user.click(screen.getByTestId('pm-edit-0'));
+    // Open the editor on the first candidate. The entry point moved with the images:
+    // it is the "Add text" button on a row in the unified surface. Losing that button
+    // when the candidate grid went away would have made the canvas editor — a whole
+    // feature — unreachable, which is why this case is worth keeping pointed at it.
+    await user.click(screen.getAllByTestId('yt-history-edit')[0]);
     expect(screen.getByTestId('pm-editor')).toBeInTheDocument();
 
     // Back returns to the generation surface — results intact.

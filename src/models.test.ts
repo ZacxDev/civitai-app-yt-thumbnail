@@ -10,6 +10,7 @@ import {
   familyHasLoras,
   loraFromPick,
   loraOption,
+  lorasForCheckpoint,
   pickedCheckpointLabel,
   removeLora,
   setLoraWeight,
@@ -193,5 +194,59 @@ describe('addLora / removeLora / setLoraWeight', () => {
     expect(setLoraWeight(sel, 1, 9)[0].weight).toBe(2); // clamped
     expect(setLoraWeight(sel, 1, 0.333333)[0].weight).toBe(0.33); // rounded
     expect(setLoraWeight(sel, 2, 0.5)).toEqual(sel); // no match → unchanged
+  });
+});
+
+describe('lorasForCheckpoint', () => {
+  /**
+   * 🔴 ONE RULE, TWO CALL SITES, AND IT CLOSES A REAL SUBMIT BUG. `onChangeModel` used
+   * to set the checkpoint and leave `loras` alone, so an SDXL LoRA stayed selected under
+   * an OpenAI checkpoint, rode into `additionalResources`, and the server rejected the
+   * generation with nothing on screen naming the cause. The App calls this when the
+   * model changes (so the viewer SEES the clear and is told) and again when it builds
+   * the form snapshot every body comes from (so no body can carry an impossible
+   * resource, whatever path set the two inconsistently).
+   *
+   * BEHAVIOUR coverage here; the end-to-end clear is red-at-base in picker.test.tsx.
+   */
+  const selection: LoraOption[] = [
+    { versionId: 135867, modelId: 122359, label: 'Detail Tweaker XL', baseModel: 'SDXL 1.0', weight: 0.65 },
+    { versionId: 222111, modelId: 333222, label: 'Sinfully Stylish', baseModel: 'SDXL 1.0', weight: 1.35 },
+  ];
+
+  it('🔴 returns NOTHING for a family with no LoRAs', () => {
+    // 'OpenAI' is the measured member of LORA_FREE_BASE_MODELS — 0 LoRAs with two
+    // positive controls; see that set's own comment.
+    expect(lorasForCheckpoint('OpenAI', selection)).toEqual([]);
+  });
+
+  it('🔴 returns EVERY LoRA for a family that has them — the resume path', () => {
+    // The arm that makes a resume safe: restoring an SDXL batch's checkpoint AND its
+    // LoRAs must keep all of them. A mutant that returned `[]` unconditionally, or
+    // dropped all but the first, dies here.
+    expect(lorasForCheckpoint('SDXL 1.0', selection)).toEqual(selection);
+    expect(lorasForCheckpoint('SDXL 1.0', selection)).toHaveLength(2);
+  });
+
+  it('returns a COPY, never the caller’s array', () => {
+    // It feeds a `setState` and a stored record; handing back the same reference makes
+    // a later mutation of the selection silently rewrite history.
+    const out = lorasForCheckpoint('SDXL 1.0', selection);
+    expect(out).not.toBe(selection);
+  });
+
+  it('is case/punctuation-insensitive and permissive for an unknown family', () => {
+    // It delegates to `familyHasLoras`, whose deny-set is an EXCEPTION list: an
+    // unmeasured family keeps its LoRAs rather than silently losing a working control.
+    expect(lorasForCheckpoint('open ai', selection)).toEqual([]);
+    expect(lorasForCheckpoint('Some Future Model', selection)).toEqual(selection);
+    expect(lorasForCheckpoint(null, selection)).toEqual(selection);
+  });
+
+  it('🔴 agrees with familyHasLoras for the SHIPPED DEFAULT, which is such a family', () => {
+    // The premise the hidden LoRA field rests on, asserted rather than assumed so a
+    // change of default cannot leave the UI decision silently wrong.
+    expect(familyHasLoras(DEFAULT_CHECKPOINT.baseModel)).toBe(false);
+    expect(lorasForCheckpoint(DEFAULT_CHECKPOINT.baseModel, selection)).toEqual([]);
   });
 });

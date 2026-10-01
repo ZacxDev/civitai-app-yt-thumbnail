@@ -61,7 +61,14 @@ describe('App (component)', () => {
     // Read off DEFAULT_CHECKPOINT rather than hard-coded: this case is about
     // the picker affordances EXISTING, not about which model is default.
     expect(screen.getByTestId('pm-model-label')).toHaveTextContent(DEFAULT_CHECKPOINT.label);
-    expect(screen.getByTestId('pm-lora-add')).toBeInTheDocument();
+    // 🔴 AND NO "Add LoRA" — because the shipped default is a family that has none.
+    // This assertion used to be the opposite; the field is now hidden outright for
+    // such a family rather than rendered disabled with an explanation. The premise is
+    // asserted rather than assumed, so a change of default cannot leave this case
+    // quietly checking the wrong thing. (picker.test.tsx owns the switch-back path.)
+    const { familyHasLoras } = await import('./models.js');
+    expect(familyHasLoras(DEFAULT_CHECKPOINT.baseModel)).toBe(false);
+    expect(screen.queryByTestId('pm-lora-add')).not.toBeInTheDocument();
   });
 
   it('does NOT render a Buzz balance readout — the Civitai chrome already shows it', async () => {

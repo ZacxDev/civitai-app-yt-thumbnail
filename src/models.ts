@@ -171,6 +171,29 @@ export function familyHasLoras(baseModel: string | null | undefined): boolean {
   return true;
 }
 
+/**
+ * The LoRAs that may actually ride with a checkpoint of this family: the selection
+ * as-is when the family takes LoRAs, and NOTHING when it does not.
+ *
+ * 🔴 ONE RULE, ONE PLACE, AND IT CLOSES A REAL SUBMIT BUG. Switching the
+ * checkpoint used to set the new model and leave `loras` untouched, so an SDXL
+ * LoRA stayed selected under an OpenAI checkpoint and rode into
+ * `additionalResources` — the server then rejected the generation with nothing on
+ * screen explaining why. Hiding the LoRA field for such a family (which is the
+ * right UI) makes that state INVISIBLE rather than merely wrong, which is why the
+ * clearing rule and the body-building rule have to be the SAME function: the App
+ * calls this when the model changes (so the viewer SEES the clear and is told),
+ * AND when it builds the submitted form snapshot (so no body can carry an
+ * impossible resource even if some other path — a resume of an old record — sets
+ * the two inconsistently).
+ */
+export function lorasForCheckpoint(
+  baseModel: string | null | undefined,
+  selected: readonly LoraOption[],
+): LoraOption[] {
+  return familyHasLoras(baseModel) ? [...selected] : [];
+}
+
 // ---------------------------------------------------------------------------
 // Pick → option helpers.
 //
