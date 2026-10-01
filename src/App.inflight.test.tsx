@@ -204,6 +204,55 @@ function storedRecords(): GenerationRecord[] {
 }
 
 /**
+ * A mocked host call held OPEN, releasing EVERY caller that is parked on it.
+ *
+ * 🔴 THIS REPLACES `let release = () => {}`, WHICH IS A MEASURED FLAKE AND NOT MERELY
+ * UNTIDY. That shape keeps only the LAST caller's `resolve`, so a SECOND call to the
+ * same mock silently orphans the first — and `estimate()` has a second caller inside
+ * the app: the live cost preview's `ESTIMATE_DEBOUNCE_MS` (250 ms) timer, which
+ * `runGeneration` knows nothing about.
+ *
+ * THE RACE, INSTRUMENTED AT 19c4bb1 (full suite, both projects, 1 failure in 22 runs).
+ * The preview's debounce is armed at mount, so the determinant is whether the ESTIMATE
+ * case below reaches its release within 250 ms of `render()`. Measured: 252 ms on the
+ * failing run, 242 ms on the nearest passing one. Over the line, the preview's
+ * debounced `estimate` lands BETWEEN the click and the release, takes over
+ * `releaseEstimate`, and the release then resolves the PREVIEW's promise — leaving
+ * `runGeneration`'s estimate pass pending for ever, so `submit` is never called and the
+ * case fails on `expected "vi.fn()" to be called at least once`.
+ *
+ * NOT DIAGNOSED FROM THE ~50% FLAKE — FORCED. Inserting `await sleep(400)` before the
+ * release puts the preview's estimate inside that window every time: the single-variable
+ * form then fails 1/1 on exactly that assertion, and this form passes 1/1. That pair,
+ * not a green streak, is why the fix is known to address the mechanism.
+ *
+ * `releaseAll` resolves every call opened so far, so the outcome no longer depends on
+ * HOW MANY callers are parked or in WHICH ORDER they arrived — which is what makes
+ * these cases deterministic rather than merely slower. No timeout anywhere was widened.
+ * `pending()` is the positive control: it proves a call really is open, so a release
+ * cannot pass as a no-op against nothing. Same array shape `App.estimate.test.tsx`
+ * already uses by hand; this is that idiom, named once rather than re-derived per call
+ * site — it was open-coded at five sites here and silently wrong at every one that can
+ * see a second caller.
+ */
+function deferred<T>() {
+  const resolvers: Array<(value: T) => void> = [];
+  return {
+    /** Install as the mock's implementation — every call parks until released. */
+    impl: () =>
+      new Promise<T>((resolve) => {
+        resolvers.push(resolve);
+      }),
+    /** Resolve EVERY call opened so far with the same value. */
+    releaseAll: (value: T) => {
+      for (const resolve of resolvers.splice(0)) resolve(value);
+    },
+    /** How many calls are parked right now. */
+    pending: () => resolvers.length,
+  };
+}
+
+/**
  * Type a prompt and click Generate, leaving the batch POLLING.
  *
  * `submit` returns a non-terminal snapshot, and `pollFn` is left answering
@@ -276,13 +325,8 @@ describe('🔴 the form is LIVE while a generation polls (change 6)', () => {
     // The pair is the point: a mutant that simply deletes the gate passes the second
     // assertion and fails the first. `submit` is held open so the `submitting` phase
     // is observable rather than instantaneous.
-    let release: (s: BlockWorkflowSnapshot) => void = () => {};
-    submitFn.mockImplementation(
-      () =>
-        new Promise<BlockWorkflowSnapshot>((resolve) => {
-          release = resolve;
-        }),
-    );
+    const submitGate = deferred<BlockWorkflowSnapshot>();
+    submitFn.mockImplementation(submitGate.impl);
     const user = userEvent.setup();
     render(<App />);
     await screen.findByTestId('pm-generate');
@@ -293,8 +337,10 @@ describe('🔴 the form is LIVE while a generation polls (change 6)', () => {
     // second order for the same intent. The gate is shut.
     await waitFor(() => expect(screen.getByTestId('pm-generate')).toBeDisabled());
 
-    // ARM 2 — the workflow is accepted; the gate opens.
-    release(snap({ workflowId: 'wf-a', status: 'processing' }));
+    // ARM 2 — the workflow is accepted; the gate opens. POSITIVE CONTROL first: a
+    // submit really is parked, so `releaseAll` cannot pass as a no-op against nothing.
+    await waitFor(() => expect(submitGate.pending()).toBeGreaterThan(0));
+    submitGate.releaseAll(snap({ workflowId: 'wf-a', status: 'processing' }));
     await waitFor(() => expect(screen.getByTestId('pm-generate')).toBeEnabled(), {
       timeout: 3000,
     });
@@ -423,20 +469,20 @@ describe('🔴 editing the form mid-flight cannot touch the batch already in fli
    * on each side — the wire and the record. Both now kill the ref mutant.
    */
   it('🔴 editing the prompt while ESTIMATE is in flight does not change the SUBMITTED body', async () => {
-    let releaseEstimate: (s: BlockWorkflowSnapshot) => void = () => {};
-    estimateFn.mockImplementation(
-      () =>
-        new Promise<BlockWorkflowSnapshot>((resolve) => {
-          releaseEstimate = resolve;
-        }),
-    );
+    const estimateGate = deferred<BlockWorkflowSnapshot>();
+    estimateFn.mockImplementation(estimateGate.impl);
     submitFn.mockResolvedValue(snap({ workflowId: 'wf-a', status: 'processing' }));
     const user = userEvent.setup();
     render(<App />);
     await screen.findByTestId('pm-generate');
     await user.type(screen.getByLabelText(/prompt/i), 'a red bicycle');
     await user.click(screen.getByTestId('pm-generate'));
-    await waitFor(() => expect(estimateFn).toHaveBeenCalled());
+    // 🔴 WAIT ON THE APP'S OWN STATE, NOT ON `estimateFn` HAVING BEEN CALLED. The
+    // debounced cost preview calls `estimate()` too, so `toHaveBeenCalled()` can be
+    // satisfied by a call `runGeneration` never made; a DISABLED Generate can only come
+    // from `runs` entering `estimating`, which only `runGeneration` does. Same reason
+    // the release below is `releaseAll` — see `deferred`.
+    await waitFor(() => expect(screen.getByTestId('pm-generate')).toBeDisabled());
 
     // The window: the estimate has not resolved, so nothing has submitted, and the
     // prompt box is still live (it carries no `disabled`, and never has).
@@ -444,7 +490,11 @@ describe('🔴 editing the form mid-flight cannot touch the batch already in fli
     await user.type(screen.getByLabelText(/prompt/i), 'a BLUE motorcycle');
     expect(screen.getByLabelText(/prompt/i)).toHaveValue('a BLUE motorcycle');
 
-    releaseEstimate(snap({ workflowId: 'est', cost: { total: ESTIMATE } }));
+    // POSITIVE CONTROL: an estimate really is parked, so the window asserted above was
+    // real and `releaseAll` is not resolving an empty list.
+    expect(estimateGate.pending()).toBeGreaterThan(0);
+    expect(submitFn).not.toHaveBeenCalled();
+    estimateGate.releaseAll(snap({ workflowId: 'est', cost: { total: ESTIMATE } }));
     await waitFor(() => expect(submitFn).toHaveBeenCalled());
 
     // 🔴 THE WIRE CARRIES THE PROMPT THE CLICK HAD. `params.prompt` is composed from
@@ -457,13 +507,8 @@ describe('🔴 editing the form mid-flight cannot touch the batch already in fli
   });
 
   it('🔴 editing the prompt while SUBMIT is in flight does not change the stored RECORD', async () => {
-    let releaseSubmit: (s: BlockWorkflowSnapshot) => void = () => {};
-    submitFn.mockImplementation(
-      () =>
-        new Promise<BlockWorkflowSnapshot>((resolve) => {
-          releaseSubmit = resolve;
-        }),
-    );
+    const submitGate = deferred<BlockWorkflowSnapshot>();
+    submitFn.mockImplementation(submitGate.impl);
     const user = userEvent.setup();
     render(<App />);
     await screen.findByTestId('pm-generate');
@@ -477,7 +522,10 @@ describe('🔴 editing the form mid-flight cannot touch the batch already in fli
     await user.clear(screen.getByLabelText(/prompt/i));
     await user.type(screen.getByLabelText(/prompt/i), 'a BLUE motorcycle');
 
-    releaseSubmit(snap({ workflowId: 'wf-a', status: 'processing' }));
+    // POSITIVE CONTROL: a submit is parked. `releaseAll` rather than one resolver
+    // because `runGeneration` issues one `submit` PER FORMAT — see `deferred`.
+    expect(submitGate.pending()).toBeGreaterThan(0);
+    submitGate.releaseAll(snap({ workflowId: 'wf-a', status: 'processing' }));
 
     // The record lands now, and it describes the CLICK, not the box.
     await waitFor(() => expect(storedRecords()).toHaveLength(1));
@@ -707,13 +755,8 @@ describe('yt-history-cancel — reachability', () => {
     // per-row pending flag satisfies both. The click reaching the handler at all is
     // asserted by the `cancel requested` note at the end, so the deleted
     // enabled-and-fires case added nothing this one does not already carry.
-    let releaseCancel: () => void = () => {};
-    cancelFn.mockImplementation(
-      () =>
-        new Promise<unknown>((resolve) => {
-          releaseCancel = () => resolve({ ok: true });
-        }),
-    );
+    const cancelGate = deferred<unknown>();
+    cancelFn.mockImplementation(cancelGate.impl);
     submitFn.mockResolvedValue(snap({ workflowId: 'wf-a', status: 'processing' }));
     const user = userEvent.setup();
     render(<App />);
@@ -725,7 +768,10 @@ describe('yt-history-cancel — reachability', () => {
     await user.click(cancel);
     // Pending: the row's own request is in flight, so the control reports it.
     await waitFor(() => expect(screen.getByTestId('yt-history-cancel')).toBeDisabled());
-    releaseCancel();
+    // POSITIVE CONTROL: the cancel really is parked, so the disabled state above is the
+    // round trip and not an unrelated gate.
+    expect(cancelGate.pending()).toBeGreaterThan(0);
+    cancelGate.releaseAll({ ok: true });
     // ...and it comes back, with the outcome named.
     await waitFor(() => expect(screen.getByTestId('yt-history-cancel')).toBeEnabled());
     expect(screen.getByTestId('yt-history-note')).toHaveTextContent(/cancel requested/i);
@@ -1130,14 +1176,12 @@ describe('🔴 the pool patch: no silent write loss, and no duplicate in-flight 
   it('🔴 issues ONE patch write even when the record list changes under an open one', async () => {
     // The cycle, driven: hold the patch write open, then make `historyRecords` change
     // identity (the Show toggle re-reads storage) while it is still pending.
-    let releasePatch: () => void = () => {};
+    const patchGate = deferred<void>();
     const patchWrites: unknown[] = [];
     storageSet.mockImplementation(async (key: string, value: unknown) => {
       if ((value as { spentAccount?: unknown }).spentAccount !== undefined) {
         patchWrites.push(value);
-        await new Promise<void>((resolve) => {
-          releasePatch = resolve;
-        });
+        await patchGate.impl();
         store.set(key, value);
         return { ok: true };
       }
@@ -1172,7 +1216,11 @@ describe('🔴 the pool patch: no silent write loss, and no duplicate in-flight 
 
     // Still exactly one. Pre-fix this is 2+ — one per list change.
     expect(patchWrites).toHaveLength(1);
-    releasePatch();
+    // `releaseAll`, so a mutant that DID open a second write cannot leave the first
+    // parked — this case would then fail on its own count assertion above rather than
+    // time out on a hung promise below.
+    expect(patchGate.pending()).toBeGreaterThan(0);
+    patchGate.releaseAll(undefined);
     await waitFor(() => expect(storedRecords()[0]?.spentAccount).toBe('yellow'));
   });
 
@@ -1427,13 +1475,8 @@ describe('🔴 Reuse settings cannot re-open the submit window', () => {
   });
 
   it('a Reuse click mid-submit is REFUSED, and says so — then works once the batch is placed', async () => {
-    let release: (s: BlockWorkflowSnapshot) => void = () => {};
-    submitFn.mockImplementation(
-      () =>
-        new Promise<BlockWorkflowSnapshot>((resolve) => {
-          release = resolve;
-        }),
-    );
+    const submitGate = deferred<BlockWorkflowSnapshot>();
+    submitFn.mockImplementation(submitGate.impl);
     const user = userEvent.setup();
     render(<App />);
     await screen.findByTestId('pm-generate');
@@ -1461,7 +1504,8 @@ describe('🔴 Reuse settings cannot re-open the submit window', () => {
     expect(submitFn).toHaveBeenCalledTimes(1);
 
     // THE OTHER SIDE: once the workflow is accepted the window opens and Reuse works.
-    release(snap({ workflowId: 'wf-a', status: 'processing' }));
+    expect(submitGate.pending()).toBeGreaterThan(0);
+    submitGate.releaseAll(snap({ workflowId: 'wf-a', status: 'processing' }));
     await waitFor(() => expect(screen.getByTestId('pm-generate')).toBeEnabled(), { timeout: 3000 });
     const rows = screen.getAllByTestId('yt-history-row');
     const resumable = rows.find((r) => (r.textContent ?? '').includes('Tractorcam'));
