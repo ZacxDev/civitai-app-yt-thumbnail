@@ -13,7 +13,8 @@
     "source": "the app's own LIVE listing mark (assets/icon.png, commit efb2acb) resolved through brand-assets-rev5-2026-08-13",
     "wheelGate": {
       "bar": "rev5 wheel.py gate 1 — minimum pairwise HSV hue separation >= 40 deg across the onsite family",
-      "result": "FAIL",
+      "result": "RECORDED (informational, no verdict)",
+      "resultWas": "FAIL — reframed 2026-09-30, not re-measured. The separations below are unchanged; what changed is that the bar no longer applies to this hue. Per the app-taste policy landed in civitai/civitai#5260, the >= 40 deg bar binds a hue you CHOOSE, and this one was MEASURED from the app's own approved live mark (see howDerived / source above), so it is recorded here rather than policed. wheel.py gained a matching RECORD mode (--candidate / --family) that prints these numbers with no verdict.",
       "measured": {
         "gen-matrix #DB6EC9 (309.9 deg)": "11.8 deg",
         "playable-collections #FA6478 (352.0 deg)": "30.2 deg",
@@ -23,7 +24,7 @@
         "sensei #67A63A (95.0 deg)": "133.2 deg",
         "model-benchmarking #00AB89 (168.1 deg)": "153.7 deg"
       },
-      "whyShippedAnyway": "yt-thumbnail is an EIGHTH onsite app and the wheel is documented FULL at seven (seven at >=42 deg already consume 294 of 360 deg). Moving the app off its own live mark would put the in-app skin at odds with the icon and cover that are approved and live on the store today, which is the worse of the two wrongs. Tracked in deferred[] with a closing condition."
+      "whyShippedAnyway": "yt-thumbnail is an EIGHTH onsite app and the wheel is documented FULL at seven (seven at >=42 deg already consume 294 of 360 deg). Moving the app off its own live mark would put the in-app skin at odds with the icon and cover that are approved and live on the store today, which is the worse of the two wrongs. Tracked in deferred[1], whose closing condition is now RESOLVED BY DECISION — see that entry. ✅ 2026-09-30: this reasoning was adopted as the general policy rather than remaining a one-app exception; 'never contort a palette to widen a separation' is now the rubric's own instruction, so no future pass has to re-argue it."
     },
     "dualThemeContrast": {
       "method": "computed in-app by palette.ts contrastRatio(), asserted for every pair in TEXT_PAIRS in BOTH themes",
@@ -136,8 +137,8 @@
     },
     {
       "item": "yt-thumbnail's brand hue fails the rev5 wheel's >=40 deg separation gate (11.8 deg from gen-matrix). The onsite hue wheel is full at seven apps and this is the eighth.",
-      "closingCondition": "MECHANICAL: add 'yt-thumbnail' to the APPS list in brand-assets-rev5-*/scripts/wheel.py (or its successor) and re-run it; the item closes when GATE 1 prints PASS — either because the wheel was re-spaced for 8+ onsite apps, or because yt-thumbnail was moved to the offsite graphite-plate grammar, which makes hue non-scarce. If the resolution changes the hue, this app's palette.ts BRAND_DARK/BRAND_LIGHT and palette.test.ts change with it.",
-      "checkedBy": "whoever next runs the `listing-media` skill's `brand` path for a new onsite app — that is the run the gate blocks."
+      "closingCondition": "MECHANICAL: add 'yt-thumbnail' to the APPS list in brand-assets-rev5-*/scripts/wheel.py (or its successor) and re-run it; the item closes when GATE 1 prints PASS — either because the wheel was re-spaced for 8+ onsite apps, or because yt-thumbnail was moved to the offsite graphite-plate grammar, which makes hue non-scarce. If the resolution changes the hue, this app's palette.ts BRAND_DARK/BRAND_LIGHT and palette.test.ts change with it. ✅ RESOLVED BY DECISION 2026-09-30 — NOT by either branch above. The wheel was never re-spaced and the app did not move offsite; the operator scoped the bar instead, and civitai/civitai#5260 landed it: the >= 40 deg bar binds a hue you CHOOSE, while a hue measured from the app's approved live mark is recorded and ships as-is. yt-thumbnail's #FF49BD is mark-derived (howDerived: 'MEASURED, not chosen'), so the gate it 'fails' no longer governs it and the 11.8 deg separation is a recorded fact, not a defect. Nothing in palette.ts or palette.test.ts changes, because the hue does not. 🔴 The stated MECHANICAL condition is therefore now UNREACHABLE AS WRITTEN and must not be retried: adding yt-thumbnail to wheel.py's APPS list and re-running gate 1 will still print FAIL forever, by design — that is the designer's own gate, which wheel.py's docstring now notes FAILs even on its own evenly-spaced wheel at 15.1 deg. Use wheel.py's RECORD mode (--candidate / --family) for an eighth-or-later app instead; it prints separations with no verdict.",
+      "checkedBy": "CLOSED — no longer blocks anything. It previously named 'whoever next runs the `listing-media` skill's `brand` path for a new onsite app'; that run is now unblocked by construction, since a mark-derived hue is recorded rather than gated."
     },
     {
       "item": "No before/after --evidence capture diff. The rubric's Evidence section is unsatisfied for this pass, and the capture recipe for this app does not exist (.claude/skills/app-capture/scripts/recipes/ has no yt-thumbnail.json).",

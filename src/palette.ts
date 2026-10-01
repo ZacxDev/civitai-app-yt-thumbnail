@@ -94,7 +94,7 @@ export interface Palette {
  *     own `fit_chroma`: LCh h=345.0, C*=81 → `#FF49BD`, realized HSV 321.8°
  *     (0.2° from the measurement), realized L* 61.4.
  *
- * 🔴 AND IT FAILS THE WHEEL'S OWN SEPARATION GATE — recorded, not hidden.
+ * 🔴 AND IT SITS INSIDE THE WHEEL'S SEPARATION BAR — recorded, not policed.
  * rev5's bar is ≥40° minimum pairwise HSV separation across the onsite family.
  * `#FF49BD` sits **11.8°** from `gen-matrix` (`#DB6EC9`, 309.9°) and 30.2° from
  * `playable-collections` (`#FA6478`, 352.0°). That is not a mistake in the
@@ -102,8 +102,15 @@ export interface Palette {
  * already consume 294° of 360°), and yt-thumbnail is an eighth onsite app with no
  * slot in it. The alternative — moving the app off its own live mark — would put
  * the in-app skin at odds with the icon and cover that are approved and live on
- * the store right now, which is the worse of the two wrongs. `taste.json`
- * carries the collision as a `deferred[]` item with its closing condition.
+ * the store right now, which is the worse of the two wrongs. That trade is now the
+ * FLEET POLICY, not this app's exception: civitai/civitai#5260 scoped the bar to bind
+ * a hue you CHOOSE, while a hue measured from the app's approved live mark — this one,
+ * see above — is recorded and ships as-is. So the 11.8° is a recorded fact and these
+ * two constants are CORRECT, not a known defect awaiting a re-skin. `taste.json`'s
+ * `hue.wheelGate` carries the numbers; its `deferred[1]` is resolved by that decision.
+ * 🔴 Do not "fix" BRAND_DARK/BRAND_LIGHT to widen the separation — that would desync
+ * the skin from the icon and cover approved on the store, which is the thing the
+ * policy exists to prevent.
  *
  * The light-theme `brand` is the same hue one lightness step down
  * (`shade(-0.22)` by `emit-svg.py`'s own function) because `#FF49BD` only reaches
