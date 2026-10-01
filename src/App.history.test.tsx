@@ -1025,6 +1025,79 @@ describe('🔴 a run whose storage write FAILED is not deleted by a refresh', ()
     expect(screen.getAllByTestId('yt-history-row')).toHaveLength(2);
   });
 
+  it("🔴 a read that FAILS after the id changed does not put an error over the new viewer's", async () => {
+    /**
+     * 🔴 RED AT 0a2cc97d, and the other half of the same unfenced `loadHistory`. The
+     * `catch` was reached with no owner check at all, so a read that was in flight under
+     * the old id and then REJECTED painted "Couldn't load your history" and a "Try
+     * again" over the new viewer's own, fully successful load. Not a disclosure — a
+     * false statement about someone else's storage, and a retry button that re-runs a
+     * read that had already worked.
+     *
+     * The hang is on `list()` rather than a `get()` here on purpose: a per-key `get`
+     * rejection is caught INSIDE the map and turns into a dropped row, so the outer
+     * `catch` is only reachable through `list` (or a throw in the join below it).
+     */
+    const TWO_IMAGE = 'https://image.civitai.com/viewer-two.jpg';
+    const SEVEN_IMAGE = 'https://image.civitai.com/viewer-seven.jpg';
+    const wf = (id: string, url: string, at: string): AppWorkflow => ({
+      workflowId: id,
+      status: 'succeeded',
+      images: [{ url, width: 1536, height: 864, nsfwLevel: 1 }],
+      cost: 209,
+      createdAt: at,
+    });
+    const rec = (batchId: string, at: string, workflowId: string) => {
+      const createdAt = Date.parse(at);
+      return {
+        key: historyKey(createdAt, batchId),
+        value: { ...RECORD, batchId, createdAt, workflowIds: [workflowId] },
+      };
+    };
+    const V2 = rec('b-two', '2026-09-30T12:15:00.000Z', 'wf-two');
+    const V7 = rec('b-seven', '2026-09-30T12:35:00.000Z', 'wf-seven');
+    const srcs = () => screen.getAllByTestId('yt-history-img').map((n) => n.getAttribute('src'));
+
+    state.workflows = [
+      wf('wf-two', TWO_IMAGE, '2026-09-30T12:10:00.000Z'),
+      wf('wf-seven', SEVEN_IMAGE, '2026-09-30T12:30:00.000Z'),
+    ];
+    stockStorage([V2]);
+
+    const user = userEvent.setup();
+    render(<App />);
+    await openHistory(user);
+    await waitFor(() => expect(srcs()).toContain(TWO_IMAGE));
+
+    // Viewer 2 starts a reload whose `list()` hangs, and will later REJECT.
+    let fail = () => {};
+    const listsBefore = storageList.mock.calls.length;
+    storageList.mockImplementationOnce(
+      () => new Promise((_resolve, reject) => (fail = () => reject(new Error('network hiccup')))),
+    );
+    await user.click(screen.getByTestId('yt-history-toggle'));
+    await user.click(screen.getByTestId('yt-history-toggle'));
+    await waitFor(() => expect(storageList.mock.calls.length).toBeGreaterThan(listsBefore));
+
+    // A different person signs in and their own read SUCCEEDS.
+    stockStorage([V7]);
+    state.viewer = { id: 7, username: 'someone-else' };
+    await user.click(screen.getByTestId('yt-history-toggle'));
+    await user.click(screen.getByTestId('yt-history-toggle'));
+    await waitFor(() => expect(srcs()).toContain(SEVEN_IMAGE));
+    expect(screen.queryByTestId('yt-history-error')).not.toBeInTheDocument();
+
+    // Now viewer 2's read fails, into viewer 7's surface. Same sync-point reasoning as
+    // the case above: the rejection's continuation is a microtask and `waitFor` yields a
+    // macrotask — and at 0a2cc97d the banner IS present at this assertion, which is the
+    // control proving the drain is sufficient.
+    fail();
+    await waitFor(() => expect(srcs()).toContain(SEVEN_IMAGE));
+    // 🔴 THE POINT: viewer 7's surface still reports the state of viewer 7's own read.
+    expect(screen.queryByTestId('yt-history-error')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /try again/i })).not.toBeInTheDocument();
+  });
+
   it('🔴 a RELOAD IN FLIGHT does not blank rows it already has', async () => {
     /**
      * 🔴 RED AT c84f082: `state === 'loading'` was an unconditional early return

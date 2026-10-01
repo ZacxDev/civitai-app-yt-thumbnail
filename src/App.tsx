@@ -1538,11 +1538,11 @@ export function App() {
       setHistoryRecords((cur) => mergeUnsavedRecords(cur, unsavedRecords()));
       return;
     }
-    // 🔴 THE VIEWER THIS READ BELONGS TO, CAPTURED BEFORE THE FIRST `await`. Every
-    // state write below is fenced on it still being the owner — see `mine` at each
-    // use site, and `historyOwnerRef` for why the effect's clear is not enough on its
-    // own. `viewerId` is already fixed per callback identity; the alias exists to
-    // narrow it to `number` and to name what it is for at each fence.
+    // 🔴 THE VIEWER THIS READ BELONGS TO, CAPTURED BEFORE THE FIRST `await`. Both state
+    // writes that can happen after an await are fenced on it still being the owner —
+    // the merge, and the `catch` — and `historyOwnerRef` carries why the effect's clear
+    // is not enough on its own. `viewerId` is already fixed per callback identity; the
+    // alias exists to narrow it to `number` and to name what it is for at each fence.
     const mine = viewerId;
     setHistoryState('loading');
     try {
@@ -1557,13 +1557,6 @@ export function App() {
           }
         }),
       );
-      // 🔴 FENCE, AND IT COVERS THE RETRY WRITES BELOW AS WELL AS THE MERGE. Past this
-      // point everything this call does is on behalf of `mine`: it writes `mine`'s
-      // still-unsaved records to whatever storage handle the CURRENT token addresses,
-      // and it renders `mine`'s rows. The `held` snapshot is taken after this await, so
-      // the effect's `clear()` already empties it on a swap — this makes that
-      // structural instead of incidental, and stops the read before it issues a write.
-      if (historyOwnerRef.current !== mine) return;
       const stored = loaded.filter((e): e is StoredRecord => e.record !== null);
       // Retry the writes that never landed. A success drops the record from the
       // unsaved map (storage owns it now); a failure leaves it there.
@@ -1588,12 +1581,17 @@ export function App() {
           }
         }),
       );
-      // 🔴 FENCE AGAIN — the retry writes above are `await`ed, so the id can move
-      // between the fence before them and here. This is the one that matters for
-      // DISCLOSURE: without it this merge writes `mine`'s rows into the list the
-      // current viewer is looking at, and the `...cur` arm then makes them STICK, since
-      // a row that is in neither the new viewer's `stored` half nor the (cleared)
-      // unsaved map is re-carried by `cur` on every subsequent reload, forever.
+      // 🔴 THE FENCE, AND IT IS THE ONE THAT MATTERS FOR DISCLOSURE. Without it this
+      // merge writes `mine`'s rows into the list the CURRENT viewer is looking at, and
+      // the `...cur` arm then makes them STICK: a row that is in neither the new
+      // viewer's `stored` half nor the (cleared) unsaved map is re-carried by `cur` on
+      // every subsequent reload, forever.
+      //
+      // There is deliberately NO fence before the retry writes above, and the reason is
+      // not that one would be harmless: `held` is read after the last `await` with no
+      // yield before the `set()` calls are issued, so on a change of id the effect's
+      // `clear()` has already emptied it and there is nothing to write. A second fence
+      // there could not change an outcome, so it would be a guard no test can kill.
       if (historyOwnerRef.current !== mine) return;
       // `held` first so an in-memory record beats the on-screen copy of itself, then
       // `cur` for anything that appeared while the awaits were pending.
