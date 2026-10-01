@@ -650,6 +650,40 @@ describe('🔴 a run whose storage write FAILED is not deleted by a refresh', ()
     await waitFor(() => expect(storageSet).toHaveBeenCalledTimes(2));
   });
 
+  it('🔴 survives the retry SUCCEEDING, which is the outcome that nearly dropped it', async () => {
+    /**
+     * 🔴 THE NEAR-MISS FIX, PINNED. The merge must use the unsaved list SNAPSHOTTED
+     * BEFORE the retry. Reading the map again afterwards drops exactly the records
+     * whose retry LANDED: they are no longer unsaved, and they are not in the stored
+     * half either, because that was read before they were written. The row would
+     * vanish on the one outcome that fixed the problem — and every other case in this
+     * describe would still pass, because in all of them the retry fails.
+     *
+     * Not a red-at-base case (the whole retry is new here): this is a MUTATION guard,
+     * and it was watched to fail against the `unsavedRecords()`-after-the-retry
+     * mutant with this test's own assertion.
+     */
+    generateOnce();
+    // Reject the submit-time write, accept the retry.
+    storageSet.mockRejectedValueOnce(new Error('network hiccup')).mockResolvedValue({ ok: true });
+
+    const user = userEvent.setup();
+    render(<App />);
+    await user.type(await screen.findByLabelText(/prompt/i), 'a cat');
+    await user.click(screen.getByTestId('pm-generate'));
+
+    expect(await screen.findByTestId('yt-history-img')).toHaveAttribute('src', FRESH_IMAGE);
+    const listsBefore = storageList.mock.calls.length;
+    await user.click(await screen.findByRole('button', { name: /try again/i }));
+    await waitFor(() => expect(storageList.mock.calls.length).toBeGreaterThan(listsBefore));
+    // The retry landed...
+    await waitFor(() => expect(storageSet).toHaveBeenCalledTimes(2));
+    // ...and the row is STILL on screen, even though the `list()` that ran a moment
+    // before the successful write could not have seen it.
+    expect(screen.getByTestId('yt-history-row')).toBeInTheDocument();
+    expect(screen.getByTestId('yt-history-img')).toHaveAttribute('src', FRESH_IMAGE);
+  });
+
   it('survives a token that expired mid-run — the ANON state is a banner, not a replacement', async () => {
     /**
      * `classifyStorageError` matches 'anon' / 'sign in' / 'not signed in' on a failed
