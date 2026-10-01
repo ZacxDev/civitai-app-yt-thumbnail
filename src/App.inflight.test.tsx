@@ -41,6 +41,24 @@ import type { AppWorkflow, BlockWorkflowSnapshot } from '@civitai/app-sdk/blocks
  *     premise it was written to confirm. See that block's own note.
  *   'a record written by the OLD shape'          INVARIANT GUARD for the new optional
  *     `spentAccount` field. Red against a mutant that makes `parseRecord` require it.
+ *   'the icon-only controls'                     INVARIANT GUARD for the operator's
+ *     icon request: the wording moved from visible text into `title`/`aria-label`, and
+ *     this pins the exact strings on both controls.
+ *   'relative timestamps on the row'             INVARIANT GUARD for the seam —
+ *     `relative-time.test.ts` grades the ladder with injected clocks; this grades that
+ *     the App threads it, on both sides of the 7-day band.
+ *   'pm-spent is gone in every state'            INVARIANT GUARD, asserted as a PAIR
+ *     (the alert absent AND its information present on the row), so the information
+ *     simply disappearing cannot satisfy it.
+ *   'the pool patch'                             REGRESSION COVERAGE for two defects
+ *     previously written down as accepted: the 64 KB re-check on the patch path (red
+ *     against `tooLarge: false`, run) and the duplicate in-flight `set` (red against
+ *     the skip-set removed, run — it measured three writes for one row).
+ *   'the generate path survives StrictMode'      REGRESSION COVERAGE, and honestly red
+ *     at `c109c526` for the right reason: 1 estimate call, 0 submit calls. It is the
+ *     only case in the repo that renders the shape `main.tsx` mounts.
+ *   'Reuse settings cannot re-open the submit window'  REGRESSION COVERAGE. Red at
+ *     `c109c526`: after the Reuse click Generate is ENABLED and the refusal note absent.
  * ---------------------------------------------------------------------------
  *
  * 🔴 EVERY hook App imports must appear in the `vi.mock` below. A missing one fails
@@ -389,10 +407,12 @@ describe('🔴 editing the form mid-flight cannot touch the batch already in fli
    * what this file's own App already does for the cost preview (`previewRef`) — so the
    * mutant is: give `App` a `formSnapshotRef`, keep it current on every render, and
    * have the submit pass and the record write read `formSnapshotRef.current` instead of
-   * the `formSnapshot` closure. That mutant SURVIVED the first three cases in this
-   * block, all green, because they edit the form only AFTER the record is already
-   * written: by then the ref and the closure hold the same value and the two
-   * implementations are indistinguishable.
+   * the `formSnapshot` closure. That mutant SURVIVED every case in this block that edits
+   * the form only AFTER the record is already written — which, as the block now stands,
+   * is every OTHER case in it: the two above and the two mid-poll ones below. By then
+   * the ref and the closure hold the same value and the two implementations are
+   * indistinguishable. (Stated by what the cases DO rather than as a positional count,
+   * which an inserted case silently falsifies.)
    *
    * The window that distinguishes them is between the CLICK and the WRITE, and it is
    * genuinely open: the prompt Textarea has never carried a `disabled` at all, so it is
