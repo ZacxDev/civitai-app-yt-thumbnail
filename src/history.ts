@@ -217,6 +217,41 @@ export function recordFits(record: GenerationRecord): boolean {
   return new TextEncoder().encode(JSON.stringify(record)).length <= STORAGE_VALUE_MAX_BYTES;
 }
 
+/** One stored batch as the app holds it: the storage key plus the parsed value. */
+export interface StoredRecord {
+  key: string;
+  record: GenerationRecord;
+}
+
+/**
+ * Re-attach records the app is HOLDING that storage does not have.
+ *
+ * 🔴 THIS IS THE REASON A FAILED WRITE NO LONGER DELETES PAID-FOR IMAGES. The
+ * batch row is inserted optimistically, before `set()` is acknowledged, because it
+ * is the surface the viewer's images appear in. If that write REJECTS, the row
+ * exists only in memory — and every reload of the stored half (`loadHistory`,
+ * which the error banner's own "Try again" button calls, and which the Show
+ * toggle calls too) REPLACES the list with what storage actually holds. That list
+ * never contained this run, so the row and its images vanished permanently: the
+ * join is the only renderer for them, so they did not come back on reload either.
+ *
+ * So a reload is a merge, not a replacement: anything the app knows it failed to
+ * persist is carried across. Ordering is restored by `createdAt` descending, the
+ * same newest-first order the inverted key gives the stored half, so a carried-over
+ * row lands where it belongs rather than being pinned to the top.
+ *
+ * Stored WINS on a key collision — storage is the authority once it has the row.
+ */
+export function mergeUnsavedRecords(
+  stored: ReadonlyArray<StoredRecord>,
+  unsaved: ReadonlyArray<StoredRecord>,
+): StoredRecord[] {
+  const have = new Set(stored.map((e) => e.key));
+  const missing = unsaved.filter((e) => !have.has(e.key));
+  if (missing.length === 0) return [...stored];
+  return [...stored, ...missing].sort((a, b) => b.record.createdAt - a.record.createdAt);
+}
+
 /** A batch's status, reduced from its workflows' statuses. */
 export type BatchStatus =
   | 'running'
@@ -236,6 +271,20 @@ export interface HistoryEntry {
   status: BatchStatus;
   /** Every displayable image across the batch's workflows, in workflow order. */
   imageUrls: string[];
+  /**
+   * The FORMAT LABEL for each image, index-aligned with {@link imageUrls} — `null`
+   * where the record cannot name one.
+   *
+   * 🔴 IT IS BUILT HERE RATHER THAN INDEXED AT THE RENDER SITE, and that is the
+   * whole point. The row used to pass `form.formats[0].label` for EVERY image, so a
+   * 2-format batch saved its Cinematic picture as `yt-thumbnail-clickbait-3.jpg`.
+   * Indexing `formats[i]` by IMAGE index would be just as wrong twice over: a
+   * workflow missing from the live page is dropped from `imageUrls`, which shifts
+   * every later index, and at quantity > 1 one workflow contributes several images.
+   * The only sound pairing is `workflowIds[i]` ↔ `formats[i]` — the alignment the
+   * writer guarantees — carried through the flatten, which is what this does.
+   */
+  imageLabels: Array<string | null>;
   /** Summed realized cost over the workflows that reported one; `null` when none did. */
   cost: number | null;
   /** True when the live queue knows nothing about ANY of this batch's workflows. */
@@ -278,16 +327,29 @@ export function batchStatus(workflows: readonly AppWorkflow[]): BatchStatus {
  * A record whose workflows are all missing from the live page is KEPT, flagged
  * `unavailable`. It is not an error state and it is not pruned here — see
  * {@link orphanedKeys} for why pruning needs a bound this function does not have.
+ *
+ * 🔴 THE FORMAT LABEL IS PAIRED BEFORE THE FILTER, NOT AFTER. `workflowIds[i]` and
+ * `form.formats[i]` are written together and in the same order (see the App's
+ * record write), so the pairing has to be taken at the `workflowIds` index — the
+ * `.filter` that drops workflows the live page does not carry would otherwise shift
+ * every later one. See {@link HistoryEntry.imageLabels}.
  */
 export function joinHistory(
-  records: ReadonlyArray<{ key: string; record: GenerationRecord }>,
+  records: ReadonlyArray<StoredRecord>,
   workflows: readonly AppWorkflow[],
 ): HistoryEntry[] {
   const byId = new Map(workflows.map((w) => [w.workflowId, w]));
   return records.map(({ key, record }) => {
-    const found = record.workflowIds
-      .map((id) => byId.get(id))
-      .filter((w): w is AppWorkflow => w !== undefined);
+    type Pair = { w: AppWorkflow; label: string | null };
+    const paired = record.workflowIds
+      .map((id, i): Pair | null => {
+        const w = byId.get(id);
+        // `formats[i]` can genuinely be absent — a record written before the ids and
+        // the formats were derived from the same list may carry more ids than formats.
+        return w === undefined ? null : { w, label: record.form.formats[i]?.label ?? null };
+      })
+      .filter((p): p is Pair => p !== null);
+    const found = paired.map((p) => p.w);
     const costs = found.filter((w) => typeof w.cost === 'number' && Number.isFinite(w.cost));
     return {
       key,
@@ -295,6 +357,7 @@ export function joinHistory(
       workflows: found,
       status: batchStatus(found),
       imageUrls: found.flatMap((w) => w.images.map((i) => i.url)),
+      imageLabels: paired.flatMap((p) => p.w.images.map(() => p.label)),
       cost: costs.length === 0 ? null : costs.reduce((sum, w) => sum + (w.cost as number), 0),
       unavailable: found.length === 0,
       cancellableIds: found
@@ -442,9 +505,14 @@ export function showHistory(args: {
  * 🔴 FORMATS AND QUANTITY MULTIPLY — the same arithmetic the cost disclosure
  * makes. A skeleton count of 1 for a 3-format × 2-image run would understate what
  * is coming, which on this surface is a claim about what was paid for.
+ *
+ * Neither factor is floored at 1, because neither can be below it: `parseRecord`
+ * refuses a record whose `formats` is empty, and `quantity` passes `clampQuantity`
+ * (`QUANTITY_MIN` = 1) before it is stored. A `Math.max(1, …)` on them was
+ * unreachable code pretending to be a safety net.
  */
 export function skeletonCount(record: GenerationRecord, alreadyLanded: number): number {
-  const expected = Math.max(1, record.form.formats.length) * Math.max(1, record.form.quantity);
+  const expected = record.form.formats.length * record.form.quantity;
   return Math.max(0, expected - Math.max(0, alreadyLanded));
 }
 
@@ -469,7 +537,7 @@ export function skeletonCount(record: GenerationRecord, alreadyLanded: number): 
  * separates them.
  */
 export function orphanedKeys(
-  records: ReadonlyArray<{ key: string; record: GenerationRecord }>,
+  records: ReadonlyArray<StoredRecord>,
   workflows: readonly AppWorkflow[],
   oldestFetchedAt: number | null,
 ): string[] {

@@ -40,9 +40,10 @@ import {
  *  - it may not render an `unavailable` row as a failure. Those images aged out of
  *    the orchestrator; the stored form half is ours, does not expire, and still
  *    resumes.
- *  - it may not let a STORAGE problem hide generated images. `denied`/`error` are
- *    BANNERS over the rows, never replacements for them, because on those paths
- *    the Buzz is already spent and the pictures are already in hand.
+ *  - it may not let a STORAGE problem hide generated images. `anon`/`denied`/`error`
+ *    and a reload-in-progress are all BANNERS over the rows, never replacements for
+ *    them, because on those paths the Buzz is already spent and the pictures are
+ *    already in hand.
  */
 export function HistorySurface({
   entries,
@@ -159,12 +160,21 @@ export function HistorySurface({
  *             RUN, not an edge case. It gets its own message naming the grant.
  *   'error'   Everything else, still actionable (a retry).
  *
- * 🔴 'denied' AND 'error' ARE BANNERS, NOT REPLACEMENTS, WHENEVER THERE ARE ROWS —
+ * 🔴 NONE OF THEM MAY REPLACE A ROW THAT EXISTS — they are BANNERS OVER the rows,
  * and that is a money rule, not a layout preference. Since the batch record is
  * written at submit time, a REJECTED storage write is the common way to reach
  * those states while a generation the viewer has ALREADY PAID FOR is on screen.
  * Returning early there would delete those pictures from the page and report a
  * storage problem as though the generation had produced nothing.
+ *
+ * 🔴 THAT INCLUDES 'anon' AND 'loading', WHICH IS WHERE THIS WENT WRONG. `anon` was
+ * an unconditional early return, so a mid-run token expiry — `classifyStorageError`
+ * matches 'anon'/'sign in'/'not signed in' on a failed `set` — replaced the row with
+ * a sign-in prompt, while the note written on that path said "This run's images are
+ * above". `loading` was the same shape: every reload (the Show toggle and the error
+ * banner's own Try again both call one) blanked the images even when rows existed.
+ * Both are now gated on there being nothing to hide, like the `loading` FLAG beside
+ * them already was.
  *
  * An `unavailable` ROW is none of those: it is a real past generation whose images
  * have aged out of the orchestrator. It STAYS VISIBLE, says so plainly, and Resume
@@ -199,25 +209,28 @@ function HistoryPanel({
   pal: Palette;
   layout: BlockLayout;
 }) {
-  if (state === 'anon') {
-    return (
-      <Stack gap={8} data-testid="yt-history-anon">
-        <span style={fieldDescStyle(pal)}>
-          Sign in to see your past generations, save their images and reuse their settings.
-        </span>
-        <Button variant="light" size="sm" onClick={onSignIn} data-testid="yt-history-signin">
-          Sign in
-        </Button>
-      </Stack>
-    );
-  }
-
-  if (state === 'loading' || (loading && entries.length === 0)) {
-    return (
-      <span style={fieldDescStyle(pal)} data-testid="yt-history-loading">
-        Loading your generations…
+  const signIn = (
+    <Stack gap={8} data-testid="yt-history-anon">
+      <span style={fieldDescStyle(pal)}>
+        Sign in to see your past generations, save their images and reuse their settings.
       </span>
-    );
+      <Button variant="light" size="sm" onClick={onSignIn} data-testid="yt-history-signin">
+        Sign in
+      </Button>
+    </Stack>
+  );
+
+  // Nothing to hide, so the state CAN be the whole panel — and should be, because
+  // each of these is the only thing that explains the emptiness.
+  if (entries.length === 0) {
+    if (state === 'anon') return signIn;
+    if (state === 'loading' || loading) {
+      return (
+        <span style={fieldDescStyle(pal)} data-testid="yt-history-loading">
+          Loading your generations…
+        </span>
+      );
+    }
   }
 
   const rows = entries.map((entry) => (
@@ -236,6 +249,11 @@ function HistoryPanel({
 
   return (
     <Stack gap={12}>
+      {/* Same prompt, now ABOVE the rows: a token that expired mid-run leaves images
+          the viewer paid for on screen, and replacing them with this would be the
+          exact deletion the header forbids. */}
+      {state === 'anon' && signIn}
+
       {state === 'denied' && (
         <Alert color="warning" title="History needs storage access" data-testid="yt-history-denied">
           This app hasn&apos;t been granted storage access, so it can&apos;t keep a record of your
@@ -305,7 +323,6 @@ function HistoryRow({
   pal: Palette;
   layout: BlockLayout;
 }) {
-  const label = entry.record.form.formats[0]?.label;
   const pending = entry.status === 'running' ? skeletonCount(entry.record, entry.imageUrls.length) : 0;
 
   return (
@@ -342,13 +359,24 @@ function HistoryRow({
           rendering of a multi-format batch: two formats delivered, one is still
           generating. Showing only one or the other would either hide finished
           output or claim the batch is done. */}
+      {/* 🔴 THE PER-IMAGE FORMAT LABEL COMES FROM `entry.imageLabels`, index-aligned
+          with `imageUrls` by the join. It used to be `formats[0].label` for EVERY
+          image, so a 2-format batch SAVED A CINEMATIC PICTURE AS
+          `yt-thumbnail-clickbait-3.jpg` — a wrong filename on the only real
+          download this block has — and the alt text named no format at all. There
+          is still deliberately no VISUAL per-image tag (see the README): an image
+          belongs to its batch on screen, and the batch names its formats once. */}
       {entry.imageUrls.length > 0 && (
         <div style={galleryStyle(layout)} data-testid="yt-history-images">
           {entry.imageUrls.map((url, i) => (
             <div key={url} style={galleryItemStyle}>
               <img
                 src={url}
-                alt={`Generated result ${i + 1}`}
+                alt={
+                  entry.imageLabels[i]
+                    ? `${entry.imageLabels[i]} — generated result ${i + 1}`
+                    : `Generated result ${i + 1}`
+                }
                 style={imageStyle}
                 data-testid="yt-history-img"
               />
@@ -361,7 +389,7 @@ function HistoryRow({
               <Group gap={6} wrap={false}>
                 <Button
                   size="sm"
-                  onClick={() => onSave(url, i + 1, label)}
+                  onClick={() => onSave(url, i + 1, entry.imageLabels[i] ?? undefined)}
                   data-testid="yt-history-save"
                 >
                   Save image

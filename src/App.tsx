@@ -127,6 +127,7 @@ import {
   historyKey,
   joinHistory,
   mergeLiveWorkflows,
+  mergeUnsavedRecords,
   oldestWorkflowTime,
   orphanedKeys,
   parseRecord,
@@ -135,6 +136,7 @@ import {
   type GenerationForm,
   type GenerationRecord,
   type HistoryEntry,
+  type StoredRecord,
 } from './history.js';
 import { HistorySurface } from './History.js';
 import { layoutForTier, type BlockLayout } from './layout.js';
@@ -382,9 +384,26 @@ export function App() {
   // The STORED half: batch records read back from useAppStorage, newest-first
   // (the key encodes an inverted timestamp precisely so the listing IS that
   // order — see history.ts historyKey).
-  const [historyRecords, setHistoryRecords] = useState<
-    Array<{ key: string; record: GenerationRecord }>
-  >([]);
+  const [historyRecords, setHistoryRecords] = useState<StoredRecord[]>([]);
+  /**
+   * 🔴 THE RECORDS ON SCREEN THAT STORAGE DOES NOT HAVE. A batch row is inserted
+   * optimistically, before `set()` is acknowledged, because it is the surface the
+   * viewer's images appear in — so when that write REJECTS the row exists in memory
+   * only, and `loadHistory` REPLACES `historyRecords` with what storage holds.
+   * Without this map the error banner's own "Try again" button (and the Show toggle,
+   * and any later reload) therefore DELETED the run and its paid-for images, with no
+   * way back: the join is their only renderer.
+   *
+   * A ref rather than state on purpose: nothing renders from it, and making it state
+   * would put it in `loadHistory`'s dependency list, whose stability is load-bearing
+   * (see that callback's note about the unbounded re-render loop).
+   */
+  const unsavedRecordsRef = useRef<Map<string, GenerationRecord>>(new Map());
+  /** The unsaved map as the list shape everything else here speaks. */
+  const unsavedRecords = useCallback(
+    (): StoredRecord[] => [...unsavedRecordsRef.current].map(([key, record]) => ({ key, record })),
+    [],
+  );
   // 🔴 A FIRST-CLASS STATE, NOT A SWALLOWED REJECTION. The apps:storage scopes
   // have never been consented in production — history is the first surface to
   // touch them — so a scope-denied read/write is a REALISTIC first run, not an
@@ -394,7 +413,18 @@ export function App() {
     'loading' | 'ready' | 'anon' | 'denied' | 'error'
   >('loading');
   const [historyNote, setHistoryNote] = useState<string | null>(null);
-  const [historyOpen, setHistoryOpen] = useState(false);
+  /**
+   * THE VIEWER'S OWN Show/Hide choice, or `null` for "they have not made one".
+   *
+   * 🔴 THREE-VALUED ON PURPOSE, because the default has to depend on whether there is
+   * anything to show. This is the results surface now, so a viewer who HAS rows must
+   * not have to find a "Show" button to see images they already paid for — but it was
+   * `useState(false)`, set true only at submit, so on a RETURNING visit every past
+   * generation was collapsed behind a toggle. `null` resolves to "open iff there are
+   * rows" (`historyOpenEffective`); an explicit Hide is still honoured, and still
+   * honoured across a reload of the rows.
+   */
+  const [historyOpen, setHistoryOpen] = useState<boolean | null>(null);
   const [historyBusyKey, setHistoryBusyKey] = useState<string | null>(null);
   const [saveNote, setSaveNote] = useState<string | null>(null);
 
@@ -719,10 +749,13 @@ export function App() {
       // `useAppWorkflows`'s page does not know about a workflow submitted seconds
       // ago. Functional, and keyed on workflowId, for the same reason `patchRun` is:
       // N workflows reply out of order.
-      if (snap.workflowId) {
-        const nowIso = new Date().toISOString();
-        setOwnWorkflows((cur) => upsertOwnWorkflow(cur, snap, urls, nowIso));
-      }
+      //
+      // No `if (snap.workflowId)` here: `upsertOwnWorkflow` is the EXPORTED boundary
+      // and owns that predicate, returning `current` unchanged (same reference, so
+      // React bails out) for an id-less snapshot. A copy of the rule at the call site
+      // was a second place for it to be got wrong.
+      const nowIso = new Date().toISOString();
+      setOwnWorkflows((cur) => upsertOwnWorkflow(cur, snap, urls, nowIso));
       setRuns((cur) =>
         patchRun(cur, formatId, {
           phase: next,
@@ -1045,15 +1078,24 @@ export function App() {
         // 🔴 ON SCREEN BEFORE THE ROUND TRIP, AND THAT IS THE POINT OF THE WHOLE
         // RESTRUCTURE. This row is now the surface the viewer's images appear in, so
         // it has to exist the moment there are workflow ids — not when a host KV
-        // write finally acknowledges. It also means a REJECTED write (the storage
-        // scopes have never been consented in production) leaves the pictures up and
-        // the note beside them, instead of reporting a storage problem by deleting
-        // paid-for output. Auto-opened for the same reason: a viewer must not have to
-        // find a "Show" button to see what they just bought.
+        // write finally acknowledges. Auto-opened for the same reason: a viewer must
+        // not have to find a "Show" button to see what they just bought.
+        //
+        // 🔴 AND IT IS RECORDED AS UNSAVED FIRST, WHICH IS WHAT MAKES THAT SAFE. The
+        // optimistic insert ALONE only survived until the next reload of the stored
+        // half — and on a rejected write the panel offers a "Try again" button that
+        // performs exactly one. That read replaces `historyRecords` with what storage
+        // holds, which never contained this run, so the row and its images went away
+        // permanently. `unsavedRecordsRef` is what carries them across; see
+        // `mergeUnsavedRecords`. The comment this replaces claimed a rejected write
+        // "leaves the pictures up", which was true of the first paint and false after
+        // one click of the only affordance on offer.
+        unsavedRecordsRef.current.set(key, record);
         setHistoryRecords((cur) => [{ key, record }, ...cur]);
         setHistoryOpen(true);
         try {
           await storageRef.current.set(key, record);
+          unsavedRecordsRef.current.delete(key);
           setHistoryState('ready');
         } catch (err) {
           // A storage failure must NEVER look like a generation failure — the
@@ -1159,10 +1201,16 @@ export function App() {
   previewRef.current = { formats: selectedFormats, account, bodyFor, estimate };
 
   // WHAT COUNTS AS A PRICE CHANGE — one pure function, see `estimateSignature`.
+  //
+  // 🔴 THE SAME `lorasForCheckpoint` THE BODY GOES THROUGH. The priced body comes from
+  // `formSnapshot`, which filters; feeding the RAW selection here made this a second,
+  // differently-shaped answer to "what prices a request" — it would schedule a
+  // re-estimate for a LoRA change that cannot reach the wire at all. Harmless only
+  // because a LoRA-free family drops them downstream; one rule, one place.
   const priceSignature = estimateSignature({
     formatIds: selectedFormats.map((f) => f.id),
     checkpointVersionId: checkpoint.versionId,
-    loras,
+    loras: lorasForCheckpoint(checkpoint.baseModel, loras),
     quantity,
     mode,
     sourceImageUrl: sourceImage?.url ?? null,
@@ -1428,11 +1476,20 @@ export function App() {
    * The listing is already newest-first because the key encodes an INVERTED
    * timestamp; there is no sort option on `list()` and there does not need to be.
    * Rows that don't parse are dropped rather than rendered half-formed.
+   *
+   * 🔴 IT IS A MERGE, NOT A REPLACEMENT, AND THAT IS A MONEY RULE. Records whose
+   * `set()` rejected exist only in memory (`unsavedRecordsRef`); overwriting the
+   * list with the stored half deleted them and the paid-for images they render —
+   * from the "Try again" button whose entire purpose is to recover. So every
+   * still-unsaved record is RETRIED here (this read is the viewer asking us to try
+   * the storage again) and carried across whether or not that retry lands.
    */
   const loadHistory = useCallback(async () => {
     if (viewerId == null) {
       setHistoryState('anon');
-      setHistoryRecords([]);
+      // 🔴 THE UNSAVED HALF SURVIVES AN ANON READ TOO. A token that expires mid-run
+      // takes `viewerId` with it, and this is the path that then runs.
+      setHistoryRecords(mergeUnsavedRecords([], unsavedRecords()));
       return;
     }
     setHistoryState('loading');
@@ -1448,9 +1505,26 @@ export function App() {
           }
         }),
       );
-      setHistoryRecords(
-        loaded.filter((e): e is { key: string; record: GenerationRecord } => e.record !== null),
+      const stored = loaded.filter((e): e is StoredRecord => e.record !== null);
+      // Retry the writes that never landed. A success drops the record from the
+      // unsaved map (storage owns it now); a failure leaves it there.
+      //
+      // 🔴 `held` IS SNAPSHOTTED BEFORE THE RETRY AND IS WHAT THE MERGE USES. Reading
+      // the map again afterwards would drop exactly the records whose retry SUCCEEDED:
+      // they are no longer unsaved, but they are also not in `stored`, which was read
+      // before they were written. The row would vanish on the one outcome that fixed it.
+      const held = unsavedRecords();
+      await Promise.all(
+        held.map(async ({ key, record }) => {
+          try {
+            await store.set(key, record);
+            unsavedRecordsRef.current.delete(key);
+          } catch {
+            /* still unsaved; still rendered */
+          }
+        }),
       );
+      setHistoryRecords(mergeUnsavedRecords(stored, held));
       setHistoryState('ready');
     } catch (err) {
       setHistoryState(classifyStorageError(err));
@@ -1465,7 +1539,8 @@ export function App() {
     // documented stable across renders and `classifyStorageError` is a
     // dependency-free useCallback, so with a primitive here the whole chain is
     // stable and the effect runs on mount and on a real viewer change only.
-  }, [viewerId, classifyStorageError]);
+    // `unsavedRecords` is dependency-free too, for the same reason.
+  }, [viewerId, classifyStorageError, unsavedRecords]);
 
   useEffect(() => {
     if (!ready) return;
@@ -1598,7 +1673,13 @@ export function App() {
         return missing.length === 0 ? cur : [...cur, ...missing];
       });
       setSelectedFormatIds(f.formats.map((x) => x.id));
-      setHistoryOpen(false);
+      // 🔴 THE SURFACE STAYS OPEN. It used to `setHistoryOpen(false)` — harmless when
+      // this was a collapsible archive, a deletion now that it is where the images
+      // live: "Reuse settings" hid the row it was clicked in, and every picture on the
+      // page with it.
+      // The LoRA note goes, though: "N LoRAs were removed" is about a model CHANGE,
+      // and leaving it up would caption a resume that restored LoRAs intact.
+      setLoraNote(null);
       setHistoryNote('Form restored. Nothing was submitted — press Generate when you are ready.');
     },
     [customFormats],
@@ -2429,11 +2510,13 @@ export function App() {
   );
 
   // THE RESULTS + HISTORY SURFACE — this run's images, past generations, their
-  // realized cost, a real save, the editor entry point, and Resume. Collapsed until
-  // a run starts (it is otherwise a returning-visit surface, and expanding it by
-  // default would push the generate form down for the common first run) — and
-  // AUTO-OPENED the moment a batch is submitted, because from that point it is where
-  // the images the viewer just paid for appear. See `History.tsx`.
+  // realized cost, a real save, the editor entry point, and Resume. See `History.tsx`.
+  //
+  // 🔴 OPEN WHENEVER THERE ARE ROWS, not only after a submit. This is where generated
+  // images appear, so collapsing it is hiding output the viewer paid for; the only
+  // thing that keeps it shut is a first run with nothing in it yet (where it would
+  // push the form down for no benefit) or the viewer's own Hide.
+  const historyOpenEffective = historyOpen ?? historyEntries.length > 0;
   const historyBlock = (
     <HistorySurface
       entries={historyEntries}
@@ -2443,15 +2526,14 @@ export function App() {
       busyKey={historyBusyKey}
       note={historyNote}
       saveNote={saveNote}
-      open={historyOpen}
+      open={historyOpenEffective}
       onToggle={() => {
-        setHistoryOpen((open) => {
-          if (!open) {
-            void loadHistory();
-            refetchWorkflows();
-          }
-          return !open;
-        });
+        const next = !historyOpenEffective;
+        if (next) {
+          void loadHistory();
+          refetchWorkflows();
+        }
+        setHistoryOpen(next);
       }}
       onResume={onResume}
       onCancel={(e) => void onCancelWorkflow(e)}
@@ -2487,7 +2569,13 @@ export function App() {
           that can never do anything, occupying the same space as one that can. The
           only thing left behind is the note saying what was REMOVED, and only when
           something actually was: `onChangeModel` clears the selection, and a clear
-          nobody is told about is a silent edit to the request. */}
+          nobody is told about is a silent edit to the request.
+          🔴 THIS HIDES THE FIELD ON FIRST LOAD FOR *EVERY* VIEWER, AND THAT IS THE
+          OPERATOR'S DECISION — NOT A BUG TO FIX. `DEFAULT_CHECKPOINT.baseModel` is
+          'OpenAI' and `LORA_FREE_BASE_MODELS` contains 'OpenAI', so the default model
+          is LoRA-free and nobody sees the selector until they pick another family.
+          He was shown exactly that and reaffirmed it; do not re-add an explanatory
+          sentence here (that is the control-that-does-nothing this replaced). */}
       {familyHasLoras(checkpoint.baseModel) ? (
         <LoraSelector
           selected={loras}

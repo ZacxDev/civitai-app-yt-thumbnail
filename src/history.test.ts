@@ -15,6 +15,7 @@ import {
   orphanedKeys,
   parseRecord,
   mergeLiveWorkflows,
+  mergeUnsavedRecords,
   recordFits,
   showHistory,
   skeletonCount,
@@ -328,12 +329,109 @@ describe('joinHistory — the batch grouping', () => {
     expect(batchBodies(entries[0].record.form)).toHaveLength(2);
   });
 
+  it('🔴 labels EVERY image with ITS OWN format, through a missing workflow and quantity > 1', () => {
+    /**
+     * 🔴 REGRESSION COVERAGE, red at c84f082 — where `imageLabels` does not exist
+     * and the row passed `form.formats[0].label` for every image, so a 2-format
+     * batch saved its Minimal picture as `yt-thumbnail-clickbait-N.jpg`.
+     *
+     * 🔴 THE FIXTURE IS BUILT TO KILL THE TWO NEAR-MISS FIXES AS WELL, and each
+     * needs its own distinct number:
+     *   - `formats[imageIndex]` — wrong because quantity > 1 means one workflow
+     *     contributes SEVERAL images. 'wf-a' delivers two, so an image-indexed
+     *     lookup would label the second one 'Minimal'.
+     *   - pairing AFTER the `.filter` — wrong because a workflow the live page does
+     *     not carry is dropped, shifting every later index. 'wf-missing' sits
+     *     BETWEEN the two present workflows precisely so that shift happens: a
+     *     post-filter pairing would label 'wf-c' 'Minimal' instead of 'Cinematic'.
+     */
+    const three = form({
+      formats: [
+        { id: 'fmt:a', label: 'Clickbait', suffix: 's', prompt: 'p1' },
+        { id: 'fmt:b', label: 'Minimal', suffix: 's', prompt: 'p2' },
+        { id: 'fmt:c', label: 'Cinematic', suffix: 's', prompt: 'p3' },
+      ],
+    });
+    const img = (url: string) => ({ url, width: 1536, height: 864, nsfwLevel: 1 });
+    const entries = joinHistory(
+      [{ key: 'k1', record: record({ workflowIds: ['wf-a', 'wf-missing', 'wf-c'], form: three }) }],
+      [
+        workflow({ workflowId: 'wf-a', images: [img('a1'), img('a2')] }),
+        workflow({ workflowId: 'wf-c', images: [img('c1')] }),
+      ],
+    );
+    expect(entries[0].imageUrls).toEqual(['a1', 'a2', 'c1']);
+    expect(entries[0].imageLabels).toEqual(['Clickbait', 'Clickbait', 'Cinematic']);
+  });
+
+  it('labels an image `null` rather than guessing when the record names no format for it', () => {
+    // A record written before the ids and the formats came off the same list can
+    // carry MORE ids than formats. `null` is a filename without a slug, not a
+    // wrong slug — see candidateFileName.
+    const entries = joinHistory(
+      [{ key: 'k1', record: record({ workflowIds: ['wf-a', 'wf-b', 'wf-extra'] }) }],
+      [workflow({ workflowId: 'wf-extra', images: [{ url: 'x', width: 1, height: 1, nsfwLevel: 1 }] })],
+    );
+    expect(entries[0].imageLabels).toEqual([null]);
+  });
+
   it('lists the still-cancellable workflow ids, and only those', () => {
     const entries = joinHistory(
       [{ key: 'k1', record: record() }],
       [workflow({ workflowId: 'wf-a', status: 'processing' }), workflow({ workflowId: 'wf-b', status: 'succeeded' })],
     );
     expect(entries[0].cancellableIds).toEqual(['wf-a']);
+  });
+});
+
+describe('mergeUnsavedRecords', () => {
+  /**
+   * 🔴 THE FUNCTION THAT STOPS A FAILED WRITE DELETING PAID-FOR IMAGES. The batch row
+   * is inserted optimistically; when `set()` rejects it exists in memory only, and
+   * every reload of the stored half replaces the list with what storage holds. This is
+   * what carries the unsaved half across that replacement. See `App.history.test.tsx`
+   * for the click path, which is where the red at c84f082 is.
+   */
+  const at = (ms: number, id: string) => ({
+    key: historyKey(ms, id),
+    record: record({ batchId: id, createdAt: ms }),
+  });
+
+  it('🔴 keeps a record storage does not have', () => {
+    const stored = at(1_700_000_000_000, 'old');
+    const unsaved = at(1_800_000_000_000, 'new');
+    expect(mergeUnsavedRecords([stored], [unsaved]).map((e) => e.record.batchId)).toEqual([
+      'new',
+      'old',
+    ]);
+  });
+
+  it('🔴 puts it back in NEWEST-FIRST order, not on top', () => {
+    // The stored half is newest-first because the key inverts the timestamp. An
+    // unsaved row from BEFORE the newest stored one belongs second, and a `[...unsaved,
+    // ...stored]` concat — the obvious wrong implementation — would pin it first.
+    const newest = at(1_900_000_000_000, 'newest');
+    const middle = at(1_800_000_000_000, 'middle');
+    const oldest = at(1_700_000_000_000, 'oldest');
+    expect(
+      mergeUnsavedRecords([newest, oldest], [middle]).map((e) => e.record.batchId),
+    ).toEqual(['newest', 'middle', 'oldest']);
+  });
+
+  it('does not duplicate a record storage DOES have, and storage wins', () => {
+    // The retry that finally lands leaves the key in both halves for one render.
+    const stored = at(1_700_000_000_000, 'same');
+    const stale = { key: stored.key, record: record({ batchId: 'same', createdAt: 1_700_000_000_000, workflowIds: ['stale'] }) };
+    const merged = mergeUnsavedRecords([stored], [stale]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].record.workflowIds).toEqual(['wf-a', 'wf-b']);
+  });
+
+  it('is a no-op copy when nothing is unsaved', () => {
+    const stored = [at(1_800_000_000_000, 'a'), at(1_700_000_000_000, 'b')];
+    const merged = mergeUnsavedRecords(stored, []);
+    expect(merged).toEqual(stored);
+    expect(merged).not.toBe(stored);
   });
 });
 
@@ -675,7 +773,10 @@ describe('skeletonCount', () => {
     expect(skeletonCount(rec(1, 1), 9)).toBe(0);
   });
 
-  it('treats a zero/absent factor as one, so a malformed record still shows a tile', () => {
-    expect(skeletonCount(rec(0, 0), 0)).toBe(1);
-  });
+  // The 'treats a zero/absent factor as one' case is GONE with the clamp it
+  // described. Neither factor can be zero: `parseRecord` refuses a record whose
+  // `formats` is empty, and `quantity` passes `clampQuantity` (QUANTITY_MIN = 1)
+  // before it is stored. The clamp was unreachable, and a test pinning unreachable
+  // behaviour reads as coverage while guarding nothing — the `rec(0, 0)` record it
+  // asserted on cannot exist.
 });

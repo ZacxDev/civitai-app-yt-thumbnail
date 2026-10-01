@@ -115,45 +115,45 @@ the server **re-validates** (public? generation-covered? SFW for the domain?) an
 regardless of what the picker showed — `buildWorkflowBody` is not the enforcement
 boundary; the spend path is.
 
-### LoRA selector (host-served, server-revalidated)
+### LoRA selector (host-served — and INVISIBLE on the default model)
 
-On top of the checkpoint the user can layer up to **5 LoRAs**, each with an
-adjustable **weight** (the LoRA's `strength`, clamped to the server's `[-1, 2]`
-bound). The **Add LoRA** button calls `useResourcePicker().open({ resourceType:
+🔴 **Read this first: the field is not on screen for a viewer who has not changed
+the model.** `DEFAULT_CHECKPOINT.baseModel` is `'OpenAI'` and `'OpenAI'` is in
+`LORA_FREE_BASE_MODELS`, so on first load **every** viewer sees no LoRA control at
+all; it appears only once they pick a checkpoint from a family that has LoRAs. That
+is a deliberate operator decision, reaffirmed after being shown exactly this
+consequence — not an oversight, and not something to "fix". Everything below
+describes what the control does **once it is visible**.
+
+Once visible, the user can layer up to **5 LoRAs** on top of the checkpoint, each
+with an adjustable **weight** (the LoRA's `strength`, clamped to the server's
+`[-1, 2]` bound). **Add LoRA** calls `useResourcePicker().open({ resourceType:
 'LORA', baseModelGroup })`, the host opens its LoRA picker, and the pick
 (`BlockResourceInfo`) is appended via `loraFromPick` + `addLora`. LoRAs ride along
 as `additionalResources` in the workflow body — one `{ modelVersionId, strength }`
 entry per selected LoRA, emitted only when at least one is selected (a
-checkpoint-only body stays backward compatible).
-
-- **`src/models.ts`** — the LoRA types + the pure selection helpers (`addLora` /
-  `removeLora` / `setLoraWeight`) that enforce the dedup, the 5-LoRA cap
-  (`MAX_LORAS`), and the weight clamp, plus the pick→option mappers.
+checkpoint-only body stays backward compatible). `src/models.ts` holds the pure
+selection helpers (`addLora` / `removeLora` / `setLoraWeight`) that enforce the
+dedup, the 5-LoRA cap (`MAX_LORAS`) and the weight clamp, plus the pick→option
+mappers.
 
 LoRA picks + weights are **discovery only**, exactly like the checkpoint: the
 server is LoRA-only for additional resources and **re-validates** base-model
 compatibility + per-resource entitlement (early-access / Private) AND
 **re-prices** the whole body **before any Buzz spend**.
 
-🔴 **The whole field is HIDDEN for a base-model family that has no LoRAs**, and the
-selection is **cleared** when the checkpoint changes to such a family — with a note
-saying what was removed. Both halves are load-bearing:
-
-- `familyHasLoras` reports the family (measured: `baseModels=OpenAI` returns **0**
-  LoRAs, with two positive controls — see `LORA_FREE_BASE_MODELS`). It used to
-  render a permanently-disabled Add button plus an explanation; a control that can
-  never do anything does not earn the space.
-- Hiding it **without** clearing would be a bug, not a tidy-up. Changing the
-  checkpoint used to leave `loras` untouched, so an SDXL LoRA stayed selected under
-  an OpenAI checkpoint, rode into `additionalResources`, and the server rejected the
-  generation with nothing on screen naming the cause. Visible-but-stale is
-  survivable; invisible-and-stale is not.
-- `lorasForCheckpoint` is the **one** rule, called by the model-change handler (so
-  the viewer sees the clear and is told) *and* by the form snapshot every body is
-  built from (so no body can carry an impossible resource, whatever path set the two
-  inconsistently). The clear lives in the **click handler**, not in an effect keyed
-  on `checkpoint`: a resume restores a checkpoint AND its LoRAs together, and an
-  effect would fire on that restore and wipe what it had just put back.
+🔴 **Hiding the field is only safe because the selection is CLEARED with it.**
+Changing the checkpoint used to leave `loras` untouched, so an SDXL LoRA stayed
+selected under an OpenAI checkpoint, rode into `additionalResources`, and the server
+rejected the generation with nothing on screen naming the cause. Visible-but-stale is
+survivable; invisible-and-stale is not — so a clear always comes with a note saying
+what was removed. `lorasForCheckpoint` is the **one** rule and has three callers: the
+model-change handler (so the viewer is told), the form snapshot every body is built
+from (so no body can carry an impossible resource), and the price signature (so the
+preview re-prices on exactly the changes that can reach the wire). The clear lives in
+the **click handler**, not in an effect keyed on `checkpoint`: a resume restores a
+checkpoint AND its LoRAs together, and an effect would fire on that restore and wipe
+what it had just put back.
 
 ### Generation modes: Generate (txt2img) and Remix (img2img)
 
@@ -228,11 +228,20 @@ cost before any spend.
 > still a custom listbox.
 
 Each returned image is listed under its **batch**, which names every format that
-produced it. There is deliberately **no per-image format tag**: the old candidate
-grid had one, but in the unified list an image belongs to a batch, and attributing
-it to one of the batch's workflows would mean trusting a positional pairing that
-records written before this change do not guarantee. A wrong label is worse than a
-row-level list.
+produced it. There is deliberately **no VISIBLE per-image format tag**: the old
+candidate grid had one, but in the unified list an image belongs to a batch, and the
+batch already names its formats once.
+
+The attribution itself is not dropped, though — it is just not a chip. Each image's
+**filename** and **alt text** carry its own format, from `HistoryEntry.imageLabels`,
+which the join builds by pairing `workflowIds[i]` with `form.formats[i]` *before*
+dropping workflows the live page does not carry. Getting this from the render site
+instead is what made a 2-format batch save its Cinematic picture as
+`yt-thumbnail-clickbait-3.jpg`. One caveat, stated rather than hidden: a record written
+before the ids and the formats came off the same submitted list (0.1.6 and earlier
+recorded ids in *completion* order) can pair a multi-format batch the wrong way round.
+That is strictly narrower than the bug it replaces, which mislabelled every image but
+the first on **every** record.
 
 ### Partial failure
 
@@ -258,23 +267,14 @@ anything is how a page-money app gets declined. An unconsented viewer therefore 
 the old behaviour: no price until their first Generate, which is where the consent
 round trip already lives.
 
-Four properties, each with a test that asserts a call **count** or a call **order**
-rather than a rendered number — every defect this feature can have is invisible on
-screen:
-
-- **Debounced** (`ESTIMATE_DEBOUNCE_MS`). A LoRA weight slider fires an `onChange`
-  per pixel of travel; without this one drag is dozens of requests per format against
-  someone else's backend.
-- **Out-of-order safe.** The debounce stops a request being *sent* per keystroke; it
-  does nothing about two already in flight. N parallel `estimate()` calls settle in
-  whatever order the backend feels like, so a monotonic sequence number discards a
-  slow earlier response — otherwise the button quotes the price of a generation the
-  viewer is no longer asking for.
-- **Never stale.** An input change drops the old figure immediately. A wrong number is
-  worse than no number on a spend control.
-- **Never blocking.** A thrown or failed estimate leaves the run priceless, not
-  terminal. `runGeneration` does its own estimate pass and the server re-prices at
-  submit, so the worst a broken preview can do is show no number.
+The preview is **debounced**, **out-of-order safe** (a monotonic sequence number, which
+is not the debounce — it discards a slow earlier response the `clearTimeout` cannot
+reach), **never stale** (an input change drops the old figure immediately) and **never
+blocking** (a thrown or failed estimate leaves the run priceless, not terminal). Each
+has a test asserting a call **count** or **order** rather than a rendered number, since
+every defect this feature can have is invisible on screen. *Why* each property is
+load-bearing is on the effect itself in `src/App.tsx` — it is not restated here, because
+a second copy of a money rule is a second thing to get out of date.
 
 `estimateSignature` (`src/generation.ts`) is the **one** definition of
 "price-relevant". The prompt is deliberately **out** — it does not price a generation
@@ -299,34 +299,28 @@ no way back until a reload.
 The fix is structural rather than a longer-lived `runs`: the batch record is inserted
 into the history list **as soon as workflow ids exist** (before the storage round
 trip), so an in-flight batch *is* the newest history row and fills in from skeleton to
-pictures where it stands. The panel auto-opens when a batch submits — a viewer must
-not have to find a "Show" button to see what they just bought.
+pictures where it stands. Rows are a responsive grid on the same `layoutForTier` column
+count the images use, a running batch renders `skeletonCount` tiles (`formats ×
+quantity` minus what has landed), and the editor entry point ("Add text") moved onto the
+row with the images. `src/history.ts` and `src/History.tsx` carry the reasoning for each
+rule; it is **not** restated here.
 
-- **`mergeLiveWorkflows` + `upsertOwnWorkflow`** (`src/history.ts`) widen the live
-  half with what the app polled itself. `useAppWorkflows()` is a page fetched
-  *earlier*, so a batch submitted seconds ago is not in it — the row would join to
-  nothing and read `unavailable`, and worse, `orphanedKeys` would see a record inside
-  the fetched window matching no live workflow and **delete** it. The map is
-  cumulative for the session and is never cleared by a new Generate. The merge is
-  **monotonic**: it fills an empty image list, fills a `null` cost, and upgrades a
-  stale non-terminal status from a terminal one — never the reverse.
-- **The whole block hides in exactly one state**: ready and empty (`showHistory`).
-  `anon` / `denied` / `error` / `loading` all still render, because each is actionable
-  and names a different fix; hiding them deletes the only thing on screen telling the
-  viewer why they have no history.
-- **`denied` / `error` are banners OVER the rows, never replacements.** Since the
-  record is written at submit time, a rejected storage write is the common way to
-  reach those states *while a generation the viewer has already paid for is on screen*.
-  Returning early there would delete those pictures and report a storage problem as
-  though the generation had produced nothing.
-- **Rows are a responsive grid** from the same `layoutForTier` column count the images
-  use (`galleryStyle`), not full-width list items — a 1600px block used to show one
-  batch per screenful of horizontal nothing.
-- **A running batch renders `skeletonCount` tiles** — one per expected image, i.e.
-  `formats × quantity` minus what has landed. Images and skeletons can both be
-  present, which is the honest rendering of a two-format batch with one still going.
-- The **editor entry point moved with the images** ("Add text" on a row). Losing it
-  with the candidate grid would have made the canvas editor unreachable.
+Three consequences of making this the results surface are worth stating once, because
+each of them was a bug first:
+
+- **It is OPEN whenever there are rows**, not only after a submit. Generated images
+  live here now, so a collapsed panel hides output the viewer paid for — on a returning
+  visit as much as after a Generate. An explicit Hide is still honoured.
+- 🔴 **No storage state may REPLACE a row.** `anon` / `denied` / `error` and a reload
+  in flight are all banners **over** the rows. The record is written at submit time, so
+  a rejected write is the *common* way to reach those states while paid-for images are
+  on screen; an early return there deletes the pictures and reports a storage problem
+  as though the generation had produced nothing. The whole block hides in exactly one
+  state — ready, empty and noteless (`showHistory`).
+- 🔴 **A record whose write FAILED survives a reload** (`mergeUnsavedRecords`). It
+  exists in memory only, and a reload replaces the list with what storage holds — so
+  the "Try again" button the error state offers used to *delete* the run it was meant
+  to recover. A reload is now a merge, and it retries the write that failed.
 
 ### What the platform does with `params.width`/`height`
 

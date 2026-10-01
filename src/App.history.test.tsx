@@ -154,8 +154,19 @@ function stockStorage(records: Array<{ key: string; value: unknown }> = [{ key: 
   });
 }
 
+/**
+ * Make sure the surface is EXPANDED.
+ *
+ * 🔴 IT CLICKS ONLY WHEN THE TOGGLE STILL SAYS "Show". The surface auto-expands
+ * whenever there are rows, so an UNCONDITIONAL click would COLLAPSE it and every
+ * assertion below would read as a missing row — which is exactly how this helper
+ * failed when auto-expand landed. Reading the label makes it race-free in both
+ * directions: if the rows have not loaded yet the toggle says "Show", the click
+ * pins the panel open explicitly, and the rows arrive into an open panel.
+ */
 async function openHistory(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(await screen.findByTestId('yt-history-toggle'));
+  const toggle = await screen.findByTestId('yt-history-toggle');
+  if (/show/i.test(toggle.textContent ?? '')) await user.click(toggle);
 }
 
 beforeEach(() => {
@@ -288,9 +299,17 @@ describe('history — an EXPIRED generation', () => {
      * estimate, and a resumed form arriving unpriced would be the defect. `submit()`
      * is the only call that can debit a viewer, so it is what this pins.
      */
+    estimateWorkflow.mockResolvedValue({ workflowId: 'e', status: 'pending', cost: { total: 418 } });
     const user = userEvent.setup();
     render(<App />);
     await openHistory(user);
+    // 🔴 SNAPSHOTTED BEFORE THE RESUME, NOT ASSERTED AS "called at all". This file's
+    // token carries `ai:write:budgeted`, so the MOUNT preview has already estimated by
+    // now — a bare `toHaveBeenCalled()` resolves on that first call and waits for
+    // nothing, which is exactly the hole this closes. What proves the debounce actually
+    // fired AFTER the resume is a NEW call, and the resume changes the checkpoint, the
+    // quantity and the formats, so one is owed.
+    const estimatesBefore = estimateWorkflow.mock.calls.length;
     await user.click(await screen.findByTestId('yt-history-resume'));
 
     await waitFor(() => expect(screen.getByLabelText(/prompt/i)).toHaveValue('a red bicycle'));
@@ -300,8 +319,10 @@ describe('history — an EXPIRED generation', () => {
     // Give the live preview's debounce room to fire and confirm it STILL has not
     // submitted. Without this the case cannot tell "never submits" from "had not
     // submitted yet at the moment we looked".
-    estimateWorkflow.mockResolvedValue({ workflowId: 'e', status: 'pending', cost: { total: 418 } });
-    await waitFor(() => expect(estimateWorkflow).toHaveBeenCalled(), { timeout: 3000 });
+    await waitFor(
+      () => expect(estimateWorkflow.mock.calls.length).toBeGreaterThan(estimatesBefore),
+      { timeout: 3000 },
+    );
     expect(submitWorkflow).not.toHaveBeenCalled();
   });
 
@@ -340,6 +361,62 @@ describe('history — cancel, and saving a past image', () => {
       expect(saveImage).toHaveBeenCalledWith({
         url: 'https://image.civitai.com/done-a.jpg',
         filename: 'yt-thumbnail-clickbait-1.jpg',
+      }),
+    );
+  });
+
+  it('🔴 names each image after ITS OWN format, in the filename AND the alt text', async () => {
+    /**
+     * 🔴 RED AT c84f082, where the row used `form.formats[0].label` for every image in
+     * it: the SECOND image of a 2-format batch was saved as
+     * `yt-thumbnail-clickbait-2.jpg` — a wrong filename on the only real download this
+     * block has — and its alt text named no format at all.
+     *
+     * Two formats, two workflows, one image each, so `formats[i]` and the image index
+     * agree here; the cases where they DON'T (a missing workflow, quantity > 1) are
+     * pinned on the join itself in `history.test.ts`, where the arithmetic is visible.
+     */
+    const DONE_B: AppWorkflow = {
+      workflowId: 'wf-done-2',
+      status: 'succeeded',
+      images: [{ url: 'https://image.civitai.com/done-b.jpg', width: 1536, height: 864, nsfwLevel: 1 }],
+      cost: 209,
+      createdAt: '2026-09-30T12:46:00.000Z',
+    };
+    stockStorage([
+      {
+        key: RECORD_KEY,
+        value: {
+          ...RECORD,
+          workflowIds: ['wf-done', 'wf-done-2'],
+          form: {
+            ...RECORD.form,
+            formats: [
+              RECORD.form.formats[0],
+              { id: 'minimal', label: 'Minimal', suffix: 'clean', prompt: 'a red bicycle, clean' },
+            ],
+          },
+        },
+      },
+    ]);
+    state.workflows = [DONE_WORKFLOW, DONE_B];
+    const user = userEvent.setup();
+    render(<App />);
+    await openHistory(user);
+
+    const images = await screen.findAllByTestId('yt-history-img');
+    expect(images).toHaveLength(2);
+    // The per-image ATTRIBUTION, which the alt text had dropped entirely.
+    expect(images[0]).toHaveAttribute('alt', expect.stringContaining('Clickbait'));
+    expect(images[1]).toHaveAttribute('alt', expect.stringContaining('Minimal'));
+
+    // ...and the FILENAME, which is the half that leaves the page.
+    const saves = await screen.findAllByTestId('yt-history-save');
+    await user.click(saves[1]);
+    await waitFor(() =>
+      expect(saveImage).toHaveBeenCalledWith({
+        url: 'https://image.civitai.com/done-b.jpg',
+        filename: 'yt-thumbnail-minimal-2.jpg',
       }),
     );
   });
@@ -502,6 +579,182 @@ describe('🔴 the record WRITTEN at submit time', () => {
     expect(await screen.findByTestId('yt-history-denied')).toBeInTheDocument();
     // ...and NOT as a failed generation.
     expect(screen.queryByTestId('pm-failed')).not.toBeInTheDocument();
+  });
+});
+
+describe('🔴 a run whose storage write FAILED is not deleted by a refresh', () => {
+  /**
+   * 🔴 THE BUG THIS CLOSES, AND IT IS THE DEPLOY-BLOCKING ONE. The batch record is
+   * inserted optimistically, before `set()` is acknowledged, because the row IS the
+   * surface the viewer's images appear in. When that write rejects, the panel shows a
+   * banner and a **"Try again"** button — and that button called `loadHistory`, which
+   * REPLACED the list with what storage actually holds. Storage never held this run,
+   * so the row and its paid-for images vanished, permanently: `joinHistory` is their
+   * only renderer, so a reload did not bring them back either.
+   *
+   * 🔴 RED AT c84f082 on a real assertion in both cases below (measured). Each asserts
+   * the image is present BEFORE the refresh as well as after, so "still there" cannot
+   * be confused with "never rendered".
+   */
+  const FRESH_IMAGE = 'https://image.civitai.com/fresh.jpg';
+
+  function generateOnce() {
+    estimateWorkflow.mockResolvedValue({ workflowId: 'e', status: 'pending', cost: { total: 209 } });
+    submitWorkflow.mockResolvedValue({
+      workflowId: 'wf-new',
+      status: 'succeeded',
+      cost: { total: 209 },
+      imageUrls: [FRESH_IMAGE],
+    });
+    // 🔴 THE LIST STILL WORKS. That is the exact shape of the bug: the refresh
+    // SUCCEEDS and hands back a store that never contained this run.
+    stockStorage([]);
+  }
+
+  it('survives the "Try again" button the error state itself offers', async () => {
+    /**
+     * 🔴 A NON-DENIED, NON-ANON message ON PURPOSE. `classifyStorageError` maps this to
+     * `error`, which is the only state that renders a retry button — so this is the
+     * one path where the app hands the viewer the control that deleted their images.
+     */
+    generateOnce();
+    storageSet.mockRejectedValue(new Error('network hiccup'));
+
+    const user = userEvent.setup();
+    render(<App />);
+    await user.type(await screen.findByLabelText(/prompt/i), 'a cat');
+    await user.click(screen.getByTestId('pm-generate'));
+
+    expect(await screen.findByTestId('yt-history-img')).toHaveAttribute('src', FRESH_IMAGE);
+    const retry = await screen.findByRole('button', { name: /try again/i });
+
+    const listsBefore = storageList.mock.calls.length;
+    await user.click(retry);
+    // The refresh really ran...
+    await waitFor(() => expect(storageList.mock.calls.length).toBeGreaterThan(listsBefore));
+    // ...and it RETRIED the write that failed, which is what "try again" should mean
+    // on a surface whose only problem was a rejected write.
+    await waitFor(() => expect(storageSet).toHaveBeenCalledTimes(2));
+
+    // 🔴 THE POINT: the row and the image the viewer already PAID FOR are still there.
+    expect(screen.getByTestId('yt-history-row')).toBeInTheDocument();
+    expect(screen.getByTestId('yt-history-img')).toHaveAttribute('src', FRESH_IMAGE);
+    // ...and the honest note about the SAVE is still beside them.
+    expect(screen.getByTestId('yt-history-note')).toHaveTextContent(/couldn't save this run/i);
+  });
+
+  it('survives a token that expired mid-run — the ANON state is a banner, not a replacement', async () => {
+    /**
+     * `classifyStorageError` matches 'anon' / 'sign in' / 'not signed in' on a failed
+     * `set`, so a mid-run expiry lands here. The `anon` branch was an UNCONDITIONAL
+     * early return, so it replaced the row with a sign-in prompt — while the note
+     * written on that very path says "This run's images are above". They were not.
+     */
+    generateOnce();
+    storageSet.mockRejectedValue(new Error('not signed in'));
+
+    const user = userEvent.setup();
+    render(<App />);
+    await user.type(await screen.findByLabelText(/prompt/i), 'a cat');
+    await user.click(screen.getByTestId('pm-generate'));
+
+    // The sign-in prompt appears...
+    expect(await screen.findByTestId('yt-history-anon')).toHaveTextContent(/sign in/i);
+    // ...ABOVE the images, not instead of them, and the note is then a true statement.
+    expect(screen.getByTestId('yt-history-img')).toHaveAttribute('src', FRESH_IMAGE);
+    expect(screen.getByTestId('yt-history-note')).toHaveTextContent(/images are above/i);
+  });
+
+  it('🔴 a RELOAD IN FLIGHT does not blank rows it already has', async () => {
+    /**
+     * 🔴 RED AT c84f082: `state === 'loading'` was an unconditional early return
+     * alongside a `loading` FLAG that had been correctly narrowed to
+     * `entries.length === 0`. So EVERY reload — the Show toggle and the error
+     * banner's Try again both call one — blanked the images for its duration.
+     *
+     * The `list()` call is left UNRESOLVED on purpose: that is what holds the app in
+     * `historyState === 'loading'` for the assertions. With the fix the loading state
+     * is invisible when there are rows, so there is nothing positive to assert about
+     * it; what makes this non-vacuous is that it was RED at base, plus the two facts
+     * asserted here — `list()` was called again and has not come back — which together
+     * mean the code is inside the branch by construction.
+     */
+    stockStorage();
+    state.workflows = [EXPIRED_WORKFLOW];
+    const user = userEvent.setup();
+    render(<App />);
+    await openHistory(user);
+    await screen.findByTestId('yt-history-row');
+
+    let release = () => {};
+    storageList.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ keys: [{ key: RECORD_KEY, updatedAt: new Date() }] });
+        }),
+    );
+    const listsBefore = storageList.mock.calls.length;
+    // Hide, then Show — the Show is what calls `loadHistory`, and it now hangs.
+    await user.click(screen.getByTestId('yt-history-toggle'));
+    await user.click(screen.getByTestId('yt-history-toggle'));
+    await waitFor(() => expect(storageList.mock.calls.length).toBeGreaterThan(listsBefore));
+
+    expect(screen.getByTestId('yt-history-row')).toBeInTheDocument();
+    expect(screen.queryByTestId('yt-history-loading')).not.toBeInTheDocument();
+
+    // Let the hung read settle so nothing is left pending past the test.
+    release();
+    await waitFor(() => expect(screen.getByTestId('yt-history-row')).toBeInTheDocument());
+  });
+});
+
+describe('🔴 the surface is OPEN whenever there are rows', () => {
+  it('shows a returning visitor their generations without a click', async () => {
+    /**
+     * 🔴 RED AT c84f082, where `historyOpen` was `useState(false)` and only ever set
+     * true at submit: a returning viewer's whole history — this app's results surface
+     * — was collapsed behind a "Show" button. NO CLICK ANYWHERE IN THIS CASE, which is
+     * the assertion.
+     */
+    stockStorage([{ key: RECORD_KEY, value: { ...RECORD, workflowIds: ['wf-done'] } }]);
+    state.workflows = [DONE_WORKFLOW];
+    render(<App />);
+
+    expect(await screen.findByTestId('yt-history-img')).toBeInTheDocument();
+    expect(await screen.findByTestId('yt-history-toggle')).toHaveTextContent(/hide/i);
+  });
+
+  it('still honours an explicit Hide', async () => {
+    // The other arm: auto-expand must not mean "cannot be closed".
+    stockStorage([{ key: RECORD_KEY, value: { ...RECORD, workflowIds: ['wf-done'] } }]);
+    state.workflows = [DONE_WORKFLOW];
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByTestId('yt-history-img');
+    await user.click(screen.getByTestId('yt-history-toggle'));
+    await waitFor(() => expect(screen.queryByTestId('yt-history-img')).not.toBeInTheDocument());
+    expect(screen.getByTestId('yt-history-toggle')).toHaveTextContent(/show/i);
+  });
+
+  it('🔴 "Reuse settings" does not hide the images', async () => {
+    /**
+     * 🔴 RED AT c84f082: `onResume` called `setHistoryOpen(false)`, which was harmless
+     * while this was a collapsible archive and is a deletion now that it is where the
+     * pictures live — clicking Reuse settings hid the row it was clicked in, and every
+     * image on the page with it.
+     */
+    stockStorage([{ key: RECORD_KEY, value: { ...RECORD, workflowIds: ['wf-done'] } }]);
+    state.workflows = [DONE_WORKFLOW];
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByTestId('yt-history-img');
+    await user.click(screen.getByTestId('yt-history-resume'));
+
+    await waitFor(() => expect(screen.getByLabelText(/prompt/i)).toHaveValue('a red bicycle'));
+    expect(screen.getByTestId('yt-history-img')).toBeInTheDocument();
+    expect(screen.getByTestId('yt-history-row')).toBeInTheDocument();
   });
 });
 

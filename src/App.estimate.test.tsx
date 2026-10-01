@@ -94,7 +94,7 @@ vi.mock('@civitai/blocks-react', () => ({
 
 const { App, ESTIMATE_DEBOUNCE_MS } = await import('./App.js');
 const { BUILTIN_FORMATS } = await import('./formats.js');
-const { QUANTITY_MAX } = await import('./generation.js');
+const { QUANTITY_MAX, QUANTITY_MIN } = await import('./generation.js');
 
 const CINEMATIC = BUILTIN_FORMATS[1];
 
@@ -501,8 +501,10 @@ describe('the quantity dropdown drives the same clamp the pills did', () => {
      * for. Driven at the DOM level with a value the `<select>` does not offer, which
      * is the only way to get an out-of-range value through a native control.
      *
-     * 🔴 THE OPTION SET IS ASSERTED AGAINST THE CONSTANT, not against a literal list.
-     * A hardcoded `['1','2','3','4']` here would be a third copy of the server cap.
+     * 🔴 THE OPTION SET IS ASSERTED AGAINST BOTH CONSTANTS, not against a literal list.
+     * A hardcoded `['1','2','3','4']` here would be a third copy of the server cap —
+     * and so was the hardcoded FLOOR this used to carry (`i + 1`), which made the
+     * comment's claim half false and would not have moved if `QUANTITY_MIN` did.
      */
     const user = userEvent.setup();
     render(<App />);
@@ -510,7 +512,7 @@ describe('the quantity dropdown drives the same clamp the pills did', () => {
 
     const select = screen.getByTestId('pm-quantity') as HTMLSelectElement;
     expect([...select.options].map((o) => o.value)).toEqual(
-      Array.from({ length: QUANTITY_MAX }, (_, i) => String(i + 1)),
+      Array.from({ length: QUANTITY_MAX - QUANTITY_MIN + 1 }, (_, i) => String(QUANTITY_MIN + i)),
     );
 
     // The highest offered value survives the clamp unchanged...

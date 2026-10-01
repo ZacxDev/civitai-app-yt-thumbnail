@@ -168,6 +168,19 @@ function stockStorage(records: Array<{ key: string; value: unknown }>) {
   });
 }
 
+/**
+ * Make sure the surface is EXPANDED.
+ *
+ * 🔴 IT CLICKS ONLY WHEN THE TOGGLE STILL SAYS "Show". The surface auto-expands
+ * whenever there are rows, so an UNCONDITIONAL click would COLLAPSE it and every
+ * assertion below would read as a missing row. Reading the label makes it race-free
+ * either way round.
+ */
+async function openHistory(user: ReturnType<typeof userEvent.setup>) {
+  const toggle = await screen.findByTestId('yt-history-toggle');
+  if (/show/i.test(toggle.textContent ?? '')) await user.click(toggle);
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   state.viewer = { id: 2, username: 'dev' };
@@ -211,8 +224,7 @@ describe('the history surface — when it exists at all', () => {
     const user = userEvent.setup();
     render(<App />);
 
-    const toggle = await screen.findByTestId('yt-history-toggle');
-    await user.click(toggle);
+    await openHistory(user);
     expect(await screen.findByTestId('yt-history-anon')).toHaveTextContent(/sign in/i);
     // ...and specifically NOT the empty state.
     expect(screen.queryByTestId('yt-history-empty')).not.toBeInTheDocument();
@@ -226,7 +238,7 @@ describe('the history surface — when it exists at all', () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(await screen.findByTestId('yt-history-toggle'));
+    await openHistory(user);
     expect(await screen.findByTestId('yt-history-denied')).toHaveTextContent(/storage access/i);
     expect(screen.queryByTestId('yt-history-error')).not.toBeInTheDocument();
   });
@@ -237,7 +249,7 @@ describe('the history surface — when it exists at all', () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(await screen.findByTestId('yt-history-toggle'));
+    await openHistory(user);
     expect(await screen.findByTestId('yt-history-error')).toBeInTheDocument();
     expect(screen.queryByTestId('yt-history-denied')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /try again/i })).toBeInTheDocument();
@@ -254,25 +266,22 @@ describe('the history surface — when it exists at all', () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(await screen.findByTestId('yt-history-toggle'));
+    await openHistory(user);
     expect(await screen.findByTestId('yt-history-live-error')).toBeInTheDocument();
     expect(screen.getByTestId('yt-history-row')).toBeInTheDocument();
     expect(screen.getByTestId('yt-history-resume')).toBeInTheDocument();
   });
 
-  it('a note keeps the block up even with nothing in it', async () => {
-    /**
-     * The one exception to the hide rule, and it is about the notes this surface
-     * carries: "this run was too large to save", "this run wasn't saved to history".
-     * They are about the run that JUST happened, and a message that vanishes with its
-     * container is a message nobody reads. Driven through the DENIED path, which sets
-     * both a note and a non-ready state, so this asserts the note SURVIVES rather
-     * than reconstructing the ready+note combination artificially.
-     */
-    storageList.mockRejectedValue(new Error('FORBIDDEN: missing scope apps:storage:read'));
-    render(<App />);
-    expect(await screen.findByTestId('yt-history-toggle')).toBeInTheDocument();
-  });
+  // 🔴 THE 'a note keeps the block up even with nothing in it' CASE IS DELETED, and
+  // its docstring is why: it claimed to drive the `note` clause of `showHistory` via
+  // "the DENIED path, which sets both a note and a non-ready state". Neither half was
+  // true. `loadHistory` never calls `setHistoryNote`, so `note` was `null`; and
+  // `showHistory` returns at its FIRST clause (`state !== 'ready'`) without ever
+  // reaching `return args.note != null`. What it actually asserted was that a denied
+  // state keeps the block up — the case directly above it. A docstring claiming
+  // coverage it does not have is worse than no test: it stops anyone looking. The
+  // ready+note clause is pinned where it can be reached, in
+  // `history.test.ts > showHistory`.
 });
 
 describe('the history surface — a batch that is still running', () => {
@@ -286,7 +295,7 @@ describe('the history surface — a batch that is still running', () => {
     state.workflows = [RUNNING_WORKFLOW];
     const user = userEvent.setup();
     render(<App />);
-    await user.click(await screen.findByTestId('yt-history-toggle'));
+    await openHistory(user);
 
     const row = await screen.findByTestId('yt-history-row');
     expect(within(row).getByText('Running')).toBeInTheDocument();
@@ -310,7 +319,7 @@ describe('the history surface — a batch that is still running', () => {
     state.workflows = [DONE_WORKFLOW];
     const user = userEvent.setup();
     render(<App />);
-    await user.click(await screen.findByTestId('yt-history-toggle'));
+    await openHistory(user);
 
     const row = await screen.findByTestId('yt-history-row');
     expect(within(row).getAllByTestId('yt-history-img')).toHaveLength(2);
@@ -348,7 +357,7 @@ describe('the history surface — a batch that is still running', () => {
     state.workflows = [DONE_WORKFLOW, RUNNING_WORKFLOW];
     const user = userEvent.setup();
     render(<App />);
-    await user.click(await screen.findByTestId('yt-history-toggle'));
+    await openHistory(user);
 
     const row = await screen.findByTestId('yt-history-row');
     expect(within(row).getAllByTestId('yt-history-img')).toHaveLength(2);
@@ -368,7 +377,7 @@ describe('the history surface — a batch that is still running', () => {
     state.workflows = [DONE_WORKFLOW];
     const user = userEvent.setup();
     render(<App />);
-    await user.click(await screen.findByTestId('yt-history-toggle'));
+    await openHistory(user);
 
     await screen.findByTestId('yt-history-row');
     const rows = screen.getByTestId('yt-history-grid');
