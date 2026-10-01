@@ -60,6 +60,68 @@ Separately, the `public/formats/formats.json` lockstep guard was mutation-checke
 on its own: a one-character suffix drift and a broken preview path each failed
 the intended assertion and nothing else, with the restored tree green.
 
+## Second batch: 6 → 12 built-in formats — 13 mutants, 13 killed, 0 survived
+
+Run 2026-10-01 at commit `f16b01b`, over `src/formats.test.ts` +
+`src/App.formats.test.tsx` only (63 tests). Sweep script
+`scratchpad/{mutants.mjs,sweep.sh}` — not committed; it rewrites `src/` and
+`public/` and restores from a `cp -a` pristine copy, never `git checkout --`.
+
+**Both controls exercised.**
+- *Positive / negative control:* the unmutated tree reported **green=63 red=0**,
+  and every one of the 13 mutants reported red ≥ 1 — so the harness demonstrably
+  can go both ways. Counts come from the runner's **own per-test result lines**
+  (`grep -cE '^ *× '`), not an exit code, and each run was also grepped for
+  `Cannot find module` / `Test timed out` / `Unhandled Rejection` so an import
+  error or a timeout could not be mis-read as an assertion red.
+- *Restoration verified by content:* `md5sum -c` against a baseline taken before
+  the sweep — all five touched files `OK` afterwards.
+- *Isolation:* where a mutant would otherwise trip the `formats.ts` ↔
+  `formats.json` lockstep guard as a side effect, it was applied to **both**
+  files, so the guard under test is the one that fires.
+
+| # | Mutation | Killed by — and the assertion message that proves it |
+|---|---|---|
+| M12 | a **13th** built-in appended to both files | ledger comparison + mirror + previewless-set (3 red) |
+| M13 | `magic` **deleted** from both files | same three (3 red) — the ledger fails on shrink as well as growth, which is the claim |
+| M14 | `DEFAULT_FORMAT_ID = BUILTIN_FORMATS[**1**].id` | "the default format is still \`clickbait\`, and still FIRST" → **`expected 'cinematic' to be 'clickbait'`** (6 red) |
+| M15 | `abstract`'s suffix set equal to `chaos`'s | "no two built-ins share a suffix" → **`two built-ins share a suffix`** (1 red, isolated) |
+| M16 | `magic`'s suffix blanked to `'   '` | "non-empty suffix" → **`magic has a blank suffix`** (1 red, isolated) |
+| M17 | a `#` inserted into `abstract`'s suffix | "no built-in suffix contains a character the generator eats" → **`…suffix contains a wildcard character`** (1 red, isolated) |
+| M18 | `magic` declares `/formats/magic.webp` — **art that does not exist** | "every DECLARED preview path resolves to a file that is actually shipped" → **`missing preview file for magic`** (3 red) |
+| M19 | `magic` given a **fabricated** `sourceWorkflowId`, no preview | provenance triple → **`magic declares a workflow id but no preview`** (1 red, isolated) |
+| M20 | `gaming`'s `sourceWorkflowId` removed, art kept | provenance triple → **`gaming has art but no sourceWorkflowId`** (1 red, isolated) |
+| M21 | `gaming`'s art silently **lost** (preview + provenance removed from both files) | preview-exists loop's own count → **`expected 5 to be 6`**, plus mirror, provenance and previewless-set (4 red) |
+| M22 | `FormatPicker`: `fmt.preview ?` → `fmt.preview !== null ?` (so `undefined` renders `<img src={undefined}>`) | "a format with NO preview renders a placeholder, never an \<img\>" → **`minimalist has no art but rendered an <img>`** (1 red, isolated) |
+| M23 | `aspectRatio: '16 / 9'` deleted from `previewWrapStyle` | "the preview box reserves 16/9 whether or not there is art" (1 red, isolated) |
+| M24 | `FormatPicker` renders `formats.slice(0, 6)` | "renders one chip per built-in, found by its own exact id" + 5 others (6 red) |
+
+**The preview-file-exists guard was demonstrated in BOTH directions, which is the
+whole reason it exists.** It passes today with six formats declaring art (all
+present) and six declaring none; M18 is the other direction — a format that
+declares art which is *not* on disk, and the guard names it. The in-test positive
+control (`/formats/clickbait.webp` → true, `/formats/no-such-format.webp` →
+false) covers the third failure mode: the loop is now conditional, so a loop that
+iterates zero times would otherwise pass while checking nothing. M21 is the
+control for that specific hazard and it fires on the `checked` count, not on a
+path.
+
+### Honest notes on this batch
+
+- **M14 produced one collateral timeout.** `App.formats.test.tsx`'s
+  partial-failure case timed out at 5000ms rather than asserting, because moving
+  the default selection invalidates that test's fixture. That red is **not** the
+  kill being claimed; the kill is the unit assertion quoted in the table. A
+  timeout is not evidence, so it is named here rather than counted.
+- **M12/M13 each fire three guards, not one.** `BUILTIN_LEDGER` and
+  `WITH_PREVIEW_ART` are both literal lists, so changing the set disagrees with
+  both of them plus the JSON mirror. That is over-coverage, not a defect — but it
+  means none of those three rows is independently graded by M12/M13 alone. M19,
+  M20 and M21 grade the provenance and previewless guards in isolation.
+- **Nothing here touches the live backend, and no Buzz was spent.** The six new
+  formats ship with no preview art precisely because generating it is a separate
+  gated step.
+
 ## Honest note on M2
 
 M2 produced **one** red, not two. The App-level partial-failure test does not see

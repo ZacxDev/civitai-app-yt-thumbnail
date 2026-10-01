@@ -193,9 +193,16 @@ the **summed** estimate.
 
 Three tiers:
 
-- **Built-in** — six, defined canonically in `public/formats/formats.json`
+- **Built-in** — twelve, defined canonically in `public/formats/formats.json`
   (which also records each preview's `sourceWorkflowId`) and mirrored as
-  `BUILTIN_FORMATS` in `src/formats.ts`. A test pins the two in lockstep.
+  `BUILTIN_FORMATS` in `src/formats.ts`. A test pins the two in lockstep, and a
+  second pins the exact ledger of twelve ids so the set cannot grow *or* shrink
+  unnoticed. **Six of the twelve have no preview art** — `Format.preview` is
+  optional and the picker renders a letter placeholder inside the same 16/9 box,
+  so a previewless format costs no layout and shows no broken image. A format
+  with no art carries no `preview`, no `sourceWorkflowId` and no `costBuzz`: the
+  three travel together or not at all, because a fabricated workflow id would be
+  a false provenance record.
 - **Custom** — the viewer's own, **private by default**, persisted per-viewer
   via `useAppStorage` under `formats:custom:v1`. Anonymous viewers get no
   persistence at all (`get` resolves `null`, `set` rejects) and are told so
