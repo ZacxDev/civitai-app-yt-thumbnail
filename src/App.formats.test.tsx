@@ -363,6 +363,90 @@ describe('N formats ⇒ N workflows', () => {
 
 // ---------------------------------------------------------------------------
 
+describe('🔴 the picker renders EVERY built-in, with or without preview art', () => {
+  /**
+   * Six of the twelve built-ins ship with no generated art. `Format.preview` is
+   * optional and `FormatPicker` branches on it — `<img>` when it is there, a
+   * letter placeholder when it is not. This suite is the only thing that proves
+   * the placeholder branch is actually taken in the shipped DOM.
+   *
+   * 🔴 SELECTION IS BY EXACT TESTID, NEVER BY THE `yt-format-` PREFIX. That
+   * prefix also matches `yt-format-grid`, `yt-format-card`, `yt-format-check`,
+   * `yt-format-label`, `yt-format-suffix`, `yt-format-save`, … — a count over it
+   * is wrong by a number that changes with the layout, not with the format list.
+   * `yt-format-card` IS exact, so counting cards is safe; matching chips is not.
+   */
+
+  /** The chip button for one format id. Exact testid — see the note above. */
+  const chip = (id: string) => screen.getByTestId(`yt-format-${id}`);
+
+  it('renders one chip per built-in, found by its own exact id', async () => {
+    render(<App />);
+    await screen.findByTestId('yt-format-grid');
+
+    for (const f of BUILTIN_FORMATS) {
+      const el = chip(f.id);
+      expect(el, `no chip for ${f.id}`).toBeInTheDocument();
+      expect(el).toHaveAttribute('role', 'checkbox');
+      expect(el).toHaveTextContent(f.label);
+    }
+    // One card per format and nothing else: `yt-format-card` is an EXACT testid,
+    // so this count is about the format list rather than the layout.
+    expect(screen.getAllByTestId('yt-format-card')).toHaveLength(BUILTIN_FORMATS.length);
+  });
+
+  it('🔴 a format with NO preview renders a placeholder, never an <img>', async () => {
+    render(<App />);
+    await screen.findByTestId('yt-format-grid');
+
+    // Positive control: prove this assertion can SEE an <img> at all, by checking
+    // a format that has art. Without this, the `toBeNull()` below is
+    // indistinguishable from a query that never matches anything.
+    const withArt = BUILTIN_FORMATS.filter((f) => f.preview !== undefined);
+    expect(withArt.length, 'no format has art — the control below is vacuous').toBeGreaterThan(0);
+    for (const f of withArt) {
+      const img = chip(f.id).querySelector('img');
+      expect(img, `${f.id} has art but rendered no <img>`).not.toBeNull();
+      expect(img).toHaveAttribute('src', f.preview as string);
+      // Decorative: the label beside it already names the format.
+      expect(img).toHaveAttribute('alt', '');
+    }
+
+    // The case under test. An <img> with an empty/absent/wrong src is exactly
+    // what paints a broken-image icon, so the claim is that there is NO img node.
+    const previewless = BUILTIN_FORMATS.filter((f) => f.preview === undefined);
+    expect(previewless.length, 'no previewless format to test').toBeGreaterThan(0);
+    for (const f of previewless) {
+      const el = chip(f.id);
+      expect(el.querySelector('img'), `${f.id} has no art but rendered an <img>`).toBeNull();
+      // The placeholder is the format's initial, and it is aria-hidden so a
+      // screen reader hears the label once, not a stray letter before it.
+      expect(el).toHaveTextContent(f.label);
+      const ph = el.querySelector('[aria-hidden="true"]');
+      expect(ph, `${f.id} rendered no placeholder`).not.toBeNull();
+      expect(ph!.textContent).toBe(f.label.slice(0, 1).toUpperCase());
+    }
+  });
+
+  it('🔴 the preview box reserves 16/9 whether or not there is art — no layout jump', async () => {
+    render(<App />);
+    await screen.findByTestId('yt-format-grid');
+
+    // The aspect-ratio lives on the WRAPPER, not the image, which is what makes a
+    // previewless card the same height as one with art. If it moved onto the
+    // <img>, the six previewless cards would collapse and the grid would reflow
+    // the moment art is added for any one of them.
+    const boxOf = (id: string) => {
+      const el = chip(id).querySelector('span') as HTMLElement;
+      return el.style.aspectRatio;
+    };
+    const art = BUILTIN_FORMATS.find((f) => f.preview !== undefined)!;
+    const none = BUILTIN_FORMATS.find((f) => f.preview === undefined)!;
+    expect(boxOf(art.id)).toBe('16 / 9');
+    expect(boxOf(none.id)).toBe('16 / 9');
+  });
+});
+
 describe('the format selection invariant', () => {
   it('🔴 will not let the viewer deselect the last format', async () => {
     const user = userEvent.setup();

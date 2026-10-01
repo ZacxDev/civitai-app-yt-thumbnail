@@ -72,3 +72,25 @@ the uncropped frame.
 Served from `public/`, so they are real build output at `/formats/<id>.webp`.
 Note `assets/` at the repo root is STORE-LISTING media and is NOT served to the
 app — these two directories are not interchangeable.
+
+## The second batch of six — NO ART, and that is the shipped state
+
+`minimalist`, `educational`, `professional`, `abstract`, `chaos` and `magic` were
+added as **code and copy only**. They carry a `label` and a `suffix` and nothing
+else: no `preview`, no `sourceWorkflowId`, no `costBuzz`. `Format.preview` is
+optional and `FormatPicker` branches on it, so they render the letter placeholder
+inside the same 16/9 box — no broken-image icon, no layout jump. That is asserted
+in `App.formats.test.tsx` ("the picker renders EVERY built-in, with or without
+preview art") in both directions, with a positive control that proves the
+`<img>`-present assertion can actually see an image.
+
+🔴 **Do not fill in a `sourceWorkflowId` for these.** It is a provenance field
+naming a generation that really ran; a made-up one is a false record, and the
+guard in `formats.test.ts` ("the JSON provenance triple travels TOGETHER")
+rejects a `sourceWorkflowId` without a `preview` *and* a `preview` without a
+`sourceWorkflowId` for exactly that reason.
+
+Art for these six is a separate, operator-gated step: ChatGPT Images, ~209 Buzz
+each, delivering 1536×864 (true 16:9, so no crop needed — unlike the first six).
+Nothing in this change generated anything or spent anything. When the art lands,
+add all three fields per format in one edit and the guard goes green on its own.

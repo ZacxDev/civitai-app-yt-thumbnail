@@ -40,5 +40,29 @@
     "preview": "/formats/gaming.webp",
     "sourceWorkflowId": "8753561-20260930162203162-siqc",
     "costBuzz": 3
+  },
+  "minimalist": {
+    "label": "Minimalist",
+    "suffix": "generous negative space, one small off-center subject, muted desaturated palette, soft diffuse daylight, understated and quiet, delicate fine detail"
+  },
+  "educational": {
+    "label": "Educational",
+    "suffix": "infographic layout, labeled diagram with callout arrows, whiteboard sketch annotations, charts and flow lines, explanatory schematic, flat vector illustration"
+  },
+  "professional": {
+    "label": "Professional",
+    "suffix": "corporate business portrait, confident presenter on a conference stage, tailored suit, glass office tower boardroom, authoritative composure, polished editorial lighting"
+  },
+  "abstract": {
+    "label": "Abstract",
+    "suffix": "non representational abstract shapes, overlapping geometric planes, gradient mesh and flowing curves, risograph grain texture, no recognizable objects, generative art"
+  },
+  "chaos": {
+    "label": "Chaos",
+    "suffix": "maximalist visual overload, cluttered collage of overlapping elements, clashing patterns, motion blur and glitch artifacts, frenetic asymmetric composition, controlled mess"
+  },
+  "magic": {
+    "label": "Magic",
+    "suffix": "arcane fantasy sorcery, swirling glowing runes and sparkling particles, enchanted mist, iridescent violet and gold aura, ethereal otherworldly atmosphere, painterly fantasy illustration"
   }
 }

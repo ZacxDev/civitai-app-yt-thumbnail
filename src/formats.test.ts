@@ -71,6 +71,56 @@ const draft = { label: 'Retro VHS', suffix: 'analog vhs grain, chromatic aberrat
  */
 const CANONICAL_PATH = resolve(__dirname, '..', 'public', 'formats', 'formats.json');
 
+/**
+ * THE LEDGER. The exact built-in ids, in exact picker order. Written out as
+ * literals on purpose: derived from `BUILTIN_FORMATS` it would assert nothing.
+ *
+ * ONE assertion compares the whole list against this, which makes it fail when
+ * the set GROWS, when it SHRINKS, when an id is RENAMED, and when the order
+ * changes — four claims for the price of one, and all four matter. Order is
+ * load-bearing twice over: `DEFAULT_FORMAT_ID` is element 0, and the picker
+ * renders in this order.
+ *
+ * Growing the set is SUPPOSED to break this test. Update the literal list in the
+ * same commit that adds the format, and say so in the message.
+ */
+const BUILTIN_LEDGER: readonly string[] = [
+  'clickbait',
+  'cinematic',
+  'bold-simple',
+  'tech-review',
+  'tutorial',
+  'gaming',
+  'minimalist',
+  'educational',
+  'professional',
+  'abstract',
+  'chaos',
+  'magic',
+];
+
+/**
+ * The built-ins that ship WITH generated preview art, pinned exactly. The other
+ * six render the picker's letter placeholder.
+ *
+ * Pinned as a set rather than "6 of them have art" because a count cannot tell
+ * "we generated art for `magic`" from "we lost the art for `gaming`" — and the
+ * second is a regression while the first is progress.
+ */
+const WITH_PREVIEW_ART: readonly string[] = [
+  'clickbait',
+  'cinematic',
+  'bold-simple',
+  'tech-review',
+  'tutorial',
+  'gaming',
+];
+
+/** Map a root-absolute `preview` URL to where Vite will actually ship it from. */
+function previewOnDisk(preview: string): string {
+  return resolve(__dirname, '..', 'public', preview.replace(/^\//, ''));
+}
+
 describe('built-in formats', () => {
   it('🔴 mirrors public/formats/formats.json exactly — id, label, suffix and preview', () => {
     // Prove the fixture EXISTS before comparing against it. A missing file that
@@ -78,10 +128,10 @@ describe('built-in formats', () => {
     expect(existsSync(CANONICAL_PATH)).toBe(true);
     const canonical = JSON.parse(readFileSync(CANONICAL_PATH, 'utf8')) as Record<
       string,
-      { label: string; suffix: string; preview: string }
+      { label: string; suffix: string; preview?: string }
     >;
     const canonicalIds = Object.keys(canonical);
-    expect(canonicalIds).toHaveLength(6);
+    expect(canonicalIds).toEqual(BUILTIN_LEDGER);
     // Same set AND same order — the picker order is the JSON's key order.
     expect(BUILTIN_FORMATS.map((f) => f.id)).toEqual(canonicalIds);
     for (const f of BUILTIN_FORMATS) {
@@ -93,24 +143,100 @@ describe('built-in formats', () => {
     }
   });
 
-  it('🔴 every preview path resolves to a file that is actually shipped', () => {
-    // `preview` is a root-absolute URL into public/, which Vite copies verbatim
-    // into dist/. A typo here is invisible until a viewer sees a broken image.
-    for (const f of BUILTIN_FORMATS) {
-      expect(f.preview).toMatch(/^\/formats\/[a-z-]+\.webp$/);
-      const onDisk = resolve(__dirname, '..', 'public', (f.preview as string).replace(/^\//, ''));
-      expect(existsSync(onDisk)).toBe(true);
+  it('🔴 the JSON provenance triple travels TOGETHER — art implies a real workflow id', () => {
+    // `preview`, `sourceWorkflowId` and `costBuzz` are one record: the art, the
+    // generation it came from, and what it cost. A `preview` with no
+    // `sourceWorkflowId` is art nobody can trace; a `sourceWorkflowId` with no
+    // `preview` is a provenance line for a file that is not there. Both are false
+    // records, and the whole point of this JSON is that it is not one.
+    const canonical = JSON.parse(readFileSync(CANONICAL_PATH, 'utf8')) as Record<
+      string,
+      { preview?: unknown; sourceWorkflowId?: unknown; costBuzz?: unknown }
+    >;
+    const withArt: string[] = [];
+    for (const [id, rec] of Object.entries(canonical)) {
+      const hasPreview = rec.preview !== undefined && rec.preview !== null;
+      if (!hasPreview) {
+        // Previewless: carries NO provenance at all. A fabricated workflow id for
+        // a generation that never ran is the specific thing being forbidden here.
+        expect(rec.sourceWorkflowId, `${id} declares a workflow id but no preview`).toBeUndefined();
+        expect(rec.costBuzz, `${id} declares a cost but no preview`).toBeUndefined();
+        continue;
+      }
+      withArt.push(id);
+      expect(typeof rec.sourceWorkflowId, `${id} has art but no sourceWorkflowId`).toBe('string');
+      expect((rec.sourceWorkflowId as string).length).toBeGreaterThan(0);
+      expect(typeof rec.costBuzz, `${id} has art but no costBuzz`).toBe('number');
     }
+    expect(withArt).toEqual(WITH_PREVIEW_ART);
   });
 
-  it('ships six built-ins with unique ids and non-empty suffixes', () => {
-    expect(BUILTIN_FORMATS).toHaveLength(6);
+  it('🔴 every DECLARED preview path resolves to a file that is actually shipped', () => {
+    // `preview` is a root-absolute URL into public/, which Vite copies verbatim
+    // into dist/. A typo here is invisible until a viewer sees a broken image.
+    //
+    // 🔴 POSITIVE CONTROL FIRST. Six of the twelve built-ins declare no art at
+    // all, so the loop below is now CONDITIONAL — and a conditional loop that
+    // iterates zero times passes while checking nothing. Prove the instrument
+    // can go both ways before reading its verdict.
+    expect(existsSync(previewOnDisk('/formats/clickbait.webp'))).toBe(true);
+    expect(existsSync(previewOnDisk('/formats/no-such-format.webp'))).toBe(false);
+
+    let checked = 0;
+    for (const f of BUILTIN_FORMATS) {
+      if (f.preview === undefined) continue;
+      expect(f.preview).toMatch(/^\/formats\/[a-z-]+\.webp$/);
+      expect(existsSync(previewOnDisk(f.preview)), `missing preview file for ${f.id}`).toBe(true);
+      checked += 1;
+    }
+    // The count the loop actually ran, not the count we hoped it ran.
+    expect(checked, 'the preview-exists loop checked nothing').toBe(WITH_PREVIEW_ART.length);
+  });
+
+  it('🔴 the formats WITHOUT art declare no preview at all — not a broken path', () => {
+    // The previewless path is a SHIPPED state, not a gap: `FormatPicker` renders
+    // a letter placeholder for `preview === undefined`. The hazard this pins is a
+    // well-meant placeholder string — `''`, `'TODO'`, `/formats/magic.webp` for
+    // art that was never generated — which would reach the DOM as an <img src>
+    // and show a broken-image icon. `undefined` is the only value that takes the
+    // placeholder branch.
+    const previewless = BUILTIN_FORMATS.filter((f) => f.preview === undefined).map((f) => f.id);
+    const expected = BUILTIN_LEDGER.filter((id) => !WITH_PREVIEW_ART.includes(id));
+    expect(previewless).toEqual(expected);
+    expect(previewless.length).toBeGreaterThan(0);
+  });
+
+  it('🔴 ships exactly the ledger — fails if the set grows OR shrinks', () => {
+    // One comparison, four claims: membership, count, naming and order.
+    expect(BUILTIN_FORMATS.map((f) => f.id)).toEqual(BUILTIN_LEDGER);
+  });
+
+  it('every built-in has a unique id, a non-empty suffix, and the builtin source', () => {
     const ids = BUILTIN_FORMATS.map((f) => f.id);
     expect(new Set(ids).size).toBe(ids.length);
     for (const f of BUILTIN_FORMATS) {
-      expect(f.suffix.trim().length).toBeGreaterThan(0);
-      expect(f.label.trim().length).toBeGreaterThan(0);
+      expect(f.suffix.trim().length, `${f.id} has a blank suffix`).toBeGreaterThan(0);
+      expect(f.label.trim().length, `${f.id} has a blank label`).toBeGreaterThan(0);
       expect(f.source).toBe('builtin');
+    }
+  });
+
+  it('🔴 no two built-ins share a suffix — the copy-paste guard', () => {
+    // Two formats with one suffix are two bills for one image: the viewer selects
+    // both, pays twice, and gets the same look. This is the cheap mechanical half
+    // of "the formats are distinct"; the rest is editorial judgement recorded in
+    // the per-format comments in formats.ts.
+    const suffixes = BUILTIN_FORMATS.map((f) => f.suffix.trim().toLowerCase());
+    expect(new Set(suffixes).size, 'two built-ins share a suffix').toBe(suffixes.length);
+  });
+
+  it('🔴 no built-in suffix contains a character the generator eats', () => {
+    // A `#` in a prompt is consumed SERVER-SIDE as a wildcard reference, so it
+    // never reaches the model and silently changes the prompt. These suffixes are
+    // appended to every prompt for their format, so one `#` here corrupts every
+    // generation that format will ever produce.
+    for (const f of BUILTIN_FORMATS) {
+      expect(f.suffix, `${f.id}'s suffix contains a wildcard character`).not.toContain('#');
     }
   });
 
@@ -124,7 +250,13 @@ describe('built-in formats', () => {
     }
   });
 
-  it('the default format id resolves to a real built-in', () => {
+  it('🔴 the default format is still `clickbait`, and still FIRST', () => {
+    // A LITERAL, not `BUILTIN_FORMATS[0].id` — deriving it from the array would
+    // re-state the implementation and pass for whatever happens to be first.
+    // Adding formats must not move the default: `clickbait` is what an untouched
+    // picker has selected, and it is what every default-selection test assumes.
+    expect(DEFAULT_FORMAT_ID).toBe('clickbait');
+    expect(BUILTIN_FORMATS[0].id).toBe('clickbait');
     expect(BUILTIN_FORMATS.some((f) => f.id === DEFAULT_FORMAT_ID)).toBe(true);
   });
 });

@@ -43,13 +43,25 @@ export interface Format {
 }
 
 // ---------------------------------------------------------------------------
-// Built-ins. Six, spanning the thumbnail styles a creator actually picks
-// between rather than six variations of one look.
+// Built-ins. Twelve, spanning the thumbnail styles a creator actually picks
+// between rather than twelve variations of one look.
+//
+// 🔴 `preview` IS OPTIONAL AND SIX OF THE TWELVE DO NOT HAVE IT. The first six
+// carry generated art (provenance in claudedocs/format-previews.md); the six
+// added later ship with NO art and render the picker's letter placeholder
+// instead — see `FormatPicker`'s `fmt.preview ? <img> : <placeholder>` branch.
+// That is a shipped state, not a TODO: a format is a prompt suffix, and the
+// suffix is what the viewer pays for. Art is a nicety that costs real Buzz, so
+// it lands on its own schedule. Do NOT invent a `preview` path or a
+// `sourceWorkflowId` for a format whose art has not been generated — the JSON is
+// a provenance ledger and a fabricated workflow id is a false record.
 //
 // 🔴 THESE ARE A MIRROR, NOT THE ORIGINAL. The canonical definition — label,
 // suffix and preview path — lives in `public/formats/formats.json`, which also
 // records the `sourceWorkflowId` of the REAL generation each preview came from
-// (see claudedocs/format-previews.md for provenance). That file additionally
+// (see claudedocs/format-previews.md for provenance). A format with no art
+// carries NO `preview`, NO `sourceWorkflowId` and NO `costBuzz` — the three
+// travel together or not at all, and `formats.test.ts` pins that. That file
 // feeds nothing at runtime: it is the provenance record. The array below is the
 // bundled, typed copy the app actually reads, so there is no runtime fetch and
 // no chance of the picker rendering before its own catalogue arrives.
@@ -113,6 +125,69 @@ export const BUILTIN_FORMATS: readonly Format[] = [
     suffix:
       'dynamic action, neon rim lighting, energetic composition, vivid magenta and cyan, high energy, stylized digital art',
     preview: '/formats/gaming.webp',
+    source: 'builtin',
+  },
+
+  // --- Added in the second batch. NO preview art yet (see the note above). ---
+  //
+  // Three of these six sit next to an earlier built-in, so each one's suffix is
+  // deliberately written to occupy different vocabulary from its neighbour. The
+  // comment on each says which neighbour it is being held apart from and how,
+  // because "distinct" is the whole reason the format exists — two formats whose
+  // suffixes land on the same look are two bills for one image.
+  {
+    id: 'minimalist',
+    label: 'Minimalist',
+    // vs `bold-simple`: that one is LOUD-but-simple — saturated flat colour, a
+    // centred focal point, poster graphics. This one is QUIET — empty space, a
+    // small off-centre subject, drained colour, photographic rather than graphic.
+    // No word is shared between the two suffixes.
+    suffix:
+      'generous negative space, one small off-center subject, muted desaturated palette, soft diffuse daylight, understated and quiet, delicate fine detail',
+    source: 'builtin',
+  },
+  {
+    id: 'educational',
+    label: 'Educational',
+    // vs `tutorial`: that one is a PHOTOGRAPH of a friendly workspace. This one
+    // is a DRAWING — diagram, callouts, whiteboard, chart. Different medium,
+    // different subject, no shared vocabulary.
+    suffix:
+      'infographic layout, labeled diagram with callout arrows, whiteboard sketch annotations, charts and flow lines, explanatory schematic, flat vector illustration',
+    source: 'builtin',
+  },
+  {
+    id: 'professional',
+    label: 'Professional',
+    // vs `tech-review`: that one photographs an OBJECT on a desk. This one
+    // photographs a PERSON in a corporate setting — portrait, presenter,
+    // boardroom. Different subject class entirely.
+    suffix:
+      'corporate business portrait, confident presenter on a conference stage, tailored suit, glass office tower boardroom, authoritative composure, polished editorial lighting',
+    source: 'builtin',
+  },
+  {
+    id: 'abstract',
+    label: 'Abstract',
+    suffix:
+      'non representational abstract shapes, overlapping geometric planes, gradient mesh and flowing curves, risograph grain texture, no recognizable objects, generative art',
+    source: 'builtin',
+  },
+  {
+    id: 'chaos',
+    label: 'Chaos',
+    // Not `gaming` with the dial turned up: gaming is ACTION (dynamic, neon,
+    // energetic). This is CLUTTER — collage, clashing pattern, glitch, too much
+    // of everything at once.
+    suffix:
+      'maximalist visual overload, cluttered collage of overlapping elements, clashing patterns, motion blur and glitch artifacts, frenetic asymmetric composition, controlled mess',
+    source: 'builtin',
+  },
+  {
+    id: 'magic',
+    label: 'Magic',
+    suffix:
+      'arcane fantasy sorcery, swirling glowing runes and sparkling particles, enchanted mist, iridescent violet and gold aura, ethereal otherworldly atmosphere, painterly fantasy illustration',
     source: 'builtin',
   },
 ];
