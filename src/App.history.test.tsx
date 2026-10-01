@@ -912,6 +912,119 @@ describe('🔴 a run whose storage write FAILED is not deleted by a refresh', ()
     expect(screen.getAllByTestId('yt-history-row')).toHaveLength(1);
   });
 
+  it('🔴 a read IN FLIGHT when the id changes renders NOTHING to the new viewer', async () => {
+    /**
+     * 🔴 RED AT 0a2cc97d, AND THIS IS THE HALF `historyOwnerRef`'s EFFECT CANNOT COVER.
+     * That effect runs BETWEEN reads: it clears the unsaved map and blanks the list the
+     * moment the id changes. A read that was ALREADY IN FLIGHT under the old id was
+     * fenced by nothing at all — it resolved afterwards and ran
+     * `setHistoryRecords((cur) => mergeUnsavedRecords(stored_OLD, [...held, ...cur]))`,
+     * merging the PREVIOUS viewer's stored rows straight into the list the NEW viewer is
+     * looking at. Measured at 0a2cc97d: `["VIEWER-SEVEN","VIEWER-TWO"]` on screen,
+     * against `["VIEWER-TWO"]` for the same path at f4df1a38 — i.e. the carrying merge
+     * this change introduced is what widened a blank-the-list guard into a disclosure.
+     *
+     * 🔴 AND IT IS STICKY, WHICH IS WHY THE SECOND RELOAD BELOW IS PART OF THE CASE. The
+     * leaked row is in neither the new viewer's `stored` half nor the (cleared) unsaved
+     * map, so the `...cur` arm re-carries it on EVERY subsequent reload — forever. At
+     * f4df1a38 the non-functional setter dropped it on the next read.
+     *
+     * The existing swap case above asserts on `storageSet` call COUNT, which is the
+     * WRITE side, and the write side was already safe (`held` is snapshotted after the
+     * awaits, so the effect's `clear()` has already emptied it). This asserts on
+     * RENDERED rows, which is where the leak is.
+     *
+     * The live workflow page is not viewer-scoped in this mock, deliberately: every
+     * workflow is visible to both ids so that a leaked record RENDERS as an image rather
+     * than as an `unavailable` row, which is what makes the leak observable at all.
+     */
+    const TWO_IMAGE = 'https://image.civitai.com/viewer-two.jpg';
+    const SEVEN_IMAGE = 'https://image.civitai.com/viewer-seven.jpg';
+    const SEVEN_B_IMAGE = 'https://image.civitai.com/viewer-seven-b.jpg';
+    const wf = (id: string, url: string, at: string): AppWorkflow => ({
+      workflowId: id,
+      status: 'succeeded',
+      images: [{ url, width: 1536, height: 864, nsfwLevel: 1 }],
+      cost: 209,
+      createdAt: at,
+    });
+    const rec = (batchId: string, at: string, workflowId: string) => {
+      const createdAt = Date.parse(at);
+      return {
+        key: historyKey(createdAt, batchId),
+        value: { ...RECORD, batchId, createdAt, workflowIds: [workflowId] },
+      };
+    };
+    const V2 = rec('b-two', '2026-09-30T12:15:00.000Z', 'wf-two');
+    const V7 = rec('b-seven', '2026-09-30T12:35:00.000Z', 'wf-seven');
+    const V7B = rec('b-seven-b', '2026-09-30T12:50:00.000Z', 'wf-seven-b');
+    const srcs = () => screen.getAllByTestId('yt-history-img').map((n) => n.getAttribute('src'));
+
+    state.workflows = [
+      wf('wf-two', TWO_IMAGE, '2026-09-30T12:10:00.000Z'),
+      wf('wf-seven', SEVEN_IMAGE, '2026-09-30T12:30:00.000Z'),
+      wf('wf-seven-b', SEVEN_B_IMAGE, '2026-09-30T12:45:00.000Z'),
+    ];
+    stockStorage([V2]);
+
+    const user = userEvent.setup();
+    render(<App />);
+    await openHistory(user);
+    await waitFor(() => expect(srcs()).toContain(TWO_IMAGE));
+
+    // Viewer 2 starts a reload that HANGS inside `get`, holding the read open across
+    // the swap. That is the whole shape of the bug.
+    let release = () => {};
+    storageList.mockResolvedValue({ keys: [{ key: V2.key, updatedAt: new Date() }] });
+    storageGet.mockImplementation(async (key: string) => {
+      if (key === 'formats:custom:v1') return null;
+      if (key === V2.key) return new Promise((resolve) => (release = () => resolve(V2.value)));
+      if (key === V7.key) return V7.value;
+      if (key === V7B.key) return V7B.value;
+      return null;
+    });
+    const v2GetsBefore = storageGet.mock.calls.filter((c) => c[0] === V2.key).length;
+    // Hide, then Show — the Show is the click that calls `loadHistory`, and it now hangs.
+    await user.click(screen.getByTestId('yt-history-toggle'));
+    await user.click(screen.getByTestId('yt-history-toggle'));
+    await waitFor(() =>
+      expect(storageGet.mock.calls.filter((c) => c[0] === V2.key).length).toBeGreaterThan(
+        v2GetsBefore,
+      ),
+    );
+
+    // A different person is now signed in, and storage answers with THEIR row. The
+    // Hide/Show pair is just the render that picks the new id up (which runs the owner
+    // effect, which runs the reload under viewer 7) plus the re-open to see it.
+    storageList.mockResolvedValue({ keys: [{ key: V7.key, updatedAt: new Date() }] });
+    state.viewer = { id: 7, username: 'someone-else' };
+    await user.click(screen.getByTestId('yt-history-toggle'));
+    await user.click(screen.getByTestId('yt-history-toggle'));
+    await waitFor(() => expect(srcs()).toContain(SEVEN_IMAGE));
+    expect(srcs()).not.toContain(TWO_IMAGE);
+
+    // Now let viewer 2's read resolve, INTO viewer 7's surface.
+    release();
+    // 🔴 THE SYNC POINT, AND IT IS NOT A TIMER. Resolving that `get` queues only
+    // microtasks — `Promise.all`, then the merge — and `waitFor` yields a macrotask, so
+    // everything the resolving read does has happened by the time this returns. The
+    // CONTROL for that claim is the base measurement: at 0a2cc97d `VIEWER-TWO` is on
+    // screen at exactly this assertion, so the drain is demonstrably sufficient.
+    await waitFor(() => expect(srcs()).toContain(SEVEN_IMAGE));
+    // 🔴 THE POINT: viewer 2's rows are not rendered to viewer 7.
+    expect(srcs()).not.toContain(TWO_IMAGE);
+    expect(screen.getAllByTestId('yt-history-row')).toHaveLength(1);
+
+    // ...and not on the next reload either. A row that got in once would be re-carried
+    // by `...cur` forever; the new row is the variant-independent sync point.
+    stockStorage([V7, V7B]);
+    await user.click(screen.getByTestId('yt-history-toggle'));
+    await user.click(screen.getByTestId('yt-history-toggle'));
+    await waitFor(() => expect(srcs()).toContain(SEVEN_B_IMAGE));
+    expect(srcs()).not.toContain(TWO_IMAGE);
+    expect(screen.getAllByTestId('yt-history-row')).toHaveLength(2);
+  });
+
   it('🔴 a RELOAD IN FLIGHT does not blank rows it already has', async () => {
     /**
      * 🔴 RED AT c84f082: `state === 'loading'` was an unconditional early return

@@ -399,9 +399,18 @@ export function App() {
    * (see that callback's note about the unbounded re-render loop).
    *
    * 🔴 IT IS ONE VIEWER'S DATA AND THE MAP ITSELF DOES NOT SAY WHOSE — see
-   * `historyOwnerRef` below, which drops it on a change of signed-in id.
+   * `historyOwnerRef` just below and the effect that maintains it, which drop both
+   * halves of the surface on a change of signed-in id.
    */
   const unsavedRecordsRef = useRef<Map<string, GenerationRecord>>(new Map());
+  /**
+   * WHOSE SURFACE THE TWO HALVES ABOVE CURRENTLY ARE: the last non-null `viewer.id`
+   * seen. Written by the effect further down (which also does the dropping, and
+   * carries the reasoning); READ by `loadHistory`, which fences every one of its
+   * state writes on it. Declared up here with the data it labels so both readers
+   * come after it — see `classifyStorageError`'s note on declaration order.
+   */
+  const historyOwnerRef = useRef<number | null>(null);
   /** The unsaved map as the list shape everything else here speaks. */
   const unsavedRecords = useCallback(
     (): StoredRecord[] => [...unsavedRecordsRef.current].map(([key, record]) => ({ key, record })),
@@ -1514,6 +1523,12 @@ export function App() {
    */
   const loadHistory = useCallback(async () => {
     if (viewerId == null) {
+      // 🔴 NO OWNER FENCE ON THIS BRANCH, AND IT NEEDS NONE: there is no `await`
+      // between here and the `return`, so the whole branch runs in the caller's tick
+      // and no change of id can land in the middle of it. Fencing it would be worse
+      // than useless — `viewerId` is null here, so a fence written as "still the id
+      // this call started under" would never match the owner and would delete exactly
+      // the rows the expiry case below exists to keep.
       setHistoryState('anon');
       // 🔴 THE UNSAVED HALF SURVIVES AN ANON READ TOO, AND SO DOES THE STORED HALF.
       // A token that expires mid-run takes `viewerId` with it and this is the path
@@ -1523,6 +1538,12 @@ export function App() {
       setHistoryRecords((cur) => mergeUnsavedRecords(cur, unsavedRecords()));
       return;
     }
+    // 🔴 THE VIEWER THIS READ BELONGS TO, CAPTURED BEFORE THE FIRST `await`. Every
+    // state write below is fenced on it still being the owner — see `mine` at each
+    // use site, and `historyOwnerRef` for why the effect's clear is not enough on its
+    // own. `viewerId` is already fixed per callback identity; the alias exists to
+    // narrow it to `number` and to name what it is for at each fence.
+    const mine = viewerId;
     setHistoryState('loading');
     try {
       const store = storageRef.current;
@@ -1536,6 +1557,13 @@ export function App() {
           }
         }),
       );
+      // 🔴 FENCE, AND IT COVERS THE RETRY WRITES BELOW AS WELL AS THE MERGE. Past this
+      // point everything this call does is on behalf of `mine`: it writes `mine`'s
+      // still-unsaved records to whatever storage handle the CURRENT token addresses,
+      // and it renders `mine`'s rows. The `held` snapshot is taken after this await, so
+      // the effect's `clear()` already empties it on a swap — this makes that
+      // structural instead of incidental, and stops the read before it issues a write.
+      if (historyOwnerRef.current !== mine) return;
       const stored = loaded.filter((e): e is StoredRecord => e.record !== null);
       // Retry the writes that never landed. A success drops the record from the
       // unsaved map (storage owns it now); a failure leaves it there.
@@ -1560,6 +1588,13 @@ export function App() {
           }
         }),
       );
+      // 🔴 FENCE AGAIN — the retry writes above are `await`ed, so the id can move
+      // between the fence before them and here. This is the one that matters for
+      // DISCLOSURE: without it this merge writes `mine`'s rows into the list the
+      // current viewer is looking at, and the `...cur` arm then makes them STICK, since
+      // a row that is in neither the new viewer's `stored` half nor the (cleared)
+      // unsaved map is re-carried by `cur` on every subsequent reload, forever.
+      if (historyOwnerRef.current !== mine) return;
       // `held` first so an in-memory record beats the on-screen copy of itself, then
       // `cur` for anything that appeared while the awaits were pending.
       setHistoryRecords((cur) => mergeUnsavedRecords(stored, [...held, ...cur]));
@@ -1567,17 +1602,36 @@ export function App() {
       if (firstFailure !== undefined) {
         setHistoryState(classifyStorageError(firstFailure));
       } else if (unsavedRecordsRef.current.size > 0) {
-        // Nothing WE retried failed, but the map is not empty: a submit landed while
-        // this read was in flight and its own write rejected after `held` was taken.
-        // That submit already set the right state and its own note, so this must not
-        // say 'ready' — and must not say 'error' over a 'denied' either, which is why
-        // it only resolves the 'loading' this call itself set. Reachable: the Show
-        // toggle calls `loadHistory` and stays clickable during a generate.
+        // Nothing WE retried reported a failure, but the map is not empty. THREE
+        // different things put us here and only two of them want anything done:
+        //
+        //  - our own retry rejected with a value that is literally `undefined`, which
+        //    `failures[0] !== undefined` above cannot see. The record IS still unsaved,
+        //    so 'error' — the only state that renders "Try again" — is exactly right,
+        //    and this branch is the only thing that produces it.
+        //  - a submit landed while this read was in flight and its own write ALREADY
+        //    rejected, so `s` is the 'denied'/'anon'/'error' that submit's own `catch`
+        //    set. Here the work is the `s === 'loading'` test KEEPING that state: what
+        //    this branch exists for is to stop the unconditional `setHistoryState
+        //    ('ready')` below from clobbering a more specific state that is still true.
+        //  - a submit landed and its write is still PENDING — nothing has failed. Then
+        //    `s` is the 'loading' this call set and this paints 'error', with a "Try
+        //    again", over a read that fully succeeded. That is an overcautious FALSE
+        //    ALARM and it is not defended here; it is accepted because it self-corrects
+        //    the moment that write settles (its own `then`/`catch` sets 'ready' or a
+        //    classified state), and because telling it apart from the case above needs
+        //    an in-flight-write count this surface has no other use for.
+        //
+        // Reachable at all because the Show toggle calls `loadHistory` and stays
+        // clickable during a generate.
         setHistoryState((s) => (s === 'loading' ? 'error' : s));
       } else {
         setHistoryState('ready');
       }
     } catch (err) {
+      // Fenced too: a read that fails AFTER the id moved must not put an error state
+      // over the new viewer's own, successful load.
+      if (historyOwnerRef.current !== mine) return;
       setHistoryState(classifyStorageError(err));
     }
     // \U0001f534 KEYED ON THE VIEWER *ID*, A PRIMITIVE \u2014 NOT ON THE `viewer`
@@ -1596,11 +1650,19 @@ export function App() {
   /**
    * 🔴 BOTH HALVES OF THE HISTORY SURFACE BELONG TO ONE VIEWER, AND NOTHING ELSE
    * KEYS THEM TO ONE. `unsavedRecordsRef` is re-`set()` by `loadHistory` under
-   * whatever viewer is signed in when it next runs, and the merge there now carries
-   * the CURRENT list across a reload. Both are keyed on nothing. If `viewer` ever
-   * changed to a DIFFERENT id in a live iframe, viewer A's records would be written
-   * into viewer B's storage and rendered to them — so this drops both halves on a
-   * change of id, before that read resolves.
+   * whatever viewer is signed in when it next runs, and the merge there carries the
+   * CURRENT list across a reload. Both are keyed on nothing. If `viewer` ever changed
+   * to a DIFFERENT id in a live iframe, viewer A's records would be written into
+   * viewer B's storage and rendered to them.
+   *
+   * 🔴 IT TAKES TWO PARTS AND THIS EFFECT IS ONLY ONE OF THEM. This effect runs
+   * BETWEEN reads: it drops both halves at the moment the id changes. That alone does
+   * nothing about a read that was ALREADY IN FLIGHT under the old id — it resolves
+   * afterwards and merges viewer A's rows straight into the list viewer B is looking
+   * at, which the `...cur` arm then re-carries on every later reload. The second part
+   * is therefore in `loadHistory`: it captures the id it started under (`mine`) and
+   * returns without touching state if this ref has moved. The ref is declared up with
+   * `unsavedRecordsRef` so both parts can see it.
    *
    * 🔴 WHETHER THE HOST DOES THAT IS NOT ESTABLISHED. We could not determine whether
    * `blocks-react` ever swaps `viewer` to another id without remounting the block, and
@@ -1611,9 +1673,10 @@ export function App() {
    * expires mid-run takes `viewerId` with it — see `loadHistory`'s anon branch — and
    * the unsaved half surviving exactly that is the whole reason a rejected write no
    * longer deletes paid-for images. Only a non-null id that differs from the last
-   * non-null one counts.
+   * non-null one counts. This effect leaves the ref alone on a null, which is also
+   * what lets a read that started before the expiry still finish: its `mine` still
+   * matches the owner, because the owner did not change — only the token did.
    */
-  const historyOwnerRef = useRef<number | null>(null);
   useEffect(() => {
     if (viewerId == null) return;
     const prev = historyOwnerRef.current;
@@ -1656,6 +1719,19 @@ export function App() {
    * page on the first render. A failed delete is deliberately silent: it is
    * hygiene, not a user-facing operation, and a noisy toast about it would be
    * worse than the stale row.
+   *
+   * 🟢 KNOWN AND ACCEPTED: `alive` CAN CANCEL THE HALF THAT UPDATES THE SCREEN. A
+   * reload sets `historyState` to 'loading', and `historyState` is a dep here — so a
+   * reload started mid-prune runs this cleanup, the `delete()` calls still go out, and
+   * the `setHistoryRecords` filter is skipped. The resolving reload then finds the key
+   * absent from the stored half but present in `cur`, and its `[...held, ...cur]` arm
+   * re-renders a row storage no longer has. It is NOT re-written to storage, and the
+   * next prune pass removes it, so the cost is one duplicate `delete()` and a row that
+   * lingers for one cycle. Left as-is deliberately: the alternatives are to drop the
+   * cancellation (which would make this effect write state for deps it no longer has)
+   * or to teach the merge which keys were pruned (state this surface has no other use
+   * for), and neither is worth it for a self-healing flash of a row the viewer did
+   * generate. Written down here because it had not been.
    */
   useEffect(() => {
     if (historyState !== 'ready' || historyLoading || liveWorkflows.length === 0) return;

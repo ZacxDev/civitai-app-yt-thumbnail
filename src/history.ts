@@ -555,7 +555,8 @@ export function showHistory(args: {
  *  - `formats` is guaranteed by the PARSE BOUNDARY: `parseRecord` refuses a record
  *    whose `formats` is empty, so no row that reaches this function can carry 0.
  *  - `quantity` is guaranteed by the WRITER ONLY. `parseRecord` does not validate it
- *    at all — `form` is cast wholesale (see that function) — so the claim is about
+ *    at all: it checks `form.formats` and `form.checkpoint` and then casts the rest of
+ *    `form` unchecked (see that function) — so the claim is about
  *    `formSnapshot`, which passes `quantity` through `clampQuantity`
  *    (`QUANTITY_MIN` = 1) before it is stored. No shipped writer produces
  *    `quantity === 0`; a hand-written row could.
