@@ -8,6 +8,7 @@ import { resolveBlockTier, type BlockSizeTier } from '@civitai/blocks-react';
 
 import { App, HERO_BANNER_SRC, SHELL_PADDING } from './App.js';
 import { layoutForTier } from './layout.js';
+import { IMAGE_MIN_PX } from './ui-styles.js';
 import { installMockMoneyHost } from './mock-buzz.js';
 import { DEFAULT_CHECKPOINT } from './models.js';
 import { palette, parseHex, type Palette } from './palette.js';
@@ -559,7 +560,16 @@ describe('the cost disclosures survive', () => {
     await user.click(generateBtn);
     await screen.findByAltText(/generated result/i, {}, { timeout: 5000 });
 
-    expect(norm(screen.getByTestId('pm-spent'))).toBe('DoneSpent 8 Buzz from your Blue account.');
+    // 🔴 THE `pm-spent` ALERT IS GONE IN EVERY STATE and the figure it carried now
+    // lives on the history row — so the "third disclosure" this case is about is
+    // asserted THERE, with the funding pool it was always paired with. Pinned as the
+    // whole normalised string so a reword cannot drift past it, plus the pool on the
+    // bolt, which is the machine-readable half.
+    expect(screen.queryByTestId('pm-spent')).not.toBeInTheDocument();
+    const cost = await screen.findByTestId('yt-history-cost');
+    await waitFor(() => expect(norm(cost)).toBe('8 Buzz from your blue balance'));
+    expect(within(cost).getByTestId('yt-history-bolt')).toHaveAttribute('data-buzz-type', 'blue');
+    expect(cost).toHaveAttribute('title', '8 Buzz from your blue balance');
   });
 });
 
@@ -990,32 +1000,64 @@ describe('results and the editor, at width', () => {
     return user;
   }
 
+  /**
+   * 🔴 THIS CASE USED TO ASSERT A PER-TIER COLUMN COUNT AND THE ASSERTION IS NOW THE
+   * OPPOSITE — the count is what was broken. History:
+   *
+   *  - v1 was `repeat(2, …)` at EVERY width, on a 361px phone and a 1907px monitor
+   *    alike. That was the defect the tier ladder fixed.
+   *  - v2 (what this replaces) made the count `layout.resultColumns` — 1/2/3/4 — and
+   *    was individually correct, but `History.tsx` applied the SAME template at TWO
+   *    NESTED levels: a grid of batch ROWS and, inside each row, a grid of IMAGES. The
+   *    counts MULTIPLIED. 3 × 3 at `lg` made each thumbnail a ninth of the main
+   *    column; 4 × 4 on an ultrawide block made it a sixteenth — an ~85px-wide 16:9
+   *    tile on a 1920px screen. A per-tier assertion could not see that at all,
+   *    because each level was correct in isolation.
+   *  - v3, below: rows are FULL WIDTH (nothing nests) and the images are
+   *    INTRINSICALLY sized — `auto-fill` with an `IMAGE_MIN_PX` floor, so there is no
+   *    count left to be wrong and no width at which a tile can be narrower than the
+   *    floor, including a tier the SDK adds above `xl` tomorrow.
+   *
+   * 🔴 SO THE CLAIM BEING WIDENED HERE IS "TIER-INDEPENDENT", AND IT NEEDS THE SAME
+   * FOUR WIDTHS TO BE WORTH ANYTHING. A single-width run cannot tell an intrinsic
+   * rule from a count that happens to be right at that one width — which is exactly
+   * how a config that pins a dimension goes blind to that dimension's bugs. Four
+   * widths spanning phone to ultrawide, one expected string, asserted identical at
+   * all four.
+   *
+   * 🔴 jsdom LAYS NOTHING OUT. This is a claim about the STYLE CONTRACT the browser
+   * reads, never about a rendered tile size — see the PR body.
+   */
+  const INTRINSIC = `repeat(auto-fill, minmax(${IMAGE_MIN_PX}px, 1fr))`;
+
   it.each([
-    [INSIDE.base, 1],
-    [INSIDE.md, 2],
-    [INSIDE.lg, 3],
-    [INSIDE_ULTRAWIDE, 4],
-  ])('the candidate grid is %i-wide → %i columns', async (width, columns) => {
-    // 🔴 IT WAS `repeat(2, …)` AT EVERY WIDTH, including a 361px phone and a
-    // 1907px monitor. Four widths, four different answers — a single-width test
-    // could not tell a working ladder from a hardcoded 2.
-    //
-    // Asserted as the grid template only. A `data-columns` attribute used to repeat
-    // the same number on the same element; the template is what the browser lays
-    // out from, so the attribute was a second copy of one fact and is gone from the
-    // shipped DOM.
-    //
-    // 🔴 THE ELEMENT MOVED (`yt-results-grid` → `yt-history-images`) BUT THE CLAIM IS
-    // THE SAME FUNCTION'S OUTPUT: the candidate grid and the history rows both call
-    // `galleryStyle(layout)`, which is exactly why they were made one surface.
+    [INSIDE.base],
+    [INSIDE.md],
+    [INSIDE.lg],
+    [INSIDE_ULTRAWIDE],
+  ])('🔴 at %ipx the image grid is intrinsically sized and the rows are full width', async (width) => {
     await generate(width as number);
     const grid = screen.getByTestId('yt-history-images');
-    expect(grid.style.gridTemplateColumns).toBe(`repeat(${columns}, minmax(0, 1fr))`);
-    // The ROWS use the same ladder, so a second column rule cannot creep in for them.
-    expect(screen.getByTestId('yt-history-grid').style.gridTemplateColumns).toBe(
-      `repeat(${columns}, minmax(0, 1fr))`,
+    // Identical at every width — that IS the claim.
+    expect(grid.style.gridTemplateColumns).toBe(INTRINSIC);
+    // The rows are one per line, so the two rules can no longer multiply.
+    expect(screen.getByTestId('yt-history-grid').style.gridTemplateColumns).toBe('minmax(0, 1fr)');
+    // 🔴 AND NEITHER CARRIES A COLUMN COUNT. `repeat(<digit>` is the multiplying rule
+    // coming back, under whatever name — this is the structural guard, and it is what
+    // a mutant reinstating `repeat(${'$'}{layout.resultColumns}, …)` dies on at EVERY width
+    // rather than only at the one where the number differs.
+    expect(grid.style.gridTemplateColumns).not.toMatch(/repeat\(\s*\d/);
+    expect(screen.getByTestId('yt-history-grid').style.gridTemplateColumns).not.toMatch(
+      /repeat\(\s*\d/,
     );
   });
+
+  // 🔴 NO SEPARATE "SAME AT THE NARROWEST AND THE WIDEST" CASE, DELIBERATELY. It would
+  // be the same claim as the `it.each` above — one expected string asserted at four
+  // widths spanning phone to ultrawide IS the tier-independence measurement — bought
+  // for a second full money-path run (≈5s each) and a teardown helper this file does
+  // not otherwise need. The structural `not.toMatch(/repeat\(\s*\d/)` is what makes the
+  // four literals more than four coincidences.
 
   it('the results land ABOVE the controls once they exist', async () => {
     // Phase 2: the app's primary object is the first thing on screen. Asserted

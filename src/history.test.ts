@@ -6,8 +6,6 @@ import {
   STORAGE_VALUE_MAX_BYTES,
   batchBodies,
   batchStatus,
-  batchStatusColor,
-  batchStatusLabel,
   candidateFileName,
   historyKey,
   joinHistory,
@@ -498,24 +496,23 @@ describe('batchStatus', () => {
   });
 
   it('🔴 tells EXPIRED apart from FAILED, and both from unavailable', () => {
-    // Three different facts with three different words. Collapsing them tells a
-    // viewer their generation broke when in fact its images merely aged out.
+    // Three different facts, and `batchStatus` still has to distinguish them even
+    // though the row no longer puts a WORD on screen for them: 'unavailable' is the
+    // one that keeps a row's Resume button meaningful (the images aged out of the
+    // orchestrator; the stored form is ours and does not expire), and 'running' is
+    // the one that decides whether the row shows skeletons at all.
     expect(batchStatus([w('expired')])).toBe('expired');
     expect(batchStatus([w('failed')])).toBe('failed');
     expect(batchStatus([])).toBe('unavailable');
-    expect(batchStatusLabel('unavailable')).toBe('Images no longer available');
-    expect(batchStatusLabel('failed')).toBe('Failed');
-    expect(batchStatusLabel('expired')).toBe('Expired');
   });
 
-  it('gives every status a label and a colour', () => {
-    // Exhaustiveness: a new status that nobody labelled renders as `undefined`.
-    for (const s of ['running', 'succeeded', 'partial', 'failed', 'expired', 'canceled', 'unavailable'] as const) {
-      expect(typeof batchStatusLabel(s)).toBe('string');
-      expect(batchStatusLabel(s).length).toBeGreaterThan(0);
-      expect(['info', 'success', 'warning', 'error']).toContain(batchStatusColor(s));
-    }
-  });
+  // 🔴 THE TWO BADGE-STRING CASES THAT STOOD HERE WERE DELETED WITH
+  // `batchStatusLabel`/`batchStatusColor`. Their only caller was the status Badge on
+  // each history row, which the operator asked to be removed in ALL states, so they
+  // asserted the labels and colours of a surface that no longer renders — coverage
+  // that reads as coverage and covers nothing, which is worse than none because it
+  // stops the next reader looking. `batchStatus` ITSELF is still graded above: it
+  // decides skeletons and the unavailable line, not a word on a pill.
 });
 
 // --- pruning --------------------------------------------------------------

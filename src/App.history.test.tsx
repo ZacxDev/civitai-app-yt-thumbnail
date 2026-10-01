@@ -258,9 +258,20 @@ describe('history — an EXPIRED generation', () => {
     await openHistory(user);
 
     const row = await screen.findByTestId('yt-history-row');
-    expect(within(row).getByText('Expired')).toBeInTheDocument();
-    // ...and its realized cost is still reported: it was paid for.
-    expect(within(row).getByTestId('yt-history-cost')).toHaveTextContent('209 Buzz');
+    // 🔴 NO 'Expired' BADGE ANY MORE — the status badge was removed in ALL states at
+    // the operator's request, and this assertion is the one that would have caught a
+    // partial removal. What keeps the row honest is below: it is still HERE (not
+    // vanished), it still reports what it cost, and its `unavailable` line and Resume
+    // still work (the next case).
+    expect(within(row).queryByText('Expired')).not.toBeInTheDocument();
+    expect(within(row).queryByText('Failed')).not.toBeInTheDocument();
+    // ...and its realized cost is still reported: it was paid for. The visible text is
+    // the number plus a bolt now; "Buzz" is carried by the screen-reader span and the
+    // `title`, which is what stops the row reading as a bare number.
+    const cost = within(row).getByTestId('yt-history-cost');
+    expect(cost).toHaveTextContent('209');
+    expect(cost).toHaveTextContent(/Buzz/);
+    expect(within(cost).getByTestId('yt-history-bolt')).toBeInTheDocument();
   });
 
   it('🔴 still RESUMES — the form half is ours and does not expire with the images', async () => {
@@ -576,7 +587,13 @@ describe('🔴 the record WRITTEN at submit time', () => {
     // inserted into the list BEFORE the round trip, and `denied` renders as a BANNER
     // OVER the rows rather than instead of them.
     expect(await screen.findByTestId('yt-history-img')).toBeInTheDocument();
-    expect(screen.getByTestId('pm-spent')).toHaveTextContent('209');
+    // 🔴 THE `pm-spent` "Done — spent 209 Buzz" ALERT IS GONE IN EVERY STATE, and the
+    // cost it carried is on the history row instead. Asserted as a PAIR so this cannot
+    // pass by the figure simply disappearing: no alert anywhere, AND the row says 209.
+    expect(screen.queryByTestId('pm-spent')).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByTestId('yt-history-cost')).toHaveTextContent('209'),
+    );
     // The storage problem is reported SEPARATELY, and names the grant.
     expect(await screen.findByTestId('yt-history-note')).toHaveTextContent(/storage access/i);
     expect(await screen.findByTestId('yt-history-denied')).toBeInTheDocument();
@@ -1228,8 +1245,12 @@ describe('history — a multi-format batch', () => {
     expect(await screen.findAllByTestId('yt-history-row')).toHaveLength(1);
     const row = screen.getByTestId('yt-history-row');
     expect(within(row).getByTestId('yt-history-formats')).toHaveTextContent('Clickbait · Minimal');
-    // Running outranks done — there is still something to cancel.
-    expect(within(row).getByText('Running')).toBeInTheDocument();
+    // Running outranks done — there is still something to cancel. The badge that used
+    // to spell that out is gone (removed in all states, deliberately), so the claim is
+    // made against the two things the status still DRIVES: skeletons for what has not
+    // landed, and a live Cancel.
+    expect(within(row).getAllByTestId('yt-history-skeleton-tile').length).toBeGreaterThan(0);
+    expect(within(row).getByTestId('yt-history-cancel')).toBeInTheDocument();
 
     await user.click(within(row).getByTestId('yt-history-resume'));
     // BOTH formats come back selected, including one the viewer does not own.

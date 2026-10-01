@@ -1,24 +1,21 @@
 import { Alert, Badge, Button, Group, Stack } from '@civitai/blocks-react/ui';
 
-import { formatCost } from './generation.js';
-import {
-  batchStatusColor,
-  batchStatusLabel,
-  showHistory,
-  skeletonCount,
-  type HistoryEntry,
-} from './history.js';
-import type { BlockLayout } from './layout.js';
+import { accountLabel, formatCost } from './generation.js';
+import { showHistory, skeletonCount, type HistoryEntry } from './history.js';
+import { AddTextIcon, BuzzBolt, DownloadIcon } from './icons.js';
 import type { Palette } from './palette.js';
+import { absoluteTime, relativeTime } from './relative-time.js';
 import {
   fieldDescStyle,
   fieldLabelStyle,
   fieldStyle,
   galleryItemStyle,
-  galleryStyle,
+  historyRowsStyle,
+  imageGridStyle,
   imageStyle,
   panelRowStyle,
   skeletonTileStyle,
+  srOnlyStyle,
 } from './ui-styles.js';
 
 /**
@@ -62,7 +59,6 @@ export function HistorySurface({
   onSignIn,
   onRefresh,
   pal,
-  layout,
 }: {
   entries: readonly HistoryEntry[];
   state: 'loading' | 'ready' | 'anon' | 'denied' | 'error';
@@ -80,7 +76,6 @@ export function HistorySurface({
   onSignIn: () => void;
   onRefresh: () => void;
   pal: Palette;
-  layout: BlockLayout;
 }) {
   // 🔴 THE WHOLE BLOCK — HEADER, BADGE AND ALL — GOES AWAY IN EXACTLY ONE CASE:
   // ready with nothing in it. A first-time viewer got a "History 0 / Show" affordance
@@ -127,7 +122,6 @@ export function HistorySurface({
             onSignIn={onSignIn}
             onRefresh={onRefresh}
             pal={pal}
-            layout={layout}
           />
           {/* The outcome of a Save. It lives out here rather than inside a row:
               the host's Save As either happened or it didn't, and a note pinned
@@ -203,7 +197,6 @@ function HistoryPanel({
   onSignIn,
   onRefresh,
   pal,
-  layout,
 }: {
   entries: readonly HistoryEntry[];
   state: 'loading' | 'ready' | 'anon' | 'denied' | 'error';
@@ -217,7 +210,6 @@ function HistoryPanel({
   onSignIn: () => void;
   onRefresh: () => void;
   pal: Palette;
-  layout: BlockLayout;
 }) {
   const signIn = (
     <Stack gap={8} data-testid="yt-history-anon">
@@ -243,17 +235,29 @@ function HistoryPanel({
     }
   }
 
+  // 🔴 ONE `now` FOR THE WHOLE RENDER, READ HERE RATHER THAN PER ROW. Every row's
+  // relative timestamp is measured against the same instant, so two batches a minute
+  // apart can never both read "3m ago" because the clock moved between two `Date.now()`
+  // calls in the same paint. `relativeTime` itself takes it as an argument and has no
+  // clock of its own — that is what makes its ladder testable (see relative-time.ts).
+  //
+  // 🔴 AND THERE IS DELIBERATELY NO TICKING TIMER. This surface already re-renders on
+  // every poll snapshot, every refetch and every storage reload, so "3m ago" refreshes
+  // as a side effect of the thing the viewer is watching. An interval would be a second
+  // render driver for one cosmetic string.
+  const nowMs = Date.now();
+
   const rows = entries.map((entry) => (
     <HistoryRow
       key={entry.key}
       entry={entry}
-      busy={busyKey === entry.key}
+      cancelPending={busyKey === entry.key}
+      nowMs={nowMs}
       onResume={onResume}
       onCancel={onCancel}
       onSave={onSave}
       onEdit={onEdit}
       pal={pal}
-      layout={layout}
     />
   ));
 
@@ -314,10 +318,17 @@ function HistoryPanel({
           </span>
         )
       ) : (
-        /* 🔴 THE ROWS ARE A GRID, from the SAME `layoutForTier` column count the
-           images use. They were full-width list items at every width, so a
-           1600px block showed one batch per screenful of horizontal nothing. */
-        <div style={galleryStyle(layout)} data-testid="yt-history-grid">
+        /* 🔴 ONE BATCH PER LINE, AT EVERY WIDTH — and this REVERSES an earlier
+           decision, so the reason is recorded rather than left as a mystery. The
+           rows were a `resultColumns`-wide grid (3 across at `lg`, 4 on an
+           ultrawide block) on the argument that a full-width row wasted horizontal
+           space. What that actually did was MULTIPLY with the image grid INSIDE
+           each row, which used the same count: 3 × 3 made every thumbnail a ninth
+           of the column, 4 × 4 made it a sixteenth — about 85px wide on a 1920px
+           screen. The pictures are the point of this surface, so the row gives
+           them the whole width and `imageGridStyle` fits as many as actually fit.
+           See `ui-styles.ts` for the full arithmetic. */
+        <div style={historyRowsStyle} data-testid="yt-history-grid">
           {rows}
         </div>
       )}
@@ -325,45 +336,63 @@ function HistoryPanel({
   );
 }
 
-/** One batch: its badge, its realized cost, its pictures (or their skeletons). */
+/** One batch: when it ran, what it cost, its pictures (or their skeletons). */
 function HistoryRow({
   entry,
-  busy,
+  cancelPending,
+  nowMs,
   onResume,
   onCancel,
   onSave,
   onEdit,
   pal,
-  layout,
 }: {
   entry: HistoryEntry;
-  busy: boolean;
+  /** THIS row's cancel request is in flight. Not a global generation flag — see Cancel. */
+  cancelPending: boolean;
+  /** The instant every row in this render measures its age against. */
+  nowMs: number;
   onResume: (entry: HistoryEntry) => void;
   onCancel: (entry: HistoryEntry) => void;
   onSave: (url: string, index: number, label?: string) => void;
   onEdit: (url: string) => void;
   pal: Palette;
-  layout: BlockLayout;
 }) {
   const pending = entry.status === 'running' ? skeletonCount(entry.record, entry.imageUrls.length) : 0;
+  const when = relativeTime(entry.record.createdAt, nowMs);
+  const whenAbsolute = absoluteTime(entry.record.createdAt);
 
   return (
     <div style={panelRowStyle(pal)} data-testid="yt-history-row">
       <Group justify="space-between" align="center" gap={8}>
-        <Group gap={6} align="center">
-          <Badge color={batchStatusColor(entry.status)} variant="light">
-            {batchStatusLabel(entry.status)}
-          </Badge>
-          <span style={fieldDescStyle(pal)} data-testid="yt-history-when">
-            {new Date(entry.record.createdAt).toLocaleString()}
-          </span>
-        </Group>
+        {/* 🔴 THE STATUS BADGE USED TO BE HERE AND IS DELIBERATELY GONE — IN EVERY
+            STATE, not only on success. The operator was shown the tradeoff and
+            chose this, so it is recorded here rather than argued again:
+            A FAILED BATCH NOW LOOKS MUCH LIKE A SUCCEEDED ONE AT A GLANCE. What is
+            left to distinguish them is (a) the cost cell, which renders '—' for a
+            batch that never reported a realized price, and (b) the
+            `yt-history-unavailable` line for a batch whose images have aged out —
+            plus, for the run the viewer is actually watching, the `pm-partial`
+            alert beside the Generate button, which names each format that failed
+            and why. Do NOT re-add a badge under another name: if this proves too
+            thin in practice the fix is to make the FAILED case say something
+            specific, not to put the five-way badge back.
+
+            🔴 `batchStatusLabel`/`batchStatusColor` were deleted with it (they had
+            no other caller). `entry.status` is still read, two lines up, to decide
+            whether this row shows skeletons. */}
+        <span style={fieldDescStyle(pal)} data-testid="yt-history-when" title={whenAbsolute ?? ''}>
+          {/* 🔴 RELATIVE, WITH THE ABSOLUTE TIME IN `title` SO NO PRECISION IS LOST.
+              "2m ago" is what a viewer wants from the row they just generated; a
+              full `toLocaleString()` was the only thing on the line and read as
+              noise. A record with an unreadable `createdAt` renders '—' rather
+              than the string "Invalid Date" — see `relativeTime`. */}
+          {when ?? '—'}
+        </span>
         {/* 🔴 REALIZED COST, the server's number for the workflows that reported
             one — never the estimate. At 209 Buzz an image this is the figure
             people actually want from a history list. */}
-        <span style={fieldDescStyle(pal)} data-testid="yt-history-cost">
-          {entry.cost == null ? '—' : `${formatCost(entry.cost)} Buzz`}
-        </span>
+        <CostCell cost={entry.cost} pool={entry.spentAccount} pal={pal} />
       </Group>
 
       <span style={fieldDescStyle(pal)} data-testid="yt-history-formats">
@@ -389,7 +418,7 @@ function HistoryRow({
           is still deliberately no VISUAL per-image tag (see the README): an image
           belongs to its batch on screen, and the batch names its formats once. */}
       {entry.imageUrls.length > 0 && (
-        <div style={galleryStyle(layout)} data-testid="yt-history-images">
+        <div style={imageGridStyle()} data-testid="yt-history-images">
           {entry.imageUrls.map((url, i) => (
             <div key={url} style={galleryItemStyle}>
               <img
@@ -402,27 +431,49 @@ function HistoryRow({
                 style={imageStyle}
                 data-testid="yt-history-img"
               />
-              {/* 🔴 TWO BUTTONS THAT DO GENUINELY DIFFERENT THINGS, LABELLED SO.
-                  "Save image" is the RAW candidate going through the host's
-                  SAVE_IMAGE bridge — a real file, every time. "Add text" opens the
-                  canvas editor, whose export is a local `blob:` that same bridge
-                  refuses (https-only allowlist), so that path ends in the honest
-                  right-click note. */}
+              {/* 🔴 TWO BUTTONS THAT DO GENUINELY DIFFERENT THINGS, AND THE
+                  DISTINCTION IS NOW CARRIED BY THE ICON PLUS `aria-label`/`title`
+                  RATHER THAN BY VISIBLE TEXT. The previous version of this comment
+                  argued the opposite — that they had to be LABELLED because the
+                  difference matters — and the operator has reversed that to buy the
+                  width back for the pictures. The difference it was protecting is
+                  real and unchanged: "Save image" (the download icon) is the RAW
+                  candidate going through the host's SAVE_IMAGE bridge — a real file,
+                  every time. "Add text" (the text icon) opens the canvas editor,
+                  whose export is a local `blob:` that same bridge REFUSES
+                  (https-only allowlist), so that path ends in the honest
+                  right-click note.
+
+                  🔴 SO BOTH ATTRIBUTES ARE MANDATORY ON BOTH BUTTONS, and that is
+                  not style: `title` is the only hover affordance this UI pack
+                  offers (there is no `Tooltip` in `@civitai/blocks-react/ui`) and
+                  `aria-label` is the ONLY accessible name an icon-only control has.
+                  An icon with neither is not a tidier button, it is a button nobody
+                  on a screen reader can identify — a regression in accessibility,
+                  not a visual change. `pm-icon-labels` in `App.history.test.tsx`
+                  asserts the pair on every icon-only control here. The testids and
+                  both `onClick` payloads — including the `i + 1` index and the
+                  per-image `imageLabels[i]` that stop a cinematic picture being
+                  saved as `…-clickbait-3.jpg` — are byte-for-byte what they were. */}
               <Group gap={6} wrap={false}>
                 <Button
                   size="sm"
+                  aria-label="Save image"
+                  title="Save image"
                   onClick={() => onSave(url, i + 1, entry.imageLabels[i] ?? undefined)}
                   data-testid="yt-history-save"
                 >
-                  Save image
+                  <DownloadIcon />
                 </Button>
                 <Button
                   size="sm"
                   variant="light"
+                  aria-label="Add text"
+                  title="Add text"
                   onClick={() => onEdit(url)}
                   data-testid="yt-history-edit"
                 >
-                  Add text
+                  <AddTextIcon />
                 </Button>
               </Group>
             </div>
@@ -430,8 +481,12 @@ function HistoryRow({
         </div>
       )}
 
+      {/* 🔴 THE SAME `imageGridStyle()` THE IMAGES USE, so a running batch does not
+          reflow when its pictures land. One function, no argument, both call sites —
+          which is stronger than the two `galleryStyle(layout)` calls it replaces,
+          because there is no longer a value they could be passed differently. */}
       {pending > 0 && (
-        <div style={galleryStyle(layout)} data-testid="yt-history-skeleton">
+        <div style={imageGridStyle()} data-testid="yt-history-skeleton">
           {Array.from({ length: pending }, (_, i) => (
             <div
               key={i}
@@ -459,11 +514,26 @@ function HistoryRow({
           Reuse settings
         </Button>
         {entry.cancellableIds.length > 0 && (
+          /* 🔴 `loading` HERE IS THIS ROW'S OWN CANCEL REQUEST, NOT A GLOBAL BUSY
+              FLAG, AND THE DIFFERENCE DECIDES WHETHER THIS BUTTON WORKS AT ALL.
+              `Button`'s `loading` prop DISABLES the button and swallows `onClick`
+              (its own d.ts says so), so wiring it to anything that is true while a
+              generation is in flight would render Cancel exactly when it cannot be
+              clicked — and this button only ever EXISTS while something is in
+              flight (`cancellableIds` is non-empty only for pending/processing
+              workflows). It is instead `busyKey === entry.key`, which the App sets
+              only inside `onCancelWorkflow` and clears in its `finally`: so Cancel
+              is live for the whole time it is on screen, and goes into its spinner
+              for the duration of the cancel round trip it started itself.
+              `App.history.test.tsx` pins the reachability directly — it clicks this
+              button on a running batch and asserts `cancelWorkflow` was called with
+              that batch's id — and separately asserts that a SECOND row's Cancel
+              stays live while this one's request is pending. */
           <Button
             size="sm"
             variant="subtle"
             color="error"
-            loading={busy}
+            loading={cancelPending}
             onClick={() => onCancel(entry)}
             data-testid="yt-history-cancel"
           >
@@ -474,3 +544,73 @@ function HistoryRow({
     </div>
   );
 }
+
+/**
+ * The realized cost: a number, a BOLT, and the pool that funded it.
+ *
+ * 🔴 THE BOLT IS THE SAME COMPONENT THE BUZZ PICKER USES — `icons.tsx`'s
+ * `BuzzBolt`, painted from `BUZZ_TYPE_COLOR`, which is `palette.ts`'s verbatim
+ * mirror of civitai's own `currency-theme.constants.ts`. It is deliberately NOT a
+ * second glyph with a second pool→colour lookup: two renderings of one visual rule
+ * are how the picker and this row end up disagreeing about what "yellow Buzz"
+ * looks like. One rule, one place — `BuzzBolt` moved OUT of `App.tsx` for this.
+ *
+ * 🔴 AN UNKNOWN POOL IS NEUTRAL, NEVER A GUESS. `pool` is `null` for a record
+ * written before the field existed, for a batch still running, and for a batch
+ * whose workflows were funded from DIFFERENT pools (see `agreedSpentPool`). All
+ * three map to `BuzzBolt`'s `'auto'` arm — `pal.textDim`, a bolt that does not
+ * claim a pool — because a wrong colour here is a false statement about where the
+ * viewer's money came from.
+ *
+ * 🔴 AND COLOUR IS NEVER THE ONLY CARRIER. The bolt is `aria-hidden`; the
+ * accessible name beside it spells out "Buzz" and, when known, the pool — so a
+ * screen reader reads "836 Buzz from your blue balance", never a bare number, and
+ * a viewer who cannot distinguish the three hues still has the `title` and the
+ * read-out. This is the same WCAG 1.4.1 rule `palette.ts` states for the picker.
+ */
+function CostCell({
+  cost,
+  pool,
+  pal,
+}: {
+  cost: number | null;
+  pool: HistoryEntry['spentAccount'];
+  pal: Palette;
+}) {
+  // No realized number yet: '—' and NOTHING else. A bolt beside an em dash would
+  // suggest a price of nothing was charged; the honest claim is that the server has
+  // not told us one.
+  if (cost == null) {
+    return (
+      <span style={fieldDescStyle(pal)} data-testid="yt-history-cost">
+        —
+      </span>
+    );
+  }
+  const amount = formatCost(cost);
+  const poolLabel = pool === null ? null : accountLabel(pool);
+  const sentence =
+    poolLabel === null
+      ? `${amount} Buzz`
+      : `${amount} Buzz from your ${poolLabel.toLowerCase()} balance`;
+  return (
+    <span
+      style={{ ...fieldDescStyle(pal), display: 'inline-flex', alignItems: 'center', gap: 3 }}
+      data-testid="yt-history-cost"
+      // The whole sentence on hover, so the pool is discoverable without colour
+      // vision and the number keeps its unit even when the row is scanned fast.
+      title={sentence}
+    >
+      {amount}
+      <BuzzBolt choice={pool ?? 'auto'} pal={pal} testId="yt-history-bolt" size={12} />
+      {/* 🔴 THE NUMBER NEVER GOES OUT ALONE. The bolt is `aria-hidden`, so without
+          this the row would read as "836" on a surface about money — a bare number
+          with no unit and no pool. The visible glyph and this text say the same
+          thing to two different readers. */}
+      <span style={srOnlyStyle}>
+        {poolLabel === null ? ' Buzz' : ` Buzz from your ${poolLabel.toLowerCase()} balance`}
+      </span>
+    </span>
+  );
+}
+

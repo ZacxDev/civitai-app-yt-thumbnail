@@ -233,10 +233,18 @@ describe('N formats ⇒ N workflows', () => {
     // 🔴 SPEND IS THE SERVER'S NUMBER FOR THE RUN THAT RAN — 7. NOT the
     // aggregate estimate (which was 3 + 3 = 6 and covers a workflow that never
     // executed), and not 10.
-    const spent = screen.getByTestId('pm-spent');
-    expect(spent).toHaveTextContent(/spent\s*7\s*buzz/i);
-    expect(spent).not.toHaveTextContent(/spent\s*6\s*buzz/i);
-    expect(spent).not.toHaveTextContent(/spent\s*10\s*buzz/i);
+    //
+    // 🔴 THE FIGURE MOVED FROM THE `pm-spent` ALERT (removed in all states) TO THE
+    // HISTORY ROW, AND THE RULE IS UNCHANGED: `joinHistory` sums only the realized
+    // `cost` the live half reports for the workflows that reported one, so a run that
+    // never executed contributes nothing and its ESTIMATE can never stand in. The
+    // three numbers stay pairwise distinct (7 real, 6 estimate-sum, 10 neither), so a
+    // mutant that summed estimates or hardcoded a total is still visible here.
+    expect(screen.queryByTestId('pm-spent')).not.toBeInTheDocument();
+    const cost = await screen.findByTestId('yt-history-cost');
+    await waitFor(() => expect(cost).toHaveTextContent('7'));
+    expect(cost).not.toHaveTextContent('6');
+    expect(cost).not.toHaveTextContent('10');
   });
 
   it('🔴 prices the Generate button with the SUM across formats, not one format’s cost', async () => {
