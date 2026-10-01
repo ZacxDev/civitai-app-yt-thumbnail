@@ -138,8 +138,15 @@ listing half and should read it HERE.
 - 🔴 **`civitai app status`'s `SUBMITTED` column is UTC-dated while the app renders history in the viewer's LOCAL zone.** 0.1.7 reads `2026-10-01` there and went live `2026-09-30 22:57 CDT`. Comparing them naively makes a post-release generation look pre-release — it would have DISCARDED the one piece of evidence proving the money path on 0.1.7. Confirm the browser host's zone (`date +%Z`) before attributing any history row to a version.
 - **This doc had accumulated 11 duplicate gotcha bullets (~4.0 KB) from repeated appends** — same lesson appended twice in different words, e.g. `node_modules`-as-symlink, the mirrored hero, the playwright version skew. Pruned 2026-09-30 by keeping the more informative copy of each pair verbatim. **Before adding a gotcha, grep the section for its first six words** — the append bucket never dedupes.
 
-## EVICTED 2026-10-01 from the main doc — four CLOSED `Open investigations` blocks (arc 6 close)
-Moved verbatim by rule (q) (`--prune` + `--archive`) to clear a `size-ratchet` refusal, not deleted.
+## COPIED 2026-10-01 from the main doc — four CLOSED `Open investigations` blocks (arc 6 close)
+🔴 **A COPY, NOT AN EVICTION — all four blocks are STILL LIVE in the main doc, and the main doc is
+authoritative for them.** This section was staged as the `--archive` side of a rule (q) prune that was
+then **REFUSED**: `status=prune-refused`, `[ambiguous]` on `- as-of: 2026-09-30` (4 matches) and
+`- as-of: 2026-10-01` (5 matches). Prune matching is per-LINE with no block context, so naming a complete
+block does **not** clear ambiguity — a block is prunable only if its `as-of:` date is unique in the
+document, and no date in that document is. The round landed instead with an operator-approved
+`--override-size-ratchet`. **Do not read this section as "removed from the main doc"**; if a future round
+finds a working eviction route, these four are the set to remove, and then this heading becomes accurate.
 Why each is closed: the two listing-media/twin blocks are **REFUTED** — the live correction block that
 killed them stays in the main doc; `useSaveImage` is BROKEN is **RESOLVED 2026-10-01** (the save works on
 live 0.1.7 and is proven by a real download — see the main doc's RESOLVED block); the money-path flake is
