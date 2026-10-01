@@ -14,8 +14,13 @@ import {
   oldestWorkflowTime,
   orphanedKeys,
   parseRecord,
+  mergeLiveWorkflows,
+  mergeUnsavedRecords,
   recordFits,
+  showHistory,
+  skeletonCount,
   timestampFromKey,
+  upsertOwnWorkflow,
   type GenerationForm,
   type GenerationRecord,
 } from './history.js';
@@ -324,12 +329,158 @@ describe('joinHistory — the batch grouping', () => {
     expect(batchBodies(entries[0].record.form)).toHaveLength(2);
   });
 
+  it('🔴 labels EVERY image with ITS OWN format, through a missing workflow and quantity > 1', () => {
+    /**
+     * 🔴 REGRESSION COVERAGE, red at c84f082 — where `imageLabels` does not exist
+     * and the row passed `form.formats[0].label` for every image, so a 2-format
+     * batch saved its Minimal picture as `yt-thumbnail-clickbait-N.jpg`.
+     *
+     * 🔴 THE FIXTURE IS BUILT TO KILL THE TWO NEAR-MISS FIXES AS WELL, and each
+     * needs its own distinct number:
+     *   - `formats[imageIndex]` — wrong because quantity > 1 means one workflow
+     *     contributes SEVERAL images. 'wf-a' delivers two, so an image-indexed
+     *     lookup would label the second one 'Minimal'.
+     *   - pairing AFTER the `.filter` — wrong because a workflow the live page does
+     *     not carry is dropped, shifting every later index. 'wf-missing' sits
+     *     BETWEEN the two present workflows precisely so that shift happens: a
+     *     post-filter pairing would label 'wf-c' 'Minimal' instead of 'Cinematic'.
+     */
+    const three = form({
+      formats: [
+        { id: 'fmt:a', label: 'Clickbait', suffix: 's', prompt: 'p1' },
+        { id: 'fmt:b', label: 'Minimal', suffix: 's', prompt: 'p2' },
+        { id: 'fmt:c', label: 'Cinematic', suffix: 's', prompt: 'p3' },
+      ],
+    });
+    const img = (url: string) => ({ url, width: 1536, height: 864, nsfwLevel: 1 });
+    const entries = joinHistory(
+      [{ key: 'k1', record: record({ workflowIds: ['wf-a', 'wf-missing', 'wf-c'], form: three }) }],
+      [
+        workflow({ workflowId: 'wf-a', images: [img('a1'), img('a2')] }),
+        workflow({ workflowId: 'wf-c', images: [img('c1')] }),
+      ],
+    );
+    expect(entries[0].imageUrls).toEqual(['a1', 'a2', 'c1']);
+    expect(entries[0].imageLabels).toEqual(['Clickbait', 'Clickbait', 'Cinematic']);
+  });
+
+  it('stays TOTAL on a row with fewer formats than ids — `null`, not a throw', () => {
+    /**
+     * 🔴 A TOTALITY GUARD AT THE PARSE BOUNDARY, NOT REGRESSION COVERAGE, and the
+     * difference matters because the reason written here before was false. It said a
+     * pre-change record "can carry MORE ids than formats". It cannot: measured at the
+     * only released writer (`a6aae56`), `workflowIds = submittedIds ⊆ viable` while
+     * `form.formats = formats.filter(viable)`, so `|formats| >= |ids|` ALWAYS — the
+     * inequality runs the other way, and the case below is one NO shipped writer
+     * produces. What it does pin is real but much smaller: `parseRecord` validates the
+     * two lists separately and never relates their lengths, so `joinHistory` has to
+     * survive every shape it accepts. Without the `?.` this row throws a TypeError out
+     * of the function that renders the whole surface. `null` is a filename without a
+     * slug, not a wrong slug — see candidateFileName.
+     *
+     * The REACHABLE skew is the mirror image, and it is the case below this one.
+     */
+    const entries = joinHistory(
+      [{ key: 'k1', record: record({ workflowIds: ['wf-a', 'wf-b', 'wf-extra'] }) }],
+      [workflow({ workflowId: 'wf-extra', images: [{ url: 'x', width: 1, height: 1, nsfwLevel: 1 }] })],
+    );
+    expect(entries[0].imageLabels).toEqual([null]);
+  });
+
+  it('pins the KNOWN MISLABEL on a pre-change row: more formats than ids shifts every later label', () => {
+    /**
+     * 🔴 THIS PINS A LIMITATION, NOT DESIRED BEHAVIOUR, and it is here because the
+     * limitation was undocumented and unasserted while a comment described the
+     * unreachable mirror case instead. At `a6aae56` `form.formats` held the ESTIMATE
+     * survivors and `workflowIds` held the SUBMIT survivors, so one failed submit
+     * leaves a row with more formats than ids — and the pairing is positional, so
+     * every label after the gap names the wrong format. Nothing in the row records
+     * which format each id came from, so this is not repairable from the data; the
+     * README states it and this makes it machine-readable.
+     *
+     * Fixture: formats [A, B, C], ids [wf-a, wf-c] (B's submit failed). The correct
+     * labels would be A and C; positional pairing gives A and B.
+     */
+    const three = record({
+      workflowIds: ['wf-a', 'wf-c'],
+      form: form({
+        formats: [
+          { id: 'fmt:a', label: 'Alpha', suffix: 'one', prompt: 'p one' },
+          { id: 'fmt:b', label: 'Beta', suffix: 'two', prompt: 'p two' },
+          { id: 'fmt:c', label: 'Gamma', suffix: 'three', prompt: 'p three' },
+        ],
+      }),
+    });
+    const entries = joinHistory(
+      [{ key: 'k1', record: three }],
+      [
+        workflow({ workflowId: 'wf-a', images: [{ url: 'x', width: 1, height: 1, nsfwLevel: 1 }] }),
+        workflow({ workflowId: 'wf-c', images: [{ url: 'y', width: 1, height: 1, nsfwLevel: 1 }] }),
+      ],
+    );
+    // 'Gamma' is the truth for the second image; 'Beta' is what a positional pairing
+    // can know. Asserted so that a later change which DOES fix it fails here loudly
+    // rather than silently contradicting the README.
+    expect(entries[0].imageLabels).toEqual(['Alpha', 'Beta']);
+  });
+
   it('lists the still-cancellable workflow ids, and only those', () => {
     const entries = joinHistory(
       [{ key: 'k1', record: record() }],
       [workflow({ workflowId: 'wf-a', status: 'processing' }), workflow({ workflowId: 'wf-b', status: 'succeeded' })],
     );
     expect(entries[0].cancellableIds).toEqual(['wf-a']);
+  });
+});
+
+describe('mergeUnsavedRecords', () => {
+  /**
+   * 🔴 THE FUNCTION THAT STOPS A FAILED WRITE DELETING PAID-FOR IMAGES. The batch row
+   * is inserted optimistically; when `set()` rejects it exists in memory only, and
+   * every reload of the stored half replaces the list with what storage holds. This is
+   * what carries the unsaved half across that replacement. See `App.history.test.tsx`
+   * for the click path, which is where the red at c84f082 is.
+   */
+  const at = (ms: number, id: string) => ({
+    key: historyKey(ms, id),
+    record: record({ batchId: id, createdAt: ms }),
+  });
+
+  it('🔴 keeps a record storage does not have', () => {
+    const stored = at(1_700_000_000_000, 'old');
+    const unsaved = at(1_800_000_000_000, 'new');
+    expect(mergeUnsavedRecords([stored], [unsaved]).map((e) => e.record.batchId)).toEqual([
+      'new',
+      'old',
+    ]);
+  });
+
+  it('🔴 puts it back in NEWEST-FIRST order, not on top', () => {
+    // The stored half is newest-first because the key inverts the timestamp. An
+    // unsaved row from BEFORE the newest stored one belongs second, and a `[...unsaved,
+    // ...stored]` concat — the obvious wrong implementation — would pin it first.
+    const newest = at(1_900_000_000_000, 'newest');
+    const middle = at(1_800_000_000_000, 'middle');
+    const oldest = at(1_700_000_000_000, 'oldest');
+    expect(
+      mergeUnsavedRecords([newest, oldest], [middle]).map((e) => e.record.batchId),
+    ).toEqual(['newest', 'middle', 'oldest']);
+  });
+
+  it('does not duplicate a record storage DOES have, and storage wins', () => {
+    // The retry that finally lands leaves the key in both halves for one render.
+    const stored = at(1_700_000_000_000, 'same');
+    const stale = { key: stored.key, record: record({ batchId: 'same', createdAt: 1_700_000_000_000, workflowIds: ['stale'] }) };
+    const merged = mergeUnsavedRecords([stored], [stale]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].record.workflowIds).toEqual(['wf-a', 'wf-b']);
+  });
+
+  it('is a no-op copy when nothing is unsaved', () => {
+    const stored = [at(1_800_000_000_000, 'a'), at(1_700_000_000_000, 'b')];
+    const merged = mergeUnsavedRecords(stored, []);
+    expect(merged).toEqual(stored);
+    expect(merged).not.toBe(stored);
   });
 });
 
@@ -439,4 +590,242 @@ describe('candidateFileName', () => {
     expect(candidateFileName(1)).toBe('yt-thumbnail-1.jpg');
     expect(candidateFileName(1, '///')).toBe('yt-thumbnail-1.jpg');
   });
+});
+
+// --- the app's own view of the live queue ---------------------------------
+
+describe('upsertOwnWorkflow', () => {
+  /**
+   * 🔴 WHAT THIS FUNCTION IS FOR: `useAppWorkflows()` is a page fetched EARLIER, so a
+   * batch submitted seconds ago is not in it. The app folds every snapshot it polls
+   * itself into a map keyed by workflowId, and that map is what stops the newest
+   * history row rendering `unavailable` — and what stops `orphanedKeys` DELETING its
+   * record for matching nothing.
+   *
+   * BEHAVIOUR coverage (the function is new). Each case names the plausible mistake.
+   */
+  const snap = (over: Record<string, unknown> = {}) =>
+    ({ workflowId: 'wf-1', status: 'processing', ...over }) as never;
+
+  it('is a no-op for a snapshot with no workflowId — there is nothing to key on', () => {
+    const before = {};
+    expect(upsertOwnWorkflow(before, snap({ workflowId: '' }), ['a.jpg'], 'T')).toBe(before);
+  });
+
+  it('stamps createdAt on FIRST SIGHT and never moves it', () => {
+    // Killed by re-stamping `now` on every poll: `oldestWorkflowTime` would then walk
+    // forward under the prune bound while a long generation is still running.
+    const first = upsertOwnWorkflow({}, snap(), [], '2026-09-30T12:00:00.000Z');
+    const second = upsertOwnWorkflow(first, snap(), [], '2026-09-30T12:09:00.000Z');
+    expect(second['wf-1'].createdAt).toBe('2026-09-30T12:00:00.000Z');
+  });
+
+  it('🔴 an EMPTY image list does not erase urls a previous snapshot delivered', () => {
+    // The real shape: a `succeeded` snapshot carries urls, and a later `poll` for the
+    // same workflow can come back without them. Blanket-assigning would blank the
+    // images the viewer paid for.
+    const withImages = upsertOwnWorkflow(
+      {},
+      snap({ status: 'succeeded' }),
+      ['a.jpg', 'b.jpg'],
+      'T',
+    );
+    const later = upsertOwnWorkflow(withImages, snap({ status: 'succeeded' }), [], 'T');
+    expect(later['wf-1'].images.map((i) => i.url)).toEqual(['a.jpg', 'b.jpg']);
+  });
+
+  it('🔴 a MISSING cost does not erase one the server already reported', () => {
+    // Same rule as `applySnapshotToRun`'s: `null` means "not told yet", never "free".
+    const priced = upsertOwnWorkflow({}, snap({ cost: { total: 418 } }), [], 'T');
+    const later = upsertOwnWorkflow(priced, snap({}), [], 'T');
+    expect(later['wf-1'].cost).toBe(418);
+  });
+
+  it('carries the snapshot status through, and keeps other workflows untouched', () => {
+    const two = upsertOwnWorkflow(
+      upsertOwnWorkflow({}, snap({ workflowId: 'wf-a' }), ['a.jpg'], 'T'),
+      snap({ workflowId: 'wf-b', status: 'succeeded' }),
+      ['b.jpg'],
+      'T',
+    );
+    expect(two['wf-a'].status).toBe('processing');
+    expect(two['wf-b'].status).toBe('succeeded');
+    expect(two['wf-a'].images.map((i) => i.url)).toEqual(['a.jpg']);
+  });
+});
+
+describe('mergeLiveWorkflows', () => {
+  /**
+   * 🔴 THE MERGE MUST ONLY EVER ADD INFORMATION — it runs on every render, so a clause
+   * that can LOSE a field would blink images or costs in and out. Each case pins one
+   * clause and names what going the other way costs.
+   */
+  it('passes a page-only row through unchanged', () => {
+    const page = [workflow({ workflowId: 'wf-a', cost: 209 })];
+    expect(mergeLiveWorkflows(page, {})).toEqual(page);
+  });
+
+  it('🔴 APPENDS a workflow the page does not carry — the just-submitted batch', () => {
+    // Killed by intersecting instead of unioning: the row for the batch the viewer
+    // just paid for joins to nothing and reads `unavailable`.
+    const mine = workflow({ workflowId: 'wf-new', status: 'processing' });
+    const merged = mergeLiveWorkflows([workflow({ workflowId: 'wf-old' })], { 'wf-new': mine });
+    expect(merged.map((w) => w.workflowId).sort()).toEqual(['wf-new', 'wf-old']);
+  });
+
+  it('🔴 fills an EMPTY page image list from ours, and never the other way round', () => {
+    const page = [workflow({ workflowId: 'wf-a', images: [] })];
+    const mine = {
+      'wf-a': workflow({
+        workflowId: 'wf-a',
+        images: [{ url: 'mine.jpg', width: null, height: null, nsfwLevel: null }],
+      }),
+    };
+    expect(mergeLiveWorkflows(page, mine)[0].images.map((i) => i.url)).toEqual(['mine.jpg']);
+
+    // The page's own images WIN when it has them: it is the server's settled answer.
+    const pageWithImages = [
+      workflow({
+        workflowId: 'wf-a',
+        images: [{ url: 'page.jpg', width: null, height: null, nsfwLevel: null }],
+      }),
+    ];
+    expect(mergeLiveWorkflows(pageWithImages, mine)[0].images.map((i) => i.url)).toEqual([
+      'page.jpg',
+    ]);
+  });
+
+  it('🔴 fills a NULL page cost from ours, and the page wins when it has one', () => {
+    // 641 and 209 are distinct and neither is a multiple or sum of the other, so a
+    // mutant that adds the two sides is visible.
+    const mine = { 'wf-a': workflow({ workflowId: 'wf-a', cost: 209 }) };
+    expect(
+      mergeLiveWorkflows([workflow({ workflowId: 'wf-a', cost: null })], mine)[0].cost,
+    ).toBe(209);
+    expect(
+      mergeLiveWorkflows([workflow({ workflowId: 'wf-a', cost: 641 })], mine)[0].cost,
+    ).toBe(641);
+  });
+
+  it('🔴 upgrades a STALE non-terminal page status from our terminal one', () => {
+    // A page fetched mid-generation says `processing` about a workflow we have already
+    // watched succeed. Leaving it would show a permanent skeleton over finished images.
+    const mine = { 'wf-a': workflow({ workflowId: 'wf-a', status: 'succeeded' }) };
+    expect(
+      mergeLiveWorkflows([workflow({ workflowId: 'wf-a', status: 'processing' })], mine)[0]
+        .status,
+    ).toBe('succeeded');
+  });
+
+  it('🔴 never DOWNGRADES a terminal page status from our stale non-terminal one', () => {
+    // The same error mirrored, and the one a naive "ours always wins" produces: our
+    // last poll said `pending` while the page knows the workflow expired.
+    const mine = { 'wf-a': workflow({ workflowId: 'wf-a', status: 'pending' }) };
+    expect(
+      mergeLiveWorkflows([workflow({ workflowId: 'wf-a', status: 'expired' })], mine)[0].status,
+    ).toBe('expired');
+  });
+
+  it('keeps the PAGE’s createdAt when both have the row — it is the real one', () => {
+    const mine = {
+      'wf-a': workflow({ workflowId: 'wf-a', createdAt: '2030-01-01T00:00:00.000Z' }),
+    };
+    expect(
+      mergeLiveWorkflows(
+        [workflow({ workflowId: 'wf-a', createdAt: '2026-01-01T00:00:00.000Z' })],
+        mine,
+      )[0].createdAt,
+    ).toBe('2026-01-01T00:00:00.000Z');
+  });
+
+  it('🔴 a merged own-row PROTECTS its record from the prune', () => {
+    /**
+     * THE SEAM, not either component. The record is written the moment ids exist, so
+     * its `createdAt` is inside the fetched window and it matches nothing in the page
+     * — the exact condition `orphanedKeys` deletes on. Two observations, one variable:
+     * without the merge the key is orphaned, with it the key is not.
+     */
+    const rec = record({
+      createdAt: Date.parse('2026-09-30T13:00:00.000Z'),
+      workflowIds: ['wf-new'],
+    });
+    const stored = [{ key: 'gen:v1:k', record: rec }];
+    const page = [workflow({ workflowId: 'wf-old', createdAt: '2026-09-30T11:00:00.000Z' })];
+
+    expect(orphanedKeys(stored, page, oldestWorkflowTime(page))).toEqual(['gen:v1:k']);
+
+    const widened = mergeLiveWorkflows(page, {
+      'wf-new': workflow({ workflowId: 'wf-new', status: 'processing' }),
+    });
+    expect(orphanedKeys(stored, widened, oldestWorkflowTime(widened))).toEqual([]);
+  });
+});
+
+// --- what the surface shows -----------------------------------------------
+
+describe('showHistory', () => {
+  /**
+   * 🔴 THE ONLY HIDING CASE IS ready-AND-EMPTY. The plausible mistake is widening it
+   * to "empty", which deletes the sign-in prompt, the storage-grant message and the
+   * retry — each the only thing on screen naming the fix for its own state.
+   */
+  it('hides ONLY when ready, empty and noteless', () => {
+    expect(showHistory({ state: 'ready', entryCount: 0, note: null })).toBe(false);
+  });
+
+  it('shows for every non-ready state, even empty and noteless', () => {
+    for (const state of ['loading', 'anon', 'denied', 'error'] as const) {
+      expect(showHistory({ state, entryCount: 0, note: null }), state).toBe(true);
+    }
+  });
+
+  it('shows as soon as there is a row, and shows for a note with no rows', () => {
+    expect(showHistory({ state: 'ready', entryCount: 1, note: null })).toBe(true);
+    // The note is about the run that JUST happened ("too large to save"), so it may
+    // not vanish with its container.
+    expect(showHistory({ state: 'ready', entryCount: 0, note: 'x' })).toBe(true);
+  });
+});
+
+describe('skeletonCount', () => {
+  /**
+   * 🔴 FORMATS AND QUANTITY MULTIPLY — the same arithmetic the cost disclosure makes.
+   * The fixtures below keep the two factors DIFFERENT from each other and from the
+   * product, so a mutant that returns either factor alone, or their sum, is visible.
+   */
+  const rec = (formats: number, quantity: number) =>
+    record({
+      form: form({
+        quantity,
+        formats: Array.from({ length: formats }, (_, i) => ({
+          id: `f${i}`,
+          label: `F${i}`,
+          suffix: 's',
+          prompt: 'p',
+        })),
+      }),
+    });
+
+  it('is formats × quantity when nothing has landed', () => {
+    // 3 formats × 4 = 12. Deliberately NOT a power-of-two multiple of either factor,
+    // and 12 is none of 3, 4 or 7 (their sum).
+    expect(skeletonCount(rec(3, 4), 0)).toBe(12);
+  });
+
+  it('subtracts what has already landed', () => {
+    expect(skeletonCount(rec(3, 4), 5)).toBe(7);
+  });
+
+  it('never goes negative when MORE landed than expected', () => {
+    // A host may return more images than asked; a negative count renders nothing at
+    // all in one reading and throws in another (`Array.from({length: -1})`).
+    expect(skeletonCount(rec(1, 1), 9)).toBe(0);
+  });
+
+  // The 'treats a zero/absent factor as one' case is GONE with the clamp it
+  // described. Neither factor can be zero: `parseRecord` refuses a record whose
+  // `formats` is empty, and `quantity` passes `clampQuantity` (QUANTITY_MIN = 1)
+  // before it is stored. The clamp was unreachable, and a test pinning unreachable
+  // behaviour reads as coverage while guarding nothing — the `rec(0, 0)` record it
+  // asserted on cannot exist.
 });

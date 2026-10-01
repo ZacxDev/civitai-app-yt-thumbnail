@@ -12,6 +12,7 @@ import {
   buildWorkflowBody,
   clampPrompt,
   clampQuantity,
+  estimateSignature,
   firstImageUrl,
   formatCost,
   hasBudgetedScope,
@@ -343,5 +344,91 @@ describe('firstImageUrl / imageUrlsFrom', () => {
     expect(imageUrlsFrom(null)).toEqual([]);
     expect(imageUrlsFrom(snap({ imageUrls: [] }))).toEqual([]);
     expect(imageUrlsFrom(snap({}))).toEqual([]);
+  });
+});
+
+describe('estimateSignature', () => {
+  /**
+   * 🔴 THIS FUNCTION IS THE APP'S DEFINITION OF "SOMETHING THAT CHANGES THE PRICE",
+   * and the live cost preview re-estimates when its output changes and at no other
+   * time. So every case here is a statement about when the viewer's money figure gets
+   * refreshed — an input wrongly EXCLUDED leaves a stale price on a spend control, and
+   * an input wrongly INCLUDED fires a request per keystroke at someone else's backend.
+   *
+   * BEHAVIOUR coverage: the function is new, so there is nothing to regress from.
+   *
+   * 🔴 THE FIXTURE VALUES ARE PAIRWISE DISTINCT AND NONE IS A DEFAULT. A base built
+   * from quantity 1, zero LoRAs and one format would make several of the cases below
+   * pass by landing on the same empty shape.
+   */
+  const base = {
+    formatIds: ['fmt:a', 'fmt:b'],
+    checkpointVersionId: 691639,
+    loras: [
+      { versionId: 135867, weight: 0.65 },
+      { versionId: 222111, weight: 1.35 },
+    ],
+    quantity: 3,
+    mode: 'generate' as const,
+    sourceImageUrl: null,
+  };
+
+  it('is stable for identical input', () => {
+    expect(estimateSignature(base)).toBe(estimateSignature({ ...base }));
+  });
+
+  it('🔴 CHANGES for every price-relevant input, one at a time', () => {
+    // One variable per row. A signature that ignored any of these would leave the
+    // button quoting a price for a request nobody is making.
+    const sig = estimateSignature(base);
+    expect(estimateSignature({ ...base, quantity: 4 })).not.toBe(sig);
+    expect(estimateSignature({ ...base, checkpointVersionId: 2880272 })).not.toBe(sig);
+    expect(estimateSignature({ ...base, formatIds: ['fmt:a'] })).not.toBe(sig);
+    expect(estimateSignature({ ...base, formatIds: ['fmt:a', 'fmt:b', 'fmt:c'] })).not.toBe(sig);
+    expect(estimateSignature({ ...base, loras: [base.loras[0]] })).not.toBe(sig);
+    expect(estimateSignature({ ...base, mode: 'remix' })).not.toBe(sig);
+    expect(
+      estimateSignature({ ...base, sourceImageUrl: 'https://image.civitai.com/a.jpg' }),
+    ).not.toBe(sig);
+  });
+
+  it('🔴 CHANGES on a LoRA WEIGHT alone — a weight rides on the body and is priced', () => {
+    // Killed by hashing only the version ids: moving a slider would then leave a stale
+    // price, which is the single most likely way to get this function wrong.
+    const moved = {
+      ...base,
+      loras: [{ ...base.loras[0], weight: 1.85 }, base.loras[1]],
+    };
+    expect(estimateSignature(moved)).not.toBe(estimateSignature(base));
+  });
+
+  it('🔴 is SENSITIVE to LoRA ORDER, because the body is', () => {
+    // Not a nicety: `additionalResources` is built by mapping the selection in order,
+    // so two orders are two different bodies. Treating them as one would be a claim
+    // about the server this app has not measured.
+    const swapped = { ...base, loras: [base.loras[1], base.loras[0]] };
+    expect(estimateSignature(swapped)).not.toBe(estimateSignature(base));
+  });
+
+  it('🔴 clamps the quantity, so two values the server treats alike are ONE signature', () => {
+    // `clampQuantity` maps everything above the cap to the cap, and the body carries
+    // the clamped number — so 9 and QUANTITY_MAX are the same request and must not
+    // cost an extra round trip.
+    expect(estimateSignature({ ...base, quantity: 9 })).toBe(
+      estimateSignature({ ...base, quantity: QUANTITY_MAX }),
+    );
+    // ...and the positive control, so this is not "quantity is ignored": a value
+    // INSIDE the range still moves it.
+    expect(estimateSignature({ ...base, quantity: QUANTITY_MIN })).not.toBe(
+      estimateSignature({ ...base, quantity: QUANTITY_MAX }),
+    );
+  });
+
+  it('🔴 an absent source image and an empty string are ONE signature', () => {
+    // `null` and `''` both mean "no img2img seed", and distinguishing them would fire a
+    // request for a change that cannot alter a body.
+    expect(estimateSignature({ ...base, sourceImageUrl: null })).toBe(
+      estimateSignature({ ...base, sourceImageUrl: '' }),
+    );
   });
 });

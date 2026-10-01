@@ -35,7 +35,7 @@
 // rebuilds the batch from it.
 // ---------------------------------------------------------------------------
 
-import type { AppWorkflow } from '@civitai/app-sdk/blocks';
+import type { AppWorkflow, BlockWorkflowSnapshot } from '@civitai/app-sdk/blocks';
 
 import { buildWorkflowBody, type AccountChoice, type SourceImage } from './generation.js';
 import type { CheckpointOption, LoraOption } from './models.js';
@@ -217,6 +217,61 @@ export function recordFits(record: GenerationRecord): boolean {
   return new TextEncoder().encode(JSON.stringify(record)).length <= STORAGE_VALUE_MAX_BYTES;
 }
 
+/** One stored batch as the app holds it: the storage key plus the parsed value. */
+export interface StoredRecord {
+  key: string;
+  record: GenerationRecord;
+}
+
+/**
+ * Re-attach records the app is HOLDING that storage does not have.
+ *
+ * 🔴 THIS IS THE REASON A FAILED WRITE NO LONGER DELETES PAID-FOR IMAGES. The
+ * batch row is inserted optimistically, before `set()` is acknowledged, because it
+ * is the surface the viewer's images appear in. If that write REJECTS, the row
+ * exists only in memory — and every reload of the stored half (`loadHistory`,
+ * which the error banner's own "Try again" button calls, and which the Show
+ * toggle calls too) REPLACES the list with what storage actually holds. That list
+ * never contained this run, so the row and its images vanished permanently: the
+ * join is the only renderer for them, so they did not come back on reload either.
+ *
+ * So a reload is a merge, not a replacement. 🔴 AND THE RULE IS ABOUT ROWS THAT
+ * EXIST, NOT ONLY ABOUT ROWS WE KNOW FAILED TO SAVE — this sentence used to say the
+ * narrower thing, and the narrower reading is what let a second bug through. A batch
+ * inserted AND successfully saved while a `loadHistory` was already in flight is in
+ * neither half that read can see: not in the stored listing (taken before the write)
+ * and not in the unsaved map (the write succeeded, so it was dropped from it). The
+ * caller therefore passes the CURRENT list as well, which is why `App.tsx` calls this
+ * from inside a functional `setHistoryRecords` rather than on a snapshot. Anything on
+ * screen that storage has not accounted for survives the reload.
+ *
+ * Ordering is restored by `createdAt` descending, the same newest-first order the
+ * inverted key gives the stored half, so a carried-over row lands where it belongs
+ * rather than being pinned to the top.
+ *
+ * Stored WINS on a key collision — storage is the authority once it has the row —
+ * and within `unsaved` the FIRST occurrence of a key wins, so a caller may
+ * concatenate several sources (the unsaved map, then the current list) without
+ * rendering the same key twice.
+ */
+export function mergeUnsavedRecords(
+  stored: ReadonlyArray<StoredRecord>,
+  unsaved: ReadonlyArray<StoredRecord>,
+): StoredRecord[] {
+  const have = new Set(stored.map((e) => e.key));
+  const missing: StoredRecord[] = [];
+  for (const e of unsaved) {
+    if (have.has(e.key)) continue;
+    // Added as we go, so a key repeated WITHIN `unsaved` is kept once. Two rows
+    // with the same key would be two React children with the same `key` prop and
+    // two renderings of one batch.
+    have.add(e.key);
+    missing.push(e);
+  }
+  if (missing.length === 0) return [...stored];
+  return [...stored, ...missing].sort((a, b) => b.record.createdAt - a.record.createdAt);
+}
+
 /** A batch's status, reduced from its workflows' statuses. */
 export type BatchStatus =
   | 'running'
@@ -236,6 +291,20 @@ export interface HistoryEntry {
   status: BatchStatus;
   /** Every displayable image across the batch's workflows, in workflow order. */
   imageUrls: string[];
+  /**
+   * The FORMAT LABEL for each image, index-aligned with {@link imageUrls} — `null`
+   * where the record cannot name one.
+   *
+   * 🔴 IT IS BUILT HERE RATHER THAN INDEXED AT THE RENDER SITE, and that is the
+   * whole point. The row used to pass `form.formats[0].label` for EVERY image, so a
+   * 2-format batch saved its Cinematic picture as `yt-thumbnail-clickbait-3.jpg`.
+   * Indexing `formats[i]` by IMAGE index would be just as wrong twice over: a
+   * workflow missing from the live page is dropped from `imageUrls`, which shifts
+   * every later index, and at quantity > 1 one workflow contributes several images.
+   * The only sound pairing is `workflowIds[i]` ↔ `formats[i]` — the alignment the
+   * writer guarantees — carried through the flatten, which is what this does.
+   */
+  imageLabels: Array<string | null>;
   /** Summed realized cost over the workflows that reported one; `null` when none did. */
   cost: number | null;
   /** True when the live queue knows nothing about ANY of this batch's workflows. */
@@ -278,16 +347,52 @@ export function batchStatus(workflows: readonly AppWorkflow[]): BatchStatus {
  * A record whose workflows are all missing from the live page is KEPT, flagged
  * `unavailable`. It is not an error state and it is not pruned here — see
  * {@link orphanedKeys} for why pruning needs a bound this function does not have.
+ *
+ * 🔴 THE FORMAT LABEL IS PAIRED BEFORE THE FILTER, NOT AFTER. `workflowIds[i]` and
+ * `form.formats[i]` are written together and in the same order (see the App's
+ * record write), so the pairing has to be taken at the `workflowIds` index — the
+ * `.filter` that drops workflows the live page does not carry would otherwise shift
+ * every later one. See {@link HistoryEntry.imageLabels}.
+ *
+ * 🔴 THE PAIRING IS ONLY AS GOOD AS THE WRITER, AND AN OLD ROW'S IS KNOWN WRONG.
+ * Records written before the two lists came off the same `submitted` array recorded
+ * `workflowIds` in COMPLETION order while `form.formats` held the ESTIMATE
+ * SURVIVORS in selection order. Measured against the released writer at `a6aae56`:
+ * `workflowIds = submittedIds` (pushed as each submit resolved) and
+ * `form.formats = formats.filter(viable)`, so such a row can carry MORE FORMATS
+ * THAN IDS — one submit failure shifts every later label by one — and a batch whose
+ * second format replied first pairs the two the wrong way round. Neither is
+ * repairable from the row: nothing in it records which format each id came from.
+ * Those rows age out with the orchestrator's images; this is a stated limitation,
+ * not a guard.
+ *
+ * The `?.label ?? null` below is NOT that case and does not fix it. It is reached
+ * only by a row carrying FEWER formats than ids, which NO shipped writer produces
+ * (`|formats| >= |ids|` above, and they are equal from this change on). It is here
+ * because `parseRecord` validates the two lists SEPARATELY and never relates their
+ * lengths, so `joinHistory` has to stay total over every shape `parseRecord`
+ * accepts — without the `?.` such a row throws a TypeError out of the join, which
+ * is the renderer for the whole surface. A totality guard at a parse boundary, with
+ * no writer-side bug behind it; `null` is a filename without a slug, not a wrong
+ * slug (see `candidateFileName`).
  */
 export function joinHistory(
-  records: ReadonlyArray<{ key: string; record: GenerationRecord }>,
+  records: ReadonlyArray<StoredRecord>,
   workflows: readonly AppWorkflow[],
 ): HistoryEntry[] {
   const byId = new Map(workflows.map((w) => [w.workflowId, w]));
   return records.map(({ key, record }) => {
-    const found = record.workflowIds
-      .map((id) => byId.get(id))
-      .filter((w): w is AppWorkflow => w !== undefined);
+    type Pair = { w: AppWorkflow; label: string | null };
+    const paired = record.workflowIds
+      .map((id, i): Pair | null => {
+        const w = byId.get(id);
+        // `formats[i]` absent means a row with FEWER formats than ids, which no
+        // shipped writer produces — `parseRecord` simply never relates the two
+        // lengths, so the `?.` is what keeps this total. See the block above.
+        return w === undefined ? null : { w, label: record.form.formats[i]?.label ?? null };
+      })
+      .filter((p): p is Pair => p !== null);
+    const found = paired.map((p) => p.w);
     const costs = found.filter((w) => typeof w.cost === 'number' && Number.isFinite(w.cost));
     return {
       key,
@@ -295,6 +400,7 @@ export function joinHistory(
       workflows: found,
       status: batchStatus(found),
       imageUrls: found.flatMap((w) => w.images.map((i) => i.url)),
+      imageLabels: paired.flatMap((p) => p.w.images.map(() => p.label)),
       cost: costs.length === 0 ? null : costs.reduce((sum, w) => sum + (w.cost as number), 0),
       unavailable: found.length === 0,
       cancellableIds: found
@@ -302,6 +408,168 @@ export function joinHistory(
         .map((w) => w.workflowId),
     };
   });
+}
+
+// ---------------------------------------------------------------------------
+// THE APP'S OWN VIEW OF THE WORKFLOWS IT IS DRIVING RIGHT NOW.
+//
+// 🔴 WHY THIS EXISTS, AND IT IS NOT A CACHE. `useAppWorkflows()` is A PAGE THAT
+// WAS FETCHED EARLIER. A batch submitted a moment ago is not in it, `refetch()`
+// is not synchronous with our own poll loop, and a host may page it out entirely.
+// Without a second source the row for the batch the viewer JUST PAID FOR joins to
+// nothing, so it renders `unavailable` — no status, no images, no cost — while the
+// app is holding that workflow's own snapshot in its hands. Worse, `orphanedKeys`
+// would then see a record inside the fetched window matching no live workflow and
+// DELETE it.
+//
+// So every snapshot the app receives from `submit()`/`poll()` is folded into a map
+// keyed by workflowId and merged into the live page before the join. The map is
+// CUMULATIVE for the session and is deliberately NOT cleared by a new Generate:
+// clearing it is exactly how the previous batch's images disappeared the moment
+// the next click started.
+// ---------------------------------------------------------------------------
+
+/** Workflow statuses that cannot change again. Used to stop a merge regressing one. */
+const TERMINAL_WORKFLOW_STATUSES: ReadonlySet<AppWorkflow['status']> = new Set([
+  'succeeded',
+  'failed',
+  'expired',
+  'canceled',
+]);
+
+/**
+ * Fold ONE snapshot the app received itself into its map of driven workflows.
+ *
+ * `createdAt` is stamped on FIRST SIGHT and never moved, because a snapshot does
+ * not carry one. That only ever feeds {@link oldestWorkflowTime}, where "now" is
+ * the newest possible value and therefore cannot loosen the prune bound.
+ *
+ * `imageUrls` is passed in (rather than read off the snapshot) so this shares
+ * generation.ts's ONE extractor — `imageUrlsFrom` — instead of re-deriving which
+ * field the host put the urls in.
+ */
+export function upsertOwnWorkflow(
+  current: Readonly<Record<string, AppWorkflow>>,
+  snapshot: BlockWorkflowSnapshot,
+  imageUrls: readonly string[],
+  nowIso: string,
+): Record<string, AppWorkflow> {
+  const id = snapshot.workflowId;
+  if (!id) return current as Record<string, AppWorkflow>;
+  const previous = current[id];
+  const next: AppWorkflow = {
+    workflowId: id,
+    status: snapshot.status,
+    // An empty image list on a `pending` poll must not erase urls a previous
+    // snapshot already delivered.
+    images:
+      imageUrls.length > 0
+        ? imageUrls.map((url) => ({ url, width: null, height: null, nsfwLevel: null }))
+        : (previous?.images ?? []),
+    // Same rule for the price: only a number the SERVER sent replaces one it sent
+    // before. `null` here means "not told yet", never "free".
+    cost: snapshot.cost?.total ?? previous?.cost ?? null,
+    createdAt: previous?.createdAt ?? nowIso,
+  };
+  return { ...current, [id]: next };
+}
+
+/**
+ * The live half, widened by what the app knows itself: the fetched page, plus our
+ * own rows for workflows the page does not carry, plus a FIELD-WISE fill-in where
+ * both have the same workflow.
+ *
+ * 🔴 THE MERGE IS MONOTONIC — it can only ever ADD information, which is what
+ * makes it safe to run on every render. Three clauses, each with a reason:
+ *
+ *   images  the page's list wins when it is non-empty; ours fills an empty one.
+ *           A page fetched before the generation finished has no images for it,
+ *           and dropping ours there hides output the viewer PAID for.
+ *   cost    the page's number wins when it has one; ours fills a `null`. BOTH are
+ *           the server's own figure (`snapshot.cost.total` / the projection), so
+ *           neither is an estimate — see aggregateSpend's note on why an estimate
+ *           may never stand in for a realized cost.
+ *   status  a TERMINAL status wins over a non-terminal one, whichever side holds
+ *           it. A stale page saying `processing` about a workflow we have already
+ *           watched succeed would show a permanent skeleton; the reverse (our
+ *           `pending` against the page's `succeeded`) is the same error mirrored.
+ *
+ * `createdAt` always comes from the page when it has the row: it is the real one.
+ */
+export function mergeLiveWorkflows(
+  page: readonly AppWorkflow[],
+  own: Readonly<Record<string, AppWorkflow>>,
+): AppWorkflow[] {
+  const merged = page.map((w) => {
+    const mine = own[w.workflowId];
+    if (!mine) return w;
+    const pageTerminal = TERMINAL_WORKFLOW_STATUSES.has(w.status);
+    const mineTerminal = TERMINAL_WORKFLOW_STATUSES.has(mine.status);
+    return {
+      ...w,
+      status: !pageTerminal && mineTerminal ? mine.status : w.status,
+      images: w.images.length > 0 ? w.images : mine.images,
+      cost: w.cost != null ? w.cost : mine.cost,
+    };
+  });
+  const seen = new Set(page.map((w) => w.workflowId));
+  for (const w of Object.values(own)) if (!seen.has(w.workflowId)) merged.push(w);
+  return merged;
+}
+
+/**
+ * Should the history surface be rendered AT ALL?
+ *
+ * 🔴 ONLY THE `ready`-AND-EMPTY CASE HIDES, and the other states are not
+ * "empty with a different message" — each is ACTIONABLE and each names a
+ * different fix: sign in ('anon'), grant storage ('denied'), retry ('error'),
+ * wait ('loading'). Hiding those would delete the only thing on screen that tells
+ * the viewer why they have no history.
+ *
+ * A `note` keeps the surface up even when ready-and-empty, because the notes this
+ * surface carries are about the run that JUST happened — "too large to save",
+ * "wasn't saved to history" — and a note that vanishes with its container is a
+ * message nobody reads.
+ */
+export function showHistory(args: {
+  state: 'loading' | 'ready' | 'anon' | 'denied' | 'error';
+  entryCount: number;
+  note: string | null;
+}): boolean {
+  if (args.state !== 'ready') return true;
+  if (args.entryCount > 0) return true;
+  return args.note != null;
+}
+
+/**
+ * How many skeleton tiles a still-running batch should show: one per image it is
+ * expected to produce, i.e. quantity × formats, minus whatever has already landed.
+ *
+ * 🔴 FORMATS AND QUANTITY MULTIPLY — the same arithmetic the cost disclosure
+ * makes. A skeleton count of 1 for a 3-format × 2-image run would understate what
+ * is coming, which on this surface is a claim about what was paid for.
+ *
+ * Neither factor is floored at 1, and the two reasons are NOT the same strength —
+ * the sentence here used to blur them:
+ *
+ *  - `formats` is guaranteed by the PARSE BOUNDARY: `parseRecord` refuses a record
+ *    whose `formats` is empty, so no row that reaches this function can carry 0.
+ *  - `quantity` is guaranteed by the WRITER ONLY. `parseRecord` does not validate it
+ *    at all: it checks `form.formats` and `form.checkpoint` and then casts the rest of
+ *    `form` unchecked (see that function) — so the claim is about
+ *    `formSnapshot`, which passes `quantity` through `clampQuantity`
+ *    (`QUANTITY_MIN` = 1) before it is stored. No shipped writer produces
+ *    `quantity === 0`; a hand-written row could.
+ *
+ * A `Math.max(1, …)` is still the wrong answer to the second one: it would invent a
+ * skeleton for a row that claims no images, on a surface where the tile count is a
+ * claim about what was paid for. If `quantity` ever has to be trusted from
+ * unvalidated JSON, the fix belongs in `parseRecord`, with the rest of the
+ * validation, not in a floor here.
+ */
+export function skeletonCount(record: GenerationRecord, alreadyLanded: number): number {
+  const expected = record.form.formats.length * record.form.quantity;
+  return Math.max(0, expected - Math.max(0, alreadyLanded));
 }
 
 /**
@@ -325,7 +593,7 @@ export function joinHistory(
  * separates them.
  */
 export function orphanedKeys(
-  records: ReadonlyArray<{ key: string; record: GenerationRecord }>,
+  records: ReadonlyArray<StoredRecord>,
   workflows: readonly AppWorkflow[],
   oldestFetchedAt: number | null,
 ): string[] {
