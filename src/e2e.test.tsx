@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -89,11 +89,24 @@ describe('App money path (e2e)', () => {
     const result = await screen.findByAltText(/generated result/i, {}, { timeout: 5000 });
     expect(result).toBeInTheDocument();
 
-    // The succeeded snapshot's cost + funded-from note render (blue-only wallet
-    // -> primary funder is blue).
-    const spent = screen.getByTestId('pm-spent');
-    expect(spent).toHaveTextContent('8');
-    expect(spent).toHaveTextContent(/from your blue account/i);
+    // 🔴 THE COST AND THE FUNDING POOL MOVED ONTO THE HISTORY ROW. The `pm-spent`
+    // "Done — spent 8 Buzz from your Blue account" alert is gone in every state, and
+    // the two facts it carried are now on the row beside the picture they paid for —
+    // which is where they survive the next Generate click. Asserted as a PAIR so the
+    // removal cannot pass by the information simply disappearing.
+    expect(screen.queryByTestId('pm-spent')).not.toBeInTheDocument();
+    const cost = await screen.findByTestId('yt-history-cost');
+    expect(cost).toHaveTextContent('8');
+    // The pool is read from the stored record, which this app PATCHES after the
+    // succeeded snapshot reports `spentAccountType` — so this line also proves that
+    // round trip, not just the rendering. A blue-only wallet -> primary funder blue.
+    await waitFor(() =>
+      expect(within(cost).getByTestId('yt-history-bolt')).toHaveAttribute(
+        'data-buzz-type',
+        'blue',
+      ),
+    );
+    expect(cost).toHaveTextContent(/from your blue balance/i);
 
     // No ERROR alert surfaced on the happy path.
     expect(screen.queryByText(/generation failed/i)).not.toBeInTheDocument();
@@ -138,7 +151,19 @@ describe('App money path (e2e)', () => {
     // pick wiring). The funder note reflects the wallet's primary funder — yellow
     // here — which the mock host stamps natively from `buzzBalance`.
     expect(submittedBodies.at(-1)?.accountType).toBe('yellow');
-    expect(screen.getByTestId('pm-spent')).toHaveTextContent(/from your yellow account/i);
+    // The funder reaches the HISTORY ROW now (see the case above). `yellow` here vs
+    // `blue` there is what makes this a claim about the pool rather than about a
+    // constant: the two cases differ only in the wallet, and they report different
+    // pools.
+    expect(screen.queryByTestId('pm-spent')).not.toBeInTheDocument();
+    const cost = await screen.findByTestId('yt-history-cost');
+    await waitFor(() =>
+      expect(within(cost).getByTestId('yt-history-bolt')).toHaveAttribute(
+        'data-buzz-type',
+        'yellow',
+      ),
+    );
+    expect(cost).toHaveTextContent(/from your yellow balance/i);
   });
 
   /**

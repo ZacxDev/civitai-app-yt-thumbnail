@@ -28,12 +28,24 @@ restores from a pristine copy). Re-derive it from the table below if needed.
   case reused an id already in the list; the Generate-button price test used
   33/66 rather than a value a single-run mutant could also produce).
 
-## Results — 11 mutants, 11 killed, 0 survived
+## Results — 10 mutants, 10 killed, 0 survived
+
+> 🔴 **M2 IS WITHDRAWN, NOT RE-RUN.** It read "`aggregateSpend` falls back to the
+> **estimate** when no actual cost is known", killed by `multiworkflow.test.ts`'s
+> "🔴 NEVER falls back to the estimate when no run reported a cost". `aggregateSpend`
+> was deleted with the `pm-spent` alert and that test was deleted with it, so the row
+> certified a mutant against a test that no longer exists — a worse state than no row,
+> because it reads as coverage. The RULE survived the deletion: `joinHistory` sums only
+> finite `AppWorkflow.cost` values and renders `—` when nothing reported one, and
+> `history.ts`'s `mergeLiveWorkflows` note states why an estimate may never stand in for
+> a realized cost. That rule's own coverage is in `history.test.ts`, under
+> `joinHistory`; it has NOT been mutation-graded, and this note does not claim it has.
+> The count above is 10 because M2 is gone, not because a mutant was re-numbered.
 
 | # | Mutation | Killed by |
 |---|---|---|
 | M1 | `sharedValueForFormat` puts the suffix in **`data`** instead of `body` | `formats.test.ts` "puts the suffix in \`body\`, NEVER in \`data\`"; `App.formats.test.tsx` "appends \`{title, body}\` … NO user text in \`data\`" (3 red) |
-| M2 | `aggregateSpend` falls back to the **estimate** when no actual cost is known | `multiworkflow.test.ts` "🔴 NEVER falls back to the estimate when no run reported a cost" (1 red) |
+| ~~M2~~ | *withdrawn — see the note above. The function and its killing test were both deleted.* | — |
 | M3 | `overallPhase` ranks **failure above success** | `multiworkflow.test.ts` "🔴 lets SUCCESS outrank FAILURE — the partial-failure contract" (1 red) |
 | M4 | `ACCOUNT_DEFAULT_ORDER` reversed to yellow → green → blue | 5 ladder cases in `multiworkflow.test.ts` **plus** the e2e wire assertion "defaults to the first sufficient pool (blue) and threads it on the body" (6 red) |
 | M5 | `composePrompt` clamps naively, dropping the paid-for suffix on overflow | `multiworkflow.test.ts` "🔴 RESERVES room for the suffix, trimming the USER prompt instead" (1 red) |

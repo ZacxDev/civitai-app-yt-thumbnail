@@ -254,9 +254,15 @@ format's images right. Those rows age out with the orchestrator's images.
 ### Partial failure
 
 With N workflows, some can fail while others succeed — the normal case, not an
-edge. A failed format does not discard its siblings' results, and the "Spent"
-line is summed **from what the server actually reported**, never from the
-estimate (which would cover workflows that never ran).
+edge. A failed format does not discard its siblings' results, and the realized cost is
+summed **from what the server actually reported**, never from the estimate (which would
+cover workflows that never ran).
+
+That figure used to live in a "Spent X Buzz" alert (`pm-spent`) beside the Generate
+button; it is now the history row's own cost cell, where `joinHistory` applies the
+identical rule to the identical server figures (only finite `AppWorkflow.cost` values
+are summed; nothing reported ⇒ `—`). `aggregateSpend` and `runCandidates` were deleted
+with the alert rather than left as a second, uncalled answer to one money question.
 
 ### The live cost estimate (priced before anything is at stake)
 
@@ -291,9 +297,51 @@ including it would fire a request per keystroke to learn nothing. The Buzz accou
 out too: it decides *whose* Buzz is debited, not *how much*.
 
 The Generate button and the Buzz picker read **one expression** (`estimatedCost`),
-sourced from the in-flight run's `runs` while a click is in flight and from the
-preview otherwise — so changing an input after a finished run re-prices the button
-instead of leaving the last run's bill on it.
+sourced from the in-flight run's `runs` while a click is still being **placed** and from
+the preview otherwise — so changing an input after a finished run, *or during a poll*,
+re-prices the button instead of leaving the last run's bill on it.
+
+### The form stays live while a generation runs
+
+🔴 **Only the window in which a click is still being PLACED is locked.** The gate is
+`isSubmittingPhase` — `estimating | submitting` — not the old `isBusyPhase`, which also
+covered `polling` and therefore froze the mode toggle, the format controls, the composed-
+prompt boxes, the quantity dropdown, the Buzz picker **and** Generate for the entire
+30–90s a generation takes. That bought no safety: `runGeneration` builds every wire body
+from **one** `formSnapshot` closure taken at click time, and the history record is written
+from that same closure, so nothing the form does afterwards can reach a workflow that has
+already been submitted. `overallPhase` ranks `submitting` above `polling`, so a
+multi-format batch does not re-open the form until every one of its workflows is placed.
+
+🔴 **And that gate is only shut if nothing else can re-open it.** `yt-history-resume`
+("Reuse settings") is never disabled and clears the run table, which dropped
+`overallPhase` to `idle` and re-enabled Generate while the first batch's `submit()` was
+still open — a measured double submit, both batches charged. `onResume` now **refuses**
+while `isSubmittingPhase` holds, reading the same predicate the button does, and says so
+in the history note. It stays live through `polling`, which is the window the operator
+deliberately left clickable.
+
+🔴 **What makes a SECOND batch safe is not that gate — it is the batch-token split.** The
+old single `{ cancelled }` token answered two different questions with "stop", which was
+only correct because the form was dead through `polling` and so neither was reachable.
+They are now separate:
+
+| question | mechanism | who sets it |
+|---|---|---|
+| is this the **current** batch — may it still submit, and does `runs` belong to it? | the token's `cancelled`, and `currentBatchRef.current === tok` | `switchMode` and `onResume` cancel (neither has spent anything yet); every new `runGeneration` takes ownership |
+| is the component mounted? | `unmountedRef` | the mount effect, which **resets it on setup as well as setting it in cleanup** — without the reset it latches under `<StrictMode>`, which is what `main.tsx` mounts |
+
+A separate `batchAbortRef` used to hold the token for the first question. It was assigned
+the same token on the same two lines and its only two readers nulled `currentBatchRef` on
+the very next line, so the pair could never disagree about anything observable; it is
+deleted rather than kept as a second name for one fact.
+
+A **superseded** batch therefore keeps polling and keeps folding its snapshots into
+`ownWorkflows` (keyed by workflowId, monotonic, collision-free), so its own history row
+still fills in with the pictures and the price the viewer **already paid for** — while
+only the current batch may write `runs`, which is keyed by *formatId* and which two
+batches can both hold. Starting a second batch used to set `cancelled` on the first: an
+invisible data-loss bug before, because a second Generate was impossible.
 
 ### One results + history surface
 
@@ -307,11 +355,58 @@ no way back until a reload.
 The fix is structural rather than a longer-lived `runs`: the batch record is inserted
 into the history list **as soon as workflow ids exist** (before the storage round
 trip), so an in-flight batch *is* the newest history row and fills in from skeleton to
-pictures where it stands. Rows are a responsive grid on the same `layoutForTier` column
-count the images use, a running batch renders `skeletonCount` tiles (`formats ×
+pictures where it stands. A running batch renders `skeletonCount` tiles (`formats ×
 quantity` minus what has landed), and the editor entry point ("Add text") moved onto the
-row with the images. `src/history.ts` and `src/History.tsx` carry the reasoning for each
-rule; it is **not** restated here.
+row with the images — as an **icon button** carrying its wording in `title` +
+`aria-label`, because the UI pack ships no `Tooltip` and no icon set, so those two
+attributes are the only hover affordance and the only accessible name an icon-only
+control has. `src/history.ts` and `src/History.tsx` carry the reasoning for each rule; it
+is **not** restated here.
+
+🔴 **The row layout REVERSED, and the old rule was a real compounding bug.** This
+paragraph used to say "rows are a responsive grid on the same `layoutForTier` column
+count the images use". They were — and because `History.tsx` applied that count at BOTH
+levels (a grid of batch rows, and a grid of images inside each row) the counts
+**multiplied**: 3 × 3 at `lg` made every thumbnail a ninth of the main column, and 4 × 4
+on an ultrawide block made it a sixteenth — about an 85px-wide 16:9 tile on a 1920px
+screen. Each level was individually correct, which is why a per-tier assertion could not
+see it. Now: rows are **full width at every tier**, and the thumbnail grid is
+**intrinsically sized** — `repeat(auto-fill, minmax(min(IMAGE_MIN_PX, 100%), 1fr))`, the
+same shape the format grid already used — so there is no tier arithmetic left to get
+wrong, including at a tier the SDK adds above `xl` later. `layout.resultColumns` is gone
+with it: nothing laid out from a column count any more. The skeleton grid shares the
+**same** helper call, so a landing picture cannot reflow its own row.
+
+🔴 **The `min(…, 100%)` on that floor is the narrow-tier fix, and the sentence it
+replaces was wrong in the useful direction.** This paragraph used to claim "no width at
+which a tile can be narrower than the floor" — which is exactly the bug: a bare
+`minmax(300px, 1fr)` is a HARD lower bound, so `auto-fill` drops to one column and then
+stops, and a container narrower than 300px gets a 300px track plus a horizontal
+overflow. Content width here is blockWidth − 68 (two 24px shell insets, two 10px panel
+insets), so a 360px phone has ~292px and the suite's own 361px base fixture has 293px.
+Clamping the floor to the container is the standard spelling. **Not visually verified:**
+jsdom lays nothing out, so the tests assert the style string and no test has seen the
+grid render inside 293px.
+
+🔴 **The per-row status badge is gone, in ALL states, by an explicit product decision —
+and it has a cost worth knowing.** A FAILED batch now looks much like a succeeded one at
+a glance. What distinguishes them: the cost cell renders `—` for a batch that never
+reported a realized price, the `yt-history-unavailable` line names a batch whose images
+aged out, and the `pm-partial` alert beside Generate still names each format that failed
+and why. `batchStatusLabel`/`batchStatusColor` were deleted with the badge;
+`batchStatus` itself stays, because it decides skeletons and the unavailable line.
+
+🔴 **The realized cost carries its funding pool, and the `pm-spent` alert is gone.**
+The row shows the server's number, a bolt tinted by the Buzz pool that primarily funded
+the batch (`BUZZ_TYPE_COLOR` — the same component the Buzz picker uses), and a
+screen-reader sentence spelling out "N Buzz from your &lt;pool&gt; balance" so the number is
+never read bare. The pool cannot be known at write time — the record is written the
+moment workflow ids exist, while `spentAccountType` arrives on a succeeded snapshot — and
+`AppWorkflow` carries no funding field at all, so it is **patched onto the record**
+afterwards (`spendPatches`). That is what makes removing the alert an information MOVE
+rather than a loss: the alert lived in `runs` and died on the next click, the record
+survives a reload. A record written before the field existed renders a **neutral** bolt,
+never a guessed pool.
 
 Three consequences of making this the results surface are worth stating once, because
 each of them was a bug first:

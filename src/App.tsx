@@ -40,7 +40,6 @@ import {
   QUANTITY_MIN,
   accountLabel,
   aggregateEstimate,
-  aggregateSpend,
   clampQuantity,
   clearPromptEdit,
   effectivePrompt,
@@ -50,7 +49,7 @@ import {
   hasBudgetedScope,
   imageUrlsFrom,
   initRuns,
-  isBusyPhase,
+  isSubmittingPhase,
   isPartialFailure,
   isPromptEdited,
   overallPhase,
@@ -61,9 +60,7 @@ import {
   promptFieldValue,
   promptWasTruncated,
   promptsReadyToSubmit,
-  runCandidates,
   setPromptEdit,
-  spentAccountLabel,
   submitErrorReason,
   isTerminalStatus,
   type AccountChoice,
@@ -132,6 +129,7 @@ import {
   orphanedKeys,
   parseRecord,
   recordFits,
+  spendPatches,
   upsertOwnWorkflow,
   type GenerationForm,
   type GenerationRecord,
@@ -139,8 +137,9 @@ import {
   type StoredRecord,
 } from './history.js';
 import { HistorySurface } from './History.js';
+import { BuzzBolt, Chevron } from './icons.js';
 import { layoutForTier, type BlockLayout } from './layout.js';
-import { BUZZ_TYPE_COLOR, paletteFor, parseHex, type Palette } from './palette.js';
+import { paletteFor, parseHex, type Palette } from './palette.js';
 import { fieldDescStyle, fieldLabelStyle, fieldStyle, panelRowStyle } from './ui-styles.js';
 import { useUltrawide } from './useUltrawide.js';
 
@@ -155,6 +154,23 @@ import { useUltrawide } from './useUltrawide.js';
  * checkpoint/LoRA picks, and the Buzz account picker; only the body differs.
  */
 type GenMode = 'generate' | 'remix';
+
+/**
+ * One Generate click's identity, as an object whose REFERENCE is the identity.
+ *
+ * Two questions are asked of it and they are NOT the same question — see the two refs
+ * in `App` (`currentBatchRef` / `unmountedRef`) for why collapsing them into one
+ * `cancelled` boolean was what made a second Generate during polling unsafe:
+ *
+ *   `cancelled`   this batch may no longer SUBMIT (nothing spent yet, so dropping it
+ *                 is free). Set by `switchMode` and `onResume`.
+ *   identity      `currentBatchRef.current === tok` decides whether this batch still
+ *                 owns the `runs` table. A superseded batch keeps POLLING — it has
+ *                 been charged for — but stops writing `runs`.
+ */
+interface BatchToken {
+  cancelled: boolean;
+}
 
 /**
  * How long the live cost preview waits after the last price-relevant change before
@@ -411,6 +427,29 @@ export function App() {
    * come after it — see `classifyStorageError`'s note on declaration order.
    */
   const historyOwnerRef = useRef<number | null>(null);
+  /**
+   * Keys whose spent-pool patch has a storage `set` IN FLIGHT.
+   *
+   * 🔴 THE CYCLE-BREAKER, AND IT HAS TO BE A REF. The effect that writes these patches
+   * depends on `historyRecords` and its own `.then` SETS `historyRecords`, so every
+   * unrelated change to the list — a prune, a reload, the Show toggle — recomputed the
+   * same patch set and re-issued a write whose first copy was still open (measured:
+   * three `set` calls for one row). The memory patch cannot land any sooner, because it
+   * IS what the `.then` does, so the only place to break the loop is here. State would
+   * not do: writing it would retrigger the very effect it is damping.
+   */
+  const spendWritesRef = useRef<Set<string>>(new Set());
+  /**
+   * Keys whose saved-size note has already been shown this session.
+   *
+   * A `tooLarge` patch is never written, so storage never carries the pool and the
+   * patch is recomputed identically by every later `loadHistory` — the Show toggle, the
+   * panel's Refresh. Without this the note re-raised on each one, clobbering whatever
+   * note the panel was showing. A ref for the same reason as `spendWritesRef`: state
+   * here would retrigger the effect that sets it. Session-scoped deliberately, so a
+   * reload does tell the viewer once more.
+   */
+  const spendSizeNotedRef = useRef<Set<string>>(new Set());
   /** The unsaved map as the list shape everything else here speaks. */
   const unsavedRecords = useCallback(
     (): StoredRecord[] => [...unsavedRecordsRef.current].map(([key, record]) => ({ key, record })),
@@ -460,8 +499,8 @@ export function App() {
    *
    * 🔴 IT IS A SEPARATE ARRAY FROM `runs`, NOT AN EARLY WRITE INTO IT. `runs` is
    * the money-path state machine: `overallPhase` reads it to decide whether the
-   * page is busy, and `runCandidates`/`aggregateSpend` read it for what was
-   * delivered and charged. Priming it with preview rows would put the button into
+   * click is still being placed, and `failedRuns`/`isPartialFailure` read it for
+   * what did not finish. Priming it with preview rows would put the button into
    * `estimating` with nothing in flight and let a preview's `null` cost look like
    * a failed estimate on a real run.
    */
@@ -501,6 +540,22 @@ export function App() {
    * effect, not to re-tune this.
    */
   const [ownWorkflows, setOwnWorkflows] = useState<Record<string, AppWorkflow>>({});
+  /**
+   * workflowId -> the Buzz pool the server said PRIMARILY funded it.
+   *
+   * 🔴 THIS MAP EXISTS BECAUSE THE LIVE HALF CANNOT CARRY THE ANSWER AND THE STORED
+   * HALF CANNOT KNOW IT AT WRITE TIME. `AppWorkflow` has no funding field at all —
+   * the host drops "transactions" from the projection on purpose — so the ONLY
+   * source is `BlockWorkflowSnapshot.spentAccountType`, which arrives on a SUCCEEDED
+   * snapshot this app polled for itself. Meanwhile the history record is written the
+   * moment workflow ids exist, long before anything has run. So the pool is learned
+   * here and then PATCHED onto the record (see the effect below), which is what
+   * makes it survive a reload instead of living only for this session.
+   *
+   * Session-scoped and never cleared, for the same reason `ownWorkflows` is not: a
+   * second Generate must not erase what we know about the first batch.
+   */
+  const [spentPools, setSpentPools] = useState<Record<string, BuzzAccountType>>({});
   // True once the viewer has picked a Buzz account themselves. Until then the
   // app is free to apply the blue -> green -> yellow default on their behalf;
   // after it, their choice is never silently overwritten.
@@ -546,8 +601,45 @@ export function App() {
   // True once the user clicked Generate while the scope was missing — so when
   // the consent grant lands (granted flips true) we auto-resume the submit.
   const consentPendingRef = useRef(false);
-  // Cancellation token for the in-flight poll loop.
-  const pollCancelRef = useRef<{ cancelled: boolean } | null>(null);
+  /**
+   * 🔴 TWO FLAGS WHERE THERE USED TO BE ONE, AND THE SPLIT IS WHAT MAKES THE FORM SAFE
+   * TO LEAVE LIVE DURING POLLING. The single `{ cancelled }` token answered two
+   * different questions with "stop", which was correct only because the form — and
+   * therefore every way of asking them — was dead through `polling`. With the form live
+   * they are both reachable and they want different answers:
+   *
+   *   1. IS THIS THE CURRENT BATCH — may it still SUBMIT, and does `runs` belong to it?
+   *      `currentBatchRef`. Its token's `cancelled` is set by `switchMode` and
+   *      `onResume`, which both mean "forget the request I was assembling": a batch
+   *      aborted there has spent NOTHING, so abandoning it is free, and NOT abandoning
+   *      it would submit and charge for a request the viewer was just told was not
+   *      submitted. The ref's IDENTITY (`currentBatchRef.current === tok`) is the other
+   *      half of the same fact — a SUPERSEDED batch keeps polling, because its history
+   *      row is filling in with pictures the viewer has ALREADY PAID FOR, but may no
+   *      longer write `runs`, which is keyed by formatId and which both batches can hold
+   *      the same id in.
+   *   2. IS THE COMPONENT STILL MOUNTED?  `unmountedRef`. The only thing that genuinely
+   *      stops a poll loop: there is no tree left to update. It is a BOOLEAN and not a
+   *      token precisely because N batches can be polling and a per-batch token cannot
+   *      stop loops it does not own.
+   *
+   * 🔴 THERE WAS A SEPARATE `batchAbortRef` HERE FOR QUESTION 1a AND IT IS DELETED. Both
+   * refs were assigned the same token on the same two lines of `runGeneration`, and the
+   * only two readers of `batchAbortRef` (`switchMode`, `onResume`) nulled
+   * `currentBatchRef` on the very next line — so the pair could never disagree about
+   * anything a reader could observe. Two names for one fact is a second place for it to
+   * be got wrong, not a distinction.
+   *
+   * 🔴 A NEW BATCH NO LONGER ABORTS THE OLD ONE. That is the behaviour change. It used
+   * to, and the consequence was a row that STOPPED FILLING IN — no cost and no images
+   * for a generation that was still running and still being charged. Not permanent: the
+   * Show toggle and the history panel's Refresh both call `refetchWorkflows`, so a
+   * manual refresh picks the finished workflow up off the live page. Invisible before
+   * only because a second Generate was impossible.
+   */
+  const currentBatchRef = useRef<BatchToken | null>(null);
+  /** Unmounted — the one condition that stops a poll loop outright. */
+  const unmountedRef = useRef(false);
 
   // Latest poll fn in a ref so the poll loop always calls the current hook
   // instance without re-subscribing.
@@ -578,9 +670,29 @@ export function App() {
   const storageRef = useRef(storage);
   storageRef.current = storage;
 
+  // 🔴 ONE FLAG, NOT THE NEWEST BATCH'S TOKEN. Several batches can be polling at
+  // once now, and this ref used to set `cancelled` on whichever token it was holding
+  // — i.e. the newest — leaving every OTHER live loop running against an unmounted
+  // tree. A boolean every loop reads covers all of them, however many there are.
+  //
+  // 🔴 THE SETUP LINE IS NOT DEFENSIVE TIDYING — WITHOUT IT THE FLAG LATCHES AT MOUNT
+  // AND THE WHOLE GENERATE PATH IS DEAD. `main.tsx` renders its root inside
+  // `<StrictMode>` and all three `<App/>` paths are inside it, so React's dev build
+  // runs this effect setup -> cleanup -> setup on the SAME instance: the cleanup fires
+  // once at mount, and with nothing resetting the ref it stays `true` forever. It then
+  // gates `runGeneration`'s post-estimate return, so every click priced the request and
+  // submitted nothing. Measured: a bare `<App/>` reached submit, the identical render
+  // wrapped in `<StrictMode>` did not. A ref written only in a cleanup is a ref that
+  // cannot survive a remount of any kind — a future `key` change or an offscreen
+  // re-mount would do the same thing — so the reset belongs here whatever React's dev
+  // double-invoke does. StrictMode's double-invoke is DEV-ONLY, so this is not
+  // established as a production-bundle defect; it killed Generate in `dev`,
+  // `dev:harness`, `dev:live` and `dev:tunnel`, i.e. in every surface this app can be
+  // verified in before submitting.
   useEffect(() => {
+    unmountedRef.current = false;
     return () => {
-      if (pollCancelRef.current) pollCancelRef.current.cancelled = true;
+      unmountedRef.current = true;
     };
   }, []);
 
@@ -595,8 +707,9 @@ export function App() {
    * disagreeing and that has not changed with the preview.
    *
    * WHICH runs price it, and why each way round:
-   *   busy          -> `runs`. A click is in flight; its prices are what the server
-   *                    just quoted for the request actually being submitted.
+   *   submitting    -> `runs`. The click is still being PLACED; its prices are what
+   *                    the server just quoted for the request actually being sent,
+   *                    and the button is disabled anyway.
    *   otherwise     -> the preview, when there is one, so that changing the
    *                    checkpoint / LoRAs / quantity / formats AFTER a finished run
    *                    re-prices the button instead of leaving the last run's bill
@@ -606,11 +719,20 @@ export function App() {
    *                    i.e. EXACTLY today's unpriced button. `estimate()` 403s
    *                    without the scope, so they never get a preview and must not
    *                    be prompted for consent to obtain one.
+   *
+   * 🔴 THE GATE IS `isSubmittingPhase`, NOT THE OLD `isBusyPhase`, AND THAT CHANGE IS
+   * LOAD-BEARING RATHER THAN COSMETIC. `isBusyPhase` also covered `'polling'`, which
+   * used to be harmless because the whole form — and the Generate button — was frozen
+   * through polling. The button is now CLICKABLE during polling, so pricing it from
+   * the in-flight batch's `runs` would quote the PREVIOUS click's bill for a request
+   * built from a form the viewer has since edited: the exact "preview quoting a price
+   * for a request that differs from the one Generate sends" this file forbids
+   * elsewhere. During polling the preview is the only honest source, because it
+   * tracks the form the next click will actually submit.
    */
-  const priceRuns = previewRuns.length > 0 && !isBusyPhase(overallPhase(runs)) ? previewRuns : runs;
+  const priceRuns =
+    previewRuns.length > 0 && !isSubmittingPhase(overallPhase(runs)) ? previewRuns : runs;
   const { total: estimatedCost, partial: estimatePartial } = aggregateEstimate(priceRuns);
-  const actualCost = aggregateSpend(runs);
-  const candidates = runCandidates(runs);
   const failed = failedRuns(runs);
   const partialFailure = isPartialFailure(runs);
 
@@ -759,13 +881,34 @@ export function App() {
     );
   }, []);
 
-  // Apply a (submit- or poll-returned) snapshot to ONE run's row.
-  //
-  // Always a FUNCTIONAL setState keyed on formatId: N workflows reply
-  // independently and out of order, so writing a whole precomputed array here
-  // would let a slow run's reply revert a fast run's result.
+  /**
+   * Apply a (submit- or poll-returned) snapshot to ONE run's row.
+   *
+   * Always a FUNCTIONAL setState keyed on formatId: N workflows reply
+   * independently and out of order, so writing a whole precomputed array here
+   * would let a slow run's reply revert a fast run's result.
+   *
+   * 🔴 `batch` IS THE TOKEN OF THE BATCH THIS SNAPSHOT BELONGS TO, AND IT SPLITS THE
+   * TWO WRITES BELOW — this is what makes a second Generate during polling safe.
+   * `ownWorkflows` is keyed by workflowId and is MONOTONIC, so folding a superseded
+   * batch's snapshot into it cannot collide with anything: that fold is what keeps
+   * the superseded batch's own history row filling in with its images and its price.
+   * `runs` is the opposite — ONE batch's table, keyed by formatId, and both batches
+   * can hold the SAME format id — so a late reply from batch 1 patching `runs` would
+   * show batch 1's result (or failure, or price) as batch 2's. Only the current batch
+   * may write it.
+   *
+   * The previous shape had no such split: a new batch set `pollCancelRef.current.cancelled`
+   * and the old loop simply STOPPED, which protected `runs` by abandoning the old
+   * batch's row — a batch the viewer had already paid for — with no cost and no images.
+   * Not permanently: `refetchWorkflows` runs on the Show toggle and on the history
+   * panel's Refresh, so a manual refresh picks the finished workflow up off the live
+   * page. The defect is that the row stopped filling in until the viewer went and asked
+   * again, which was invisible while the form was frozen through polling, because a
+   * second batch could not be started.
+   */
   const applySnapshotToRun = useCallback(
-    (formatId: string, snap: BlockWorkflowSnapshot) => {
+    (formatId: string, snap: BlockWorkflowSnapshot, batch: BatchToken) => {
       const next = phaseForSnapshot(snap);
       const urls = imageUrlsFrom(snap);
       // 🔴 EVERY snapshot the app sees is also folded into its OWN view of the live
@@ -780,6 +923,24 @@ export function App() {
       // was a second place for it to be got wrong.
       const nowIso = new Date().toISOString();
       setOwnWorkflows((cur) => upsertOwnWorkflow(cur, snap, urls, nowIso));
+      // 🔴 THE FUNDING POOL, RECORDED FOR EVERY BATCH INCLUDING A SUPERSEDED ONE.
+      // This is the only place `spentAccountType` reaches the app — the function used to
+      // read it TWICE, the second time into a `FormatRun.spentAccount` nothing consulted,
+      // and that field is deleted. The history row for a batch the viewer has already
+      // paid for must get it whether or not another batch has since started. Keyed by
+      // workflowId, so two concurrent batches cannot overwrite each other's answer;
+      // written only when the server actually sent one, so a `pending` poll cannot erase
+      // a known pool.
+      if (snap.workflowId && snap.spentAccountType) {
+        const id = snap.workflowId;
+        const pool = snap.spentAccountType;
+        setSpentPools((cur) => (cur[id] === pool ? cur : { ...cur, [id]: pool }));
+      }
+      // Only the CURRENT batch owns `runs` — see the header. `handleAccountRejected`
+      // is skipped here too, deliberately: it RESETS the picker to Auto and writes
+      // "switched back to Auto. Try again." into the error line, which a superseded
+      // batch has no business doing to a form the viewer is using for the next one.
+      if (currentBatchRef.current !== batch) return;
       setRuns((cur) =>
         patchRun(cur, formatId, {
           phase: next,
@@ -789,11 +950,6 @@ export function App() {
           // would erase a price we had already been told.
           ...(snap.cost?.total != null ? { actualCost: snap.cost.total } : {}),
           ...(urls.length > 0 ? { imageUrls: urls } : {}),
-          ...(next === 'succeeded'
-            ? // The pool that PRIMARILY funded this run (largest debit) — can be
-              // blue (free/earned), not necessarily the paid account.
-              { spentAccount: snap.spentAccountType ?? null }
-            : {}),
           ...(next === 'failed' || next === 'insufficient'
             ? { error: snap.error ?? 'Generation failed.' }
             : {}),
@@ -820,11 +976,22 @@ export function App() {
    * hits the occasional blip never accumulates toward the cap.
    */
   const runPollLoop = useCallback(
-    (formatId: string, workflowId: string, tok: { cancelled: boolean }) => {
-      // 🔴 The cancel token is PASSED IN, one per BATCH, not minted here. The
-      // single-workflow version replaced `pollCancelRef.current` on every call,
-      // which with N concurrent runs would mean each new poll loop cancelled its
-      // own siblings and only the last format ever finished.
+    (formatId: string, workflowId: string, tok: BatchToken) => {
+      // 🔴 The batch token is PASSED IN, one per BATCH, not minted here. The
+      // single-workflow version replaced the ref on every call, which with N
+      // concurrent runs would mean each new poll loop cancelled its own siblings and
+      // only the last format ever finished.
+      //
+      // 🔴 THIS LOOP STOPS ON UNMOUNT ONLY — NOT on `tok.cancelled`, and NOT when a
+      // newer batch starts. Once `workflowId` exists the viewer has been charged, so
+      // the snapshots this loop collects are the only thing that fills that batch's
+      // history row with its images and its realized price;
+      // `applySnapshotToRun` folds them into `ownWorkflows` (keyed by workflowId,
+      // monotonic, collision-free) regardless of which batch is current, and refuses
+      // to touch `runs` unless this batch still owns it. Abandoning the loop instead
+      // — which is what every pre-change caller of `cancelled` did — left a paid-for
+      // batch rendering as a skeleton with no cost until the viewer manually refreshed
+      // (the Show toggle and the panel's Refresh both call `refetchWorkflows`).
 
       // Backoff between normal (snapshot-returning) polls.
       const SCHEDULE_MS = [2000, 2000, 3000, 5000, 8000];
@@ -838,38 +1005,45 @@ export function App() {
       let consecutiveErrors = 0;
 
       const tick = async () => {
-        if (tok.cancelled) return;
+        if (unmountedRef.current) return;
         let snap: BlockWorkflowSnapshot;
         try {
           snap = await pollRef.current(workflowId);
         } catch {
           // Transient hiccup — retry with bounded backoff. A real terminal
           // failure surfaces as a 'failed'/'expired' snapshot, not a throw.
-          if (tok.cancelled) return;
+          if (unmountedRef.current) return;
           consecutiveErrors += 1;
           if (consecutiveErrors > MAX_TRANSIENT_ERRORS) {
             // Backend unreachable after repeated retries — surface a transport
             // error (distinct from a workflow failure) and stop. Scoped to THIS
             // run: the other formats' workflows are unaffected and may well
             // still be delivering.
-            setRuns((cur) =>
-              patchRun(cur, formatId, {
-                phase: 'failed',
-                error:
-                  "Couldn't reach the generation service after several retries. " +
-                  'This one may still be running — refresh to check.',
-              }),
-            );
+            //
+            // Gated on currency for the same reason every other `runs` write is: a
+            // SUPERSEDED batch's transport failure must not mark a format of the
+            // batch the viewer is now watching as failed. Its own history row still
+            // tells the truth — no cost, no images.
+            if (currentBatchRef.current === tok) {
+              setRuns((cur) =>
+                patchRun(cur, formatId, {
+                  phase: 'failed',
+                  error:
+                    "Couldn't reach the generation service after several retries. " +
+                    'This one may still be running — refresh to check.',
+                }),
+              );
+            }
             return;
           }
           const delay = RETRY_MS[Math.min(consecutiveErrors - 1, RETRY_MS.length - 1)];
           setTimeout(tick, delay);
           return;
         }
-        if (tok.cancelled) return;
+        if (unmountedRef.current) return;
         // A successful poll clears the transient-error streak.
         consecutiveErrors = 0;
-        applySnapshotToRun(formatId, snap);
+        applySnapshotToRun(formatId, snap, tok);
         if (isTerminalStatus(snap.status)) return;
         const delay = SCHEDULE_MS[Math.min(attempt, SCHEDULE_MS.length - 1)];
         attempt += 1;
@@ -948,11 +1122,18 @@ export function App() {
     // guard against a zero-workflow click that would "succeed" having spent 0.
     if (formats.length === 0) return;
 
-    // One cancel token for the WHOLE batch. Starting a new batch (or switching
-    // mode / unmounting) cancels every run's poll loop at once.
-    if (pollCancelRef.current) pollCancelRef.current.cancelled = true;
-    const tok = { cancelled: false };
-    pollCancelRef.current = tok;
+    // One token for the WHOLE batch: it decides whether this batch may still submit
+    // (`cancelled`, set by `switchMode`/`onResume`) and whether it owns `runs`.
+    //
+    // 🔴 IT DOES NOT CANCEL THE PREVIOUS BATCH, AND THAT IS THE POINT. It used to —
+    // `if (pollCancelRef.current) pollCancelRef.current.cancelled = true` — which was
+    // unobservable while the form was frozen through polling (a second Generate was
+    // impossible) and is a data-loss bug now that it is not: the previous batch is
+    // still running, still being charged, and its history row would stop filling in.
+    // The previous batch keeps its own token and keeps polling; it simply stops being
+    // `currentBatchRef`, which is all `runs` needs.
+    const tok: BatchToken = { cancelled: false };
+    currentBatchRef.current = tok;
 
     // The ONLY difference between the two modes is the body: a remix threads the
     // uploaded sourceImage (img2img); generate does not. The FORMAT's difference
@@ -993,7 +1174,14 @@ export function App() {
         }
       }),
     );
-    if (tok.cancelled) return;
+    // 🔴 THE ABORT GATE, AND IT IS SPECIFICALLY ABOUT NOT SPENDING. Nothing has been
+    // submitted yet, so `switchMode`/`onResume` setting `cancelled` during the
+    // estimate pass means "forget the request I was assembling" — and honouring it is
+    // what stops a resume that told the viewer "Nothing was submitted" from going on
+    // to submit and charge for the request they just abandoned. `unmountedRef` is the
+    // other way out. Compare `runPollLoop`, which deliberately ignores both but one:
+    // past this point money has been spent and the snapshots must still be collected.
+    if (tok.cancelled || unmountedRef.current) return;
 
     let priced = initRuns(formats).map((r) => ({ ...r, phase: 'estimating' as GenPhase }));
     for (const e of estimates) {
@@ -1053,14 +1241,24 @@ export function App() {
           // template and the server's reason rides on `.snapshot.error`.
           const msg = submitErrorReason(err);
           const failPhase = phaseForError(msg);
-          if (tok.cancelled) return null;
+          if (tok.cancelled || unmountedRef.current) return null;
           setRuns((cur) => patchRun(cur, fmt.id, { phase: failPhase, error: msg }));
           if (failPhase === 'account-rejected') handleAccountRejected();
           return null;
         }
-        if (tok.cancelled) return null;
+        // 🔴 NO ABORT CHECK BETWEEN THE `await submit()` AND THE LINES BELOW, AND
+        // THAT IS DELIBERATE. `submit()` RESOLVING means the orchestrator accepted
+        // the workflow and the viewer's Buzz is committed. Returning `null` here —
+        // which the pre-change code did — dropped that workflow id on the floor: it
+        // never reached `submittedIds`, so it was never written to the history record
+        // and nothing could ever join to it, poll it, cancel it or show its images.
+        // A paid-for generation with no row. Once the money is gone the only correct
+        // action is to record it — including on unmount, where the STORAGE write
+        // below is the half that still matters: the record outlives this component,
+        // and `applySnapshotToRun`/`runPollLoop` each no-op against a dead tree on
+        // their own `unmountedRef` check, so there is nothing left to guard here.
         // A host can return an instant terminal snapshot (cached / instant-fail).
-        applySnapshotToRun(fmt.id, snap);
+        applySnapshotToRun(fmt.id, snap, tok);
         if (!isTerminalStatus(snap.status) && snap.workflowId) {
           runPollLoop(fmt.id, snap.workflowId, tok);
         }
@@ -1289,12 +1487,26 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, granted, priceSignature]);
 
-  // Switch the generation path. Cancels every in-flight poll and clears the
-  // run table so a stale failure never shows under the new mode. The remix
-  // source is intentionally kept: it is harmless in the other mode (generate
-  // never threads it).
+  /**
+   * Switch the generation path, and clear the run table so a stale failure never
+   * shows under the new mode. The remix source is intentionally kept: it is harmless
+   * in the other mode (generate never threads it).
+   *
+   * 🔴 THE MODE TOGGLE IS NOW LIVE DURING POLLING, SO THIS HAD TO STOP KILLING THE
+   * IN-FLIGHT BATCH. It used to set `cancelled`, which was both reachable only when
+   * nothing was in flight (the control was disabled through `polling`) and, as
+   * written, a kill switch for every running poll loop. With the control live, a
+   * viewer lining up a remix while their txt2img batch generates would have silently
+   * frozen that batch's history row as a skeleton with no price.
+   *
+   * What it does instead: ABORT only work not yet submitted (`cancelled`, honoured in
+   * `runGeneration`'s estimate pass), and RELEASE `runs` (`currentBatchRef = null`) so
+   * a still-polling batch's late snapshots cannot write a run table that no longer
+   * describes them. Their own history row is unaffected and keeps filling in.
+   */
   const switchMode = useCallback((next: GenMode) => {
-    if (pollCancelRef.current) pollCancelRef.current.cancelled = true;
+    if (currentBatchRef.current) currentBatchRef.current.cancelled = true;
+    currentBatchRef.current = null;
     consentPendingRef.current = false;
     setMode(next);
     setRuns([]);
@@ -1749,6 +1961,124 @@ export function App() {
   }, [historyState, historyLoading, workflows, ownWorkflows, historyRecords]);
 
   /**
+   * Teach a stored record which Buzz pool funded it, once the server has said.
+   *
+   * 🔴 WHY A PATCH AND NOT A FIELD WRITTEN AT SUBMIT TIME. The record is written the
+   * moment workflow ids exist — before anything has RUN, which is the whole reason the
+   * viewer's images have a row to appear in — while the pool arrives on a SUCCEEDED
+   * snapshot seconds to minutes later (`spentAccountType`, collected into
+   * `spentPools`). And it cannot come from the live half at all: `AppWorkflow` carries
+   * no funding information, by design. So a second write is the only way the pool
+   * survives a reload, which is what makes removing the `pm-spent` alert an
+   * information MOVE rather than an information LOSS.
+   *
+   * 🔴 THE MEMORY PATCH IS UNCONDITIONAL; THE STORAGE WRITE IS BEST-EFFORT. A
+   * rejected write must not leave the row un-patched in memory, because then
+   * `spendPatches` would keep returning it and this effect would re-write on every
+   * dependency change forever. Patching memory regardless makes the function return
+   * `[]` on the next pass, which is what terminates it. A storage failure therefore
+   * costs the pool colour from the next reload ON — see the no-retry paragraph below for
+   * how long "on" really is — and nothing else: hygiene, like the prune above, so it is
+   * deliberately silent rather than a banner over images the viewer already owns.
+   *
+   * 🔴 THE CEILING IS RE-CHECKED HERE, AND IT WAS A SILENT WRITE LOSS BEFORE. A record
+   * inside the 64 KB per-value limit by fewer bytes than `,"spentAccount":"yellow"`
+   * costs FITS at submit and does not fit once this field is on it. `recordFits` was
+   * asked once, at submit; the host then rejected this write and the `.catch` swallowed
+   * the rejection, so the row lost its pool colour on the next reload with nothing on
+   * screen saying so. `spendPatches` now flags such a row (`tooLarge`), the doomed
+   * round trip is not made, and the viewer is told. This was written down as KNOWN AND
+   * ACCEPTED and the operator withdrew that acceptance for the SIZE cause.
+   *
+   * 🔴 ONLY THE SIZE CAUSE IS SURFACED — EVERY OTHER REJECTION IS STILL SWALLOWED, AND
+   * THAT IS THE DELIBERATE HALF, NOT AN OVERSIGHT. The `.catch(() => undefined)` below
+   * is unchanged, so a quota, transport or scope rejection of this `set` still costs the
+   * row its pool colour with nothing on screen saying so. That is the trade in the
+   * paragraph above — not a banner over images the viewer already owns, for a colour.
+   * Size is treated differently only because it is PREDICTABLE: `recordFits` knows
+   * before the round trip, so the viewer can be told without the app guessing at a
+   * rejection it has not had. So "silent data loss is not an accepted cost" holds for
+   * the size case and is NOT a claim about every way this write can fail.
+   *
+   * 🔴 AND THE LIST IS NO LONGER ITS OWN TRIGGER FOR A WRITE ALREADY IN FLIGHT.
+   * `historyRecords` is both a dependency of this effect and what its `.then` sets, so
+   * anything that changed the list — a prune, a reload, the Show toggle — recomputed the
+   * same patch set and re-issued writes whose first copies were still open (measured:
+   * three `set` calls for one row). `spendWritesRef` holds the keys with a write in
+   * flight and they are skipped, which breaks the cycle at the only place it can be
+   * broken: the memory patch cannot land sooner, because it is what the `.then` does.
+   * The key is released in the same `.then` whatever the write's outcome, so a failure
+   * cannot wedge the SKIP SET: no stale key is left behind to block a later pass. This
+   * was the second KNOWN AND ACCEPTED item, and it is withdrawn too.
+   *
+   * 🔴 THAT IS A CLAIM ABOUT THE KEY, NOT ABOUT THE ROW — AND NOTHING SCHEDULES A RETRY.
+   * The same `.then` applies the memory patch regardless of the write's OUTCOME, which
+   * sets `spentAccount`, and `spendPatches` never returns a row that already carries one.
+   * So this effect does not re-attempt a rejected `set` on its own: the released key
+   * means only that no stale entry blocks a later pass, not that a later pass will come.
+   * Not re-attempting is also what terminates the effect — the alternative is the
+   * forever-rewrite loop the paragraph above describes.
+   *
+   * What CAN re-attempt it, and this is incidental rather than a retry policy, is a
+   * reload of the STORED half within the same session — the Show toggle, the panel's
+   * Refresh. Storage wins on a key collision (`mergeUnsavedRecords`), so the unstamped
+   * stored copy replaces the patched one in memory and the patch is recomputed from a
+   * pool map that is still populated. Across a page reload there is no second chance at
+   * all: the pool map is filled only by the submit poll loop and nothing re-polls an
+   * older batch (see `spendPatches`' own note). So a write that keeps failing, or a
+   * session that ends before the next history open, costs that row its pool colour for
+   * good.
+   *
+   * 🔴 AND THE `alive` CANCELLATION IS GONE WITH IT, BECAUSE THE TWO TOGETHER WOULD HAVE
+   * BEEN A THIRD DEFECT. The skip-set is the only thing that can stop a duplicate write,
+   * and a cleanup that cancelled the memory patch while the key was still held would
+   * leave the row unpatched in memory with nothing scheduled to try again: storage would
+   * have the pool and the screen would not, until some unrelated change moved the list.
+   * This updater is safe to apply late on its own terms — it is functional, keyed, and
+   * only touches rows that still lack a pool — so there is nothing for a cancellation to
+   * protect. (The prune effect above keeps its `alive`; there it guards a
+   * delete-then-filter pair, which is a different shape.)
+   */
+  useEffect(() => {
+    const patches = spendPatches(historyRecords, spentPools).filter(
+      (p) => !spendWritesRef.current.has(p.key),
+    );
+    if (patches.length === 0) return;
+    // A `tooLarge` row would be refused by the host, so the write is not attempted — but
+    // the MEMORY patch below still applies to it, because that is what stops this effect
+    // returning the same row forever.
+    const writable = patches.filter((p) => !p.tooLarge);
+    // Once per row per session. Because the `tooLarge` write is never made, storage
+    // never carries the pool, so every later `loadHistory` — the Show toggle, the
+    // panel's Refresh — recomputes the identical `tooLarge` patch and would re-raise
+    // this note, overwriting whatever the panel was saying at the time. The condition
+    // is permanent; the disclosure is not news twice.
+    const unnoted = patches.filter((p) => p.tooLarge && !spendSizeNotedRef.current.has(p.key));
+    if (unnoted.length > 0) {
+      for (const p of unnoted) spendSizeNotedRef.current.add(p.key);
+      setHistoryNote(
+        "This run is at its saved-size limit, so which Buzz pool funded it couldn't be saved. " +
+          'Everything else about the run is saved, and the figure above is correct.',
+      );
+    }
+    for (const p of writable) spendWritesRef.current.add(p.key);
+    void Promise.all(
+      writable.map((p) => storageRef.current.set(p.key, p.record).catch(() => undefined)),
+    ).then(() => {
+      for (const p of writable) spendWritesRef.current.delete(p.key);
+      const byKey = new Map(patches.map((p) => [p.key, p.record]));
+      setHistoryRecords((cur) =>
+        cur.map((e) => {
+          const patched = byKey.get(e.key);
+          // Re-checked against the CURRENT list rather than applied blind: the row may
+          // have been pruned, or replaced by a reload, while the write was in flight.
+          return patched && e.record.spentAccount === undefined ? { ...e, record: patched } : e;
+        }),
+      );
+    });
+  }, [historyRecords, spentPools]);
+
+  /**
    * 🔴 SAVE A RAW CANDIDATE — the real download, and the ONLY one this block has.
    * The host fetches the blob in its unsandboxed top frame; the block never
    * handles the bytes. Rejects on a disallowed origin / withheld image / oversize
@@ -1785,11 +2115,41 @@ export function App() {
    * prompts, selected formats, checkpoint, LoRAs, quantity, spend-from, and the
    * remix source — and it works for an `unavailable` entry too, because the form
    * half is OURS and does not expire with the images.
+   *
+   * 🔴 AND IT IS REFUSED WHILE A CLICK IS STILL BEING PLACED, WHICH IS WHAT MAKES
+   * `isSubmittingPhase`'S "that window stays shut" TRUE RATHER THAN NEARLY TRUE. This
+   * button is never disabled, and `setRuns([])` below drops `overallPhase` to `idle` —
+   * so a Reuse mid-submit turned `busy` false and RE-ENABLED Generate while the first
+   * batch's `submit()` was still open. Measured as a real double submit: Generate
+   * disabled, one Reuse click, Generate enabled, second click, `submit()` called twice
+   * with the first still in flight. Both batches now get a history row and BOTH are
+   * charged, where the old shape at least dropped the superseded batch's id.
+   *
+   * 🔴 IT IS THE SAME PREDICATE THE BUTTON READS, NOT A SECOND ONE. `busy` is
+   * `isSubmittingPhase(phase)` and so is this; a parallel "am I submitting" flag would
+   * be a second place for the window to be defined differently. It covers
+   * `estimating`/`submitting` ONLY — the window where no workflow id exists yet — so it
+   * deliberately leaves Reuse live through `polling`, which is the state the operator
+   * chose to keep clickable.
    */
   const onResume = useCallback(
     (entry: HistoryEntry) => {
+      if (isSubmittingPhase(phase)) {
+        // Said out loud rather than silently ignored: a control that does nothing when
+        // clicked is indistinguishable from a broken one.
+        setHistoryNote(
+          'That generation is still being placed — wait for it to start, then press Reuse settings.',
+        );
+        return;
+      }
       const f = entry.record.form;
-      if (pollCancelRef.current) pollCancelRef.current.cancelled = true;
+      // 🔴 SAME SPLIT AS `switchMode`, AND THIS BUTTON IS STILL REACHABLE MID-POLL —
+      // it is never disabled, so a resume during polling was possible before this
+      // change too, and it killed the running batch's poll loop. Abort
+      // only what has not been submitted; release `runs`; leave every live loop
+      // running so the row the viewer clicked Reuse INSIDE keeps its own pictures.
+      if (currentBatchRef.current) currentBatchRef.current.cancelled = true;
+      currentBatchRef.current = null;
       consentPendingRef.current = false;
       setRuns([]);
       setError(null);
@@ -1837,7 +2197,7 @@ export function App() {
       setLoraNote(null);
       setHistoryNote('Form restored. Nothing was submitted — press Generate when you are ready.');
     },
-    [customFormats],
+    [customFormats, phase],
   );
 
   /** Cancel one still-running workflow. A real money control at this price. */
@@ -1972,7 +2332,28 @@ export function App() {
   // selected format is a valid request, so calling it an error would be the same
   // false claim the disabled button used to make.
   const promptError = touched && !submittable ? 'Enter a prompt to generate.' : undefined;
-  const busy = isBusyPhase(phase);
+  /**
+   * 🔴 THE FORM IS NO LONGER FROZEN WHILE A GENERATION IS IN FLIGHT — ONLY WHILE THE
+   * CLICK IS BEING PLACED. This used to be `isBusyPhase(phase)`, which also covered
+   * `'polling'`, so the mode toggle, the format controls, the composed-prompt boxes,
+   * the quantity dropdown, the Buzz picker AND Generate were all dead for the 30–90s
+   * a generation takes. That is the entire time the viewer is sitting there, and it
+   * bought nothing: `runGeneration` builds every body from ONE `formSnapshot`
+   * closure taken at click time, and the history record is written from that same
+   * closure, so editing the form mid-poll cannot reach a workflow that has already
+   * been submitted. `isSubmittingPhase` keeps shut only the window where a second
+   * click could place a second order for the same intent — `estimating`/`submitting`,
+   * before any workflow id exists.
+   *
+   * `overallPhase` ranks `submitting` above `polling`, so a multi-format batch does
+   * not re-open the form until EVERY one of its workflows is placed.
+   *
+   * 🔴 WHAT MAKES STARTING A SECOND BATCH SAFE IS NOT THIS FLAG — it is that a
+   * superseded batch's poll loop now keeps running and keeps folding its snapshots
+   * into `ownWorkflows`, while only the CURRENT batch may write `runs`. See
+   * `currentBatchRef` and `applySnapshotToRun`.
+   */
+  const busy = isSubmittingPhase(phase);
   const isRemix = mode === 'remix';
   const remixIncomplete = isRemix && !sourceImage;
 
@@ -2645,22 +3026,28 @@ export function App() {
           SECOND rendering of the same images, built from `runs` — and because
           `initRuns` resets `runs` on every Generate, starting a second run erased
           the first run's pictures from the page. The images now live in exactly one
-          place, the history surface, whose newest row IS the in-flight batch. What
-          survives here is the post-spend REPORTING, which belongs next to the button
-          that caused it.
+          place, the history surface, whose newest row IS the in-flight batch.
 
-          🔴 STILL GATED ON `candidates`, not on `phase`. `runCandidates(runs)` is
-          "did this click actually deliver anything", which is the condition under
-          which a spend line is a true statement. */}
-      {candidates.length > 0 && (
-        /* 🔴 SPEND IS THE SERVER'S NUMBER, SUMMED OVER THE RUNS THAT REPORTED ONE.
-           It never falls back to the estimate, so a partial failure cannot inflate
-           it into a bill for work that never ran — `formatCost(null)` renders '—'. */
-        <Alert color="success" title="Done" data-testid="pm-spent">
-          Spent <strong>{formatCost(actualCost)}</strong> Buzz
-          <SpentAccountNote runs={runs} />.
-        </Alert>
-      )}
+          🔴 AND SO IS THE `pm-spent` "Done — spent X Buzz from your Blue account"
+          ALERT, WHICH USED TO SURVIVE HERE. It was removed at the operator's
+          request, and the ORDER of the two changes is what makes that not an
+          information loss: the realized cost and the funding pool both moved ONTO
+          the history row first (`yt-history-cost` — the number, a per-pool bolt and
+          a screen-reader sentence naming the pool), where they now sit beside the
+          pictures they paid for and survive the next Generate click. The alert said
+          the same two facts about only the MOST RECENT click and vanished the moment
+          another started.
+
+          🔴 WHAT WAS DELETED WITH IT, so nothing reads as live that is not:
+          `SpentAccountNote`, the `actualCost` binding and `runCandidates` here. The
+          numbers themselves did not move to a second source — `entry.cost` is the
+          same server figure summed over the same workflows (`joinHistory`), and
+          `entry.spentAccount` is the same `spentAccountType` the alert read, now
+          persisted on the record instead of living only in `runs`.
+
+          What SURVIVES in this block is the failure reporting — `pm-partial` above —
+          because that is the one post-spend fact the history row deliberately does
+          NOT carry (the badge went too; see `HistoryRow`). */}
     </>
   );
 
@@ -2700,7 +3087,6 @@ export function App() {
         refetchWorkflows();
       }}
       pal={pal}
-      layout={layout}
     />
   );
 
@@ -3075,70 +3461,10 @@ function ComposedPromptPreview({
   );
 }
 
-/**
- * The Buzz bolt.
- *
- * 🔴 ONE GLYPH FOR ALL THREE POOLS, COLOURED PER POOL — which is exactly what the
- * native generator does. `FormFooter.tsx`'s `BuzzTypeSelector` renders tabler's
- * generic `IconBolt` for every type and varies only the colour; there is no
- * per-type Buzz icon to import, `@tabler/icons-react` is not a dependency here,
- * and `@civitai/buzz` is `private: true`. So the path below is inline and the
- * colour comes from `BUZZ_TYPE_COLOR` (see `palette.ts` for its provenance).
- *
- * `auto` is not a Buzz type at all — it is the absence of a preference — so it
- * gets the palette's own `textDim` rather than borrowing a pool's colour.
- *
- * DECORATIVE: `aria-hidden`, and every place it renders it sits beside a text
- * label naming the same pool, so nothing here is carried by colour alone.
- */
-function BuzzBolt({
-  choice,
-  pal,
-  testId,
-  size = 14,
-}: {
-  choice: AccountChoice;
-  pal: Palette;
-  testId: string;
-  size?: number;
-}) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill={choice === 'auto' ? pal.textDim : BUZZ_TYPE_COLOR[choice]}
-      aria-hidden="true"
-      focusable="false"
-      data-testid={testId}
-      data-buzz-type={choice}
-      style={previewIconStyle}
-    >
-      <path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z" />
-    </svg>
-  );
-}
-
-/** The trigger's open/closed affordance. Decorative — `aria-expanded` is the claim. */
-function Chevron({ pal }: { pal: Palette }) {
-  return (
-    <svg
-      width={12}
-      height={12}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke={pal.textDim}
-      strokeWidth={2.5}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      focusable="false"
-      style={previewIconStyle}
-    >
-      <path d="M6 9l6 6 6-6" />
-    </svg>
-  );
-}
+// 🔴 `BuzzBolt` AND `Chevron` MOVED TO `icons.tsx`, UNCHANGED. The history row's
+// cost cell needed the same per-pool bolt, and a second copy of one 24×24 path plus
+// a second pool→colour lookup is exactly the drift this repo's audits keep finding.
+// One component, two call sites — see `icons.tsx` for the provenance of the colours.
 
 /** The menu's element id, shared by `aria-controls` and the popup itself. */
 const ACCOUNT_MENU_ID = 'yt-account-menu';
@@ -3487,36 +3813,24 @@ function measureMenuBox(
   );
 }
 
-/**
- * " from your Yellow account" — reads the succeeded runs' `spentAccountType`.
- *
- * With N workflows the pools CAN differ (the server clamps each submit
- * independently), so the note is only made when every run that reported a pool
- * agrees. Naming one pool while another was also debited would be a false
- * statement about where the viewer's money came from, and the honest fallback
- * is simply to say nothing.
- */
-function SpentAccountNote({ runs }: { runs: readonly FormatRun[] }) {
-  const pools = new Set(
-    runs
-      .filter((r) => r.phase === 'succeeded' && r.spentAccount != null)
-      .map((r) => r.spentAccount as BuzzAccountType),
-  );
-  if (pools.size !== 1) return null;
-  const label = spentAccountLabel([...pools][0]);
-  if (!label) return null;
-  return (
-    <>
-      {' '}
-      from your <strong>{label}</strong> account
-    </>
-  );
-}
+// 🔴 `SpentAccountNote` IS GONE WITH THE `pm-spent` ALERT THAT WAS ITS ONLY CALLER.
+// It rendered " from your Yellow account" only when every run that reported a pool
+// AGREED on one — naming one pool while another was also debited would have been a
+// false statement about where the viewer's money came from. That rule did not go
+// anywhere: it is `agreedSpentPool` in `history.ts` now, applied to the record's
+// workflow ids, and the history row's bolt is neutral in exactly the cases this
+// component returned `null` in.
 
+// The Generate button's label while the click is being PLACED.
+//
+// 🔴 NO `'polling'` ARM. There was one ("Generating…") and it became unreachable when
+// the button's `loading` gate moved from `isBusyPhase` to `isSubmittingPhase`: the only
+// call site renders this under `busy`, so `phase` here is `estimating` or `submitting`
+// and nothing else. The `'Working…'` fallback is the exhaustiveness default, not a
+// reachable state.
 function phaseLabel(phase: GenPhase): string {
   if (phase === 'estimating') return 'Estimating…';
   if (phase === 'submitting') return 'Submitting…';
-  if (phase === 'polling') return 'Generating…';
   return 'Working…';
 }
 
@@ -3601,14 +3915,20 @@ function contentStyle(layout: BlockLayout): React.CSSProperties {
  * stronger witness of the two — a browser reads it, and it cannot be right while
  * the layout is wrong — so a duplicate attribute in the shipped DOM bought a second
  * assertion of the same thing and one more place to get out of step. What survives:
- * `resultColumns`, because the column count is decided at every tier but only
- * reaches a style once candidates exist, and `formatMinCardPx`, which the grid
- * carries as `minmax()` but is worth naming at the content box too.
+ * `formatMinCardPx`, which the grid carries as `minmax()` but is worth naming at the
+ * content box too.
+ *
+ * 🔴 `data-result-columns` IS GONE, AND SO IS THE FIELD BEHIND IT. It survived here
+ * on the argument that "the column count is decided at every tier but only reaches a
+ * style once candidates exist" — true, and the count itself turned out to be the
+ * defect: `History.tsx` applied it at two nested levels and the counts multiplied
+ * (see `layout.ts`). The thumbnail grid is intrinsically sized now, nothing lays out
+ * from a per-tier count, and an attribute reporting a number no style reads is a
+ * number that can only ever be right by coincidence.
  */
 function contentProps(layout: BlockLayout) {
   return {
     'data-testid': 'yt-content',
-    'data-result-columns': String(layout.resultColumns),
     'data-min-card': String(layout.formatMinCardPx),
   } as const;
 }
@@ -3868,7 +4188,6 @@ function currentModelStyle(pal: Palette): React.CSSProperties {
 // The composed-prompt editor. A panel (`surfaceRaised` inside the field) holding
 // one editable box per selected format.
 const previewListStyle: React.CSSProperties = { display: 'grid', gap: 6, marginTop: 4 };
-const previewIconStyle: React.CSSProperties = { flex: 'none', display: 'block' };
 function previewRowStyle(pal: Palette): React.CSSProperties {
   return {
     display: 'grid',

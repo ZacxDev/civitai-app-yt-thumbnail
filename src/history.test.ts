@@ -5,9 +5,8 @@ import {
   HISTORY_PREFIX,
   STORAGE_VALUE_MAX_BYTES,
   batchBodies,
+  agreedSpentPool,
   batchStatus,
-  batchStatusColor,
-  batchStatusLabel,
   candidateFileName,
   historyKey,
   joinHistory,
@@ -17,6 +16,7 @@ import {
   mergeLiveWorkflows,
   mergeUnsavedRecords,
   recordFits,
+  spendPatches,
   showHistory,
   skeletonCount,
   timestampFromKey,
@@ -26,7 +26,7 @@ import {
 } from './history.js';
 import { DEFAULT_CHECKPOINT } from './models.js';
 
-import type { AppWorkflow } from '@civitai/app-sdk/blocks';
+import type { AppWorkflow, BuzzAccountType } from '@civitai/app-sdk/blocks';
 
 /**
  * 🔴 RED/GREEN MATRIX FOR THIS WHOLE FILE — read the label, do not assume.
@@ -281,6 +281,44 @@ describe('recordFits', () => {
     expect(r.form.formats[0].prompt.length).toBeLessThan(STORAGE_VALUE_MAX_BYTES);
     expect(recordFits(r)).toBe(false);
   });
+
+  it('🔴 the POOL FIELD can be what crosses the ceiling — the patch path has to re-check', () => {
+    // 🔴 THE SILENT WRITE LOSS, AT ITS BOUNDARY. `recordFits` was consulted once, at
+    // submit, where a record carries no `spentAccount`. The field costs
+    // `,"spentAccount":"yellow"` on the wire, so a row inside the ceiling by fewer
+    // bytes than that fits at submit and does NOT fit once the pool is patched in —
+    // and the host's rejection went into a `.catch` that swallowed it.
+    //
+    // THREE POINTS, not one: comfortably under, exactly ON the ceiling, and one field
+    // over. A single on-boundary fixture cannot tell a working check from one whose
+    // comparison is off by a byte in either direction.
+    const under = record({ workflowIds: ['a'] });
+    expect(recordFits(under)).toBe(true);
+    expect(recordFits({ ...under, spentAccount: 'yellow' })).toBe(true);
+
+    const onCeiling = record({ workflowIds: ['a'] });
+    const naked = new TextEncoder().encode(JSON.stringify(onCeiling)).length;
+    onCeiling.form.formats[0].prompt += 'x'.repeat(STORAGE_VALUE_MAX_BYTES - naked);
+    expect(new TextEncoder().encode(JSON.stringify(onCeiling)).length).toBe(
+      STORAGE_VALUE_MAX_BYTES,
+    );
+    expect(recordFits(onCeiling)).toBe(true);
+    // ...and the SAME record with the pool stamped on is over.
+    expect(recordFits({ ...onCeiling, spentAccount: 'yellow' })).toBe(false);
+
+    // 🔴 AND `spendPatches` MARKS IT RATHER THAN DROPPING IT. The caller must still
+    // patch MEMORY (that is what terminates its effect loop) while skipping the write
+    // the host would refuse, so the row has to come back flagged, not be filtered out.
+    const patches = spendPatches([{ key: 'k1', record: onCeiling }], { a: 'yellow' });
+    expect(patches).toHaveLength(1);
+    expect(patches[0].record.spentAccount).toBe('yellow');
+    expect(patches[0].tooLarge).toBe(true);
+    // The under-ceiling row is offered WITHOUT the flag — the control that `tooLarge`
+    // is computed rather than hardcoded.
+    const ok = spendPatches([{ key: 'k2', record: under }], { a: 'yellow' });
+    expect(ok).toHaveLength(1);
+    expect(ok[0].tooLarge).toBe(false);
+  });
 });
 
 // --- the join -------------------------------------------------------------
@@ -498,23 +536,279 @@ describe('batchStatus', () => {
   });
 
   it('🔴 tells EXPIRED apart from FAILED, and both from unavailable', () => {
-    // Three different facts with three different words. Collapsing them tells a
-    // viewer their generation broke when in fact its images merely aged out.
+    // Three different facts, and `batchStatus` still has to distinguish them even
+    // though the row no longer puts a WORD on screen for them: 'unavailable' is the
+    // one that keeps a row's Resume button meaningful (the images aged out of the
+    // orchestrator; the stored form is ours and does not expire), and 'running' is
+    // the one that decides whether the row shows skeletons at all.
     expect(batchStatus([w('expired')])).toBe('expired');
     expect(batchStatus([w('failed')])).toBe('failed');
     expect(batchStatus([])).toBe('unavailable');
-    expect(batchStatusLabel('unavailable')).toBe('Images no longer available');
-    expect(batchStatusLabel('failed')).toBe('Failed');
-    expect(batchStatusLabel('expired')).toBe('Expired');
   });
 
-  it('gives every status a label and a colour', () => {
-    // Exhaustiveness: a new status that nobody labelled renders as `undefined`.
-    for (const s of ['running', 'succeeded', 'partial', 'failed', 'expired', 'canceled', 'unavailable'] as const) {
-      expect(typeof batchStatusLabel(s)).toBe('string');
-      expect(batchStatusLabel(s).length).toBeGreaterThan(0);
-      expect(['info', 'success', 'warning', 'error']).toContain(batchStatusColor(s));
+  // 🔴 THE TWO BADGE-STRING CASES THAT STOOD HERE WERE DELETED WITH
+  // `batchStatusLabel`/`batchStatusColor`. Their only caller was the status Badge on
+  // each history row, which the operator asked to be removed in ALL states, so they
+  // asserted the labels and colours of a surface that no longer renders — coverage
+  // that reads as coverage and covers nothing, which is worse than none because it
+  // stops the next reader looking. `batchStatus` ITSELF is still graded above: it
+  // decides skeletons and the unavailable line, not a word on a pill.
+});
+
+// --- the spent Buzz pool --------------------------------------------------
+
+describe('🔴 agreedSpentPool — one pool, or honestly nothing', () => {
+  /**
+   * INVARIANT GUARD for the field this change adds. The rule it encodes is not new:
+   * `SpentAccountNote` (deleted with the `pm-spent` alert) applied exactly the same
+   * "only when every run that reported a pool AGREES" test to `runs`. Naming one pool
+   * while another was also debited is a false statement about where the viewer's money
+   * came from, and this is the one function that decides it.
+   *
+   * 🔴 THE THREE POOLS ARE USED PAIRWISE-DISTINCTLY AND NONE IS THE FALLBACK.
+   * `'auto'` is what the renderer passes for "unknown", so a fixture whose expected
+   * value could also be produced by the unknown path would be unable to see a mutant
+   * that always returns it.
+   */
+  it('returns the pool when every KNOWN workflow agrees', () => {
+    expect(agreedSpentPool(['a', 'b'], { a: 'yellow', b: 'yellow' })).toBe('yellow');
+    // One workflow is enough — there is nothing to disagree with.
+    expect(agreedSpentPool(['a'], { a: 'green' })).toBe('green');
+  });
+
+  it('🔴 returns null when two workflows report DIFFERENT pools', () => {
+    // The server clamps each submit independently, so a 3-format batch really can be
+    // funded from two pools. `blue` and `yellow` are both real answers here; picking
+    // either would be a lie, and a mutant returning "the first one seen" fails.
+    expect(agreedSpentPool(['a', 'b'], { a: 'blue', b: 'yellow' })).toBeNull();
+    expect(agreedSpentPool(['a', 'b', 'c'], { a: 'blue', b: 'blue', c: 'green' })).toBeNull();
+  });
+
+  it('IGNORES a workflow with no pool yet rather than treating it as disagreement', () => {
+    // A batch whose second format is still running has one pool known and one unknown.
+    // That is not a conflict, and calling it one would blank the colour on every
+    // partly-finished batch.
+    expect(agreedSpentPool(['a', 'b'], { a: 'blue' })).toBe('blue');
+  });
+
+  it('returns null when NOTHING is known — never a default pool', () => {
+    expect(agreedSpentPool(['a', 'b'], {})).toBeNull();
+    expect(agreedSpentPool([], { a: 'blue' })).toBeNull();
+    // A pool keyed under an id this batch does not own must not leak into it.
+    expect(agreedSpentPool(['a'], { 'some-other-batch': 'yellow' })).toBeNull();
+  });
+});
+
+describe('🔴 spendPatches — the write that makes the pool survive a reload', () => {
+  /**
+   * The record is written the moment workflow ids exist — before anything has RUN —
+   * while `spentAccountType` arrives on a SUCCEEDED snapshot minutes later, and
+   * `AppWorkflow` carries no funding field at all. So the pool has to be patched in
+   * afterwards, and this is the pure half of that.
+   *
+   * 🔴 THE EMPTY RESULT IS LOAD-BEARING, NOT AN EDGE CASE. `App.tsx` runs this from
+   * an effect whose own dependency is the record list it then SETS, so "returns nothing
+   * once every row is patched" is what terminates the loop. A version that returned
+   * every record would rewrite a viewer's whole history on every render, forever.
+   */
+  const stored = (key: string, over: Partial<GenerationRecord> = {}) => ({
+    key,
+    record: record(over),
+  });
+
+  it('patches only the rows that can learn something, and returns the NEW record', () => {
+    const got = spendPatches([stored('k1', { workflowIds: ['a'] })], { a: 'green' });
+    expect(got).toHaveLength(1);
+    expect(got[0].key).toBe('k1');
+    expect(got[0].record.spentAccount).toBe('green');
+    // Everything else about the record is untouched — a patch, not a rewrite.
+    expect(got[0].record.form).toEqual(record().form);
+    expect(got[0].record.batchId).toBe('batch-7');
+  });
+
+  it('🔴 does NOT mutate the record it was given', () => {
+    // The caller holds the old list in React state; mutating in place would make the
+    // "has it already been patched" check below always true and the write never happen.
+    const original = stored('k1', { workflowIds: ['a'] });
+    spendPatches([original], { a: 'green' });
+    expect(original.record.spentAccount).toBeUndefined();
+  });
+
+  it('🔴 returns [] once there is nothing left to learn — the loop terminator', () => {
+    // Already patched.
+    expect(
+      spendPatches([stored('k1', { workflowIds: ['a'], spentAccount: 'blue' })], { a: 'blue' }),
+    ).toEqual([]);
+    // Nothing known.
+    expect(spendPatches([stored('k1', { workflowIds: ['a'] })], {})).toEqual([]);
+    // Known, but the batch's workflows disagree.
+    expect(
+      spendPatches([stored('k1', { workflowIds: ['a', 'b'] })], { a: 'blue', b: 'yellow' }),
+    ).toEqual([]);
+    expect(spendPatches([], { a: 'blue' })).toEqual([]);
+  });
+
+  it('🔴 never RE-patches a row that already carries a pool, even with a newer answer', () => {
+    // 'blue' stored, 'yellow' now known. The first thing the server said is what was
+    // recorded; rewriting it would make the row's history depend on when it was last
+    // looked at. A mutant that drops the `!== undefined` guard returns a patch here.
+    const got = spendPatches([stored('k1', { workflowIds: ['a'], spentAccount: 'blue' })], {
+      a: 'yellow',
+    });
+    expect(got).toEqual([]);
+  });
+
+  it('🔴 a MIXED-POOL batch is never stamped with one pool, whatever ORDER the answers arrive in', () => {
+    // 🔴 THE COMPOSITION OF TWO RULES OVER TIME, which every case above tests in
+    // isolation and none of them together. `agreedSpentPool` ignores a workflow with
+    // no pool yet; `spendPatches` never re-patches a stamped row. Composed, the record
+    // was stamped from whichever format reported FIRST — and formats finish seconds
+    // apart, so that is the normal timeline rather than an edge — after which a later
+    // disagreement could never undo it.
+    const row = stored('k1', { workflowIds: ['wf-a', 'wf-b'] });
+
+    // wf-a has reported and wf-b has not. Writing here is the latch: the row would
+    // carry 'blue' permanently, including for the money that came from wf-b's pool.
+    expect(spendPatches([row], { 'wf-a': 'blue' })).toEqual([]);
+
+    // wf-b lands, and it DISAGREES. Because nothing was written above, the honest
+    // answer — a neutral bolt, i.e. no patch at all — is still reachable.
+    expect(spendPatches([row], { 'wf-a': 'blue', 'wf-b': 'yellow' })).toEqual([]);
+
+    // 🔴 AND THE AGREEING ARM STILL WRITES. Without this the gate would be satisfied
+    // by "never patch a multi-workflow batch", which loses the pool on every
+    // multi-format run.
+    const agreed = spendPatches([row], { 'wf-a': 'blue', 'wf-b': 'blue' });
+    expect(agreed).toHaveLength(1);
+    expect(agreed[0].record.spentAccount).toBe('blue');
+
+    // A single-workflow batch is unaffected: one known pool IS every pool.
+    const solo = spendPatches([stored('k2', { workflowIds: ['wf-a'] })], { 'wf-a': 'green' });
+    expect(solo.map((p) => p.record.spentAccount)).toEqual(['green']);
+  });
+
+  /**
+   * 🔴 THE ACCEPTED COST, PINNED SO IT STAYS DELIBERATE. A workflow that ends without
+   * the server reporting a pool never contributes one — the app records a pool only
+   * from a snapshot carrying `spentAccountType` — and `every` then holds the WHOLE batch
+   * back. So a multi-format batch in which ANY workflow's pool never arrives keeps the
+   * neutral bolt for good: nothing is written, and every later ask returns the same
+   * empty answer.
+   *
+   * One trigger is CERTAIN and host-independent: a batch still running when the viewer
+   * reloads keeps the neutral bolt for good, because the pool map is session state and
+   * nothing ever re-polls an older batch. Two more SHAPES are host-dependent — the
+   * shipped `yt-history-cancel` button, and one format failing while its siblings
+   * succeed — and reach this rule only if the host leaves `spentAccountType` off the
+   * terminal snapshot. See the ⚠ below; this case does not assert that it does.
+   *
+   * 🔴 OPERATOR DECISION, NOT AN OVERSIGHT. The alternatives — treat a terminal
+   * non-success as "reported", or revert to a memory-only colour — were both declined.
+   * A neutral bolt means "we do not know", which is TRUE here; both alternatives trade
+   * that for a row that can assert the WRONG pool on a money surface. This case exists
+   * so changing that is a visible decision rather than a quiet edit.
+   *
+   * INVARIANT GUARD, not a regression test: `9ed9489` behaves exactly as asserted here.
+   *
+   * ⚠ UNVERIFIED and it decides the SIZE of this case: whether the real host stamps
+   * `spentAccountType` on a failed or cancelled snapshot. Every pool test in this repo
+   * runs against the mock. This case asserts the app's rule given a missing pool; it
+   * asserts nothing about when the host leaves one missing.
+   */
+  it('🔴 a batch with ONE never-reporting workflow is never stamped, however often it is asked', () => {
+    // wf-b is the workflow whose pool never arrives — a cancel, a failure, or a session
+    // that ended while it was still running. Its id simply never appears in the map.
+    const row = stored('k1', { workflowIds: ['wf-a', 'wf-b', 'wf-c'] });
+
+    // The siblings report, and they AGREE — the only thing missing is wf-b's key.
+    const pools: Record<string, BuzzAccountType> = { 'wf-a': 'yellow', 'wf-c': 'yellow' };
+    expect(spendPatches([row], pools)).toEqual([]);
+
+    // Asked again — this is what a Show toggle or a panel Refresh does, and what a
+    // reload would do if the map survived one. Still nothing, forever.
+    expect(spendPatches([row], pools)).toEqual([]);
+    // And a workflow OUTSIDE this batch reporting does not satisfy `every` either, which
+    // a mutant counting map entries rather than checking THIS row's ids would allow.
+    expect(spendPatches([row], { ...pools, 'wf-other': 'yellow' })).toEqual([]);
+
+    // 🔴 AND THE ONLY-MISSING-ONE ARM IS WHAT MAKES THAT MEAN SOMETHING. Hand the same
+    // row wf-b's pool and it patches immediately — so the `[]` above is the absent
+    // workflow, not a batch size this function refuses to touch. `blue` here is distinct
+    // from the `yellow` above, so a mutant returning a constant cannot satisfy both.
+    const complete = spendPatches([row], { 'wf-a': 'blue', 'wf-b': 'blue', 'wf-c': 'blue' });
+    expect(complete).toHaveLength(1);
+    expect(complete[0].record.spentAccount).toBe('blue');
+  });
+
+  it('patches several rows in one pass and keeps them keyed apart', () => {
+    // Two batches, two different pools, and the patches must not be crossed — which a
+    // same-pool fixture could not see.
+    const got = spendPatches(
+      [stored('k1', { workflowIds: ['a'] }), stored('k2', { workflowIds: ['b'] })],
+      { a: 'green', b: 'yellow' },
+    );
+    expect(got.map((p) => [p.key, p.record.spentAccount])).toEqual([
+      ['k1', 'green'],
+      ['k2', 'yellow'],
+    ]);
+  });
+});
+
+describe('🔴 parseRecord and joinHistory carry the pool WITHOUT requiring it', () => {
+  /**
+   * THE MIGRATION CASE, at the parse boundary. Every record already in a viewer's
+   * storage was written before `spentAccount` existed, so `undefined` is the normal
+   * shape for a row from yesterday — and a row that is REFUSED is a past generation
+   * deleted from the viewer's history over a colour.
+   *
+   * Red against a mutant that requires the field
+   * (`if (!isBuzzAccountType(r.spentAccount)) return null;`): the first case then
+   * returns `null`.
+   */
+  it('a record with NO spentAccount key parses, and joins to a null pool', () => {
+    const legacy = JSON.parse(JSON.stringify(record()));
+    delete legacy.spentAccount;
+    const parsed = parseRecord(legacy);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.spentAccount).toBeUndefined();
+    const [entry] = joinHistory(
+      [{ key: 'k', record: parsed as GenerationRecord }],
+      [workflow({ workflowId: 'wf-a', cost: 457 })],
+    );
+    // `null`, not `undefined` and not a pool — one absent value for the renderer to
+    // branch on, and never a guess.
+    expect(entry.spentAccount).toBeNull();
+    expect(entry.cost).toBe(457);
+  });
+
+  it('a VALID pool survives the round trip to the entry', () => {
+    // The other arm. Without it the case above cannot tell "carries the pool" from
+    // "always null".
+    const parsed = parseRecord(JSON.parse(JSON.stringify(record({ spentAccount: 'yellow' }))));
+    expect(parsed?.spentAccount).toBe('yellow');
+    const [entry] = joinHistory(
+      [{ key: 'k', record: parsed as GenerationRecord }],
+      [workflow({ workflowId: 'wf-a', cost: 457 })],
+    );
+    expect(entry.spentAccount).toBe('yellow');
+  });
+
+  it('🔴 an UNRECOGNISED pool is DROPPED, and the row still parses', () => {
+    // 'red' and 'purple' are real platform-internal pools a block may never be told
+    // about; a number or a typo is the other shape. None of them may delete the row,
+    // and none may be painted.
+    for (const bogus of ['red', 'purple', '', 'Blue', 7, null, {}, ['blue']]) {
+      const parsed = parseRecord({ ...JSON.parse(JSON.stringify(record())), spentAccount: bogus });
+      expect(parsed).not.toBeNull();
+      expect(parsed?.spentAccount).toBeUndefined();
     }
+  });
+
+  it('a record carrying a pool still FITS the storage ceiling check', () => {
+    // The field grows the value, and `recordFits` is what refuses an over-large record
+    // before the round trip. A realistic record plus a pool is nowhere near 64 KB —
+    // asserted so the arithmetic is stated rather than assumed.
+    expect(recordFits(record({ spentAccount: 'yellow' }))).toBe(true);
   });
 });
 

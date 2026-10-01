@@ -17,14 +17,14 @@ import {
   formatCost,
   hasBudgetedScope,
   imageUrlsFrom,
-  isBusyPhase,
+  isSubmittingPhase,
   isDisallowedAccountError,
   isInsufficientBuzz,
   isTerminalStatus,
   phaseForError,
   phaseForSnapshot,
-  spentAccountLabel,
   submitErrorReason,
+  type GenPhase,
 } from './generation.js';
 import { DEFAULT_CHECKPOINT, type LoraOption } from './models.js';
 
@@ -153,19 +153,15 @@ describe('buildWorkflowBody', () => {
   });
 });
 
-describe('accountLabel / spentAccountLabel', () => {
+describe('accountLabel', () => {
   it('labels each account choice', () => {
     expect(accountLabel('auto')).toBe('Auto');
     expect(accountLabel('blue')).toBe('Blue');
     expect(accountLabel('green')).toBe('Green');
     expect(accountLabel('yellow')).toBe('Yellow');
   });
-  it('spentAccountLabel is the pool label, or null when absent', () => {
-    expect(spentAccountLabel('yellow')).toBe('Yellow');
-    expect(spentAccountLabel('blue')).toBe('Blue');
-    expect(spentAccountLabel('green')).toBe('Green');
-    expect(spentAccountLabel(undefined)).toBeNull();
-  });
+  // `spentAccountLabel`'s case went with the function: it lost its only caller when
+  // `SpentAccountNote` was deleted, and a test was the only thing still exercising it.
 });
 
 describe('isDisallowedAccountError', () => {
@@ -301,21 +297,68 @@ describe('submitErrorReason', () => {
   });
 });
 
-describe('isBusyPhase', () => {
-  it('true only for the in-flight phases', () => {
-    for (const p of ['estimating', 'submitting', 'polling'] as const) {
-      expect(isBusyPhase(p)).toBe(true);
-    }
-    for (const p of [
-      'idle',
-      'needs-consent',
-      'succeeded',
-      'failed',
-      'insufficient',
-      'account-rejected',
-    ] as const) {
-      expect(isBusyPhase(p)).toBe(false);
-    }
+describe('isSubmittingPhase', () => {
+  /**
+   * 🔴 THIS REPLACES `isBusyPhase`, WHICH ALSO RETURNED TRUE FOR `'polling'`, AND
+   * `'polling'` IS THE WHOLE REASON THE PREDICATE CHANGED. The form (mode, formats,
+   * composed prompts, quantity, Buzz pool) and the Generate button were all gated on
+   * the old answer, so they were dead for the entire 30–90s a generation takes;
+   * nothing in flight can be altered by the form, because `runGeneration` builds
+   * every body from one `formSnapshot` closure taken at click time.
+   *
+   * REGRESSION-ADJACENT, NOT AN INVARIANT GUARD: the case below is red against
+   * `isBusyPhase` (it asserts FALSE for `'polling'`, which that function answers
+   * TRUE), which is exactly the behaviour change. It is a new function, so the
+   * honest matrix is "the predicate it replaces fails this assertion".
+   *
+   * 🔴 ENUMERATED OVER THE WHOLE `GenPhase` UNION, both arms, and the two arms are
+   * asserted to COVER it — so a phase added to `GenPhase` tomorrow fails here
+   * instead of silently defaulting to "the form stays live", which is the direction
+   * that spends money.
+   */
+  const SHUT: readonly GenPhase[] = ['estimating', 'submitting'];
+  const LIVE: readonly GenPhase[] = [
+    'idle',
+    'needs-consent',
+    'polling',
+    'succeeded',
+    'failed',
+    'insufficient',
+    'account-rejected',
+  ];
+
+  it('true ONLY while the click is still being placed — estimating and submitting', () => {
+    for (const p of SHUT) expect(isSubmittingPhase(p)).toBe(true);
+    for (const p of LIVE) expect(isSubmittingPhase(p)).toBe(false);
+  });
+
+  it('🔴 is FALSE for polling — the form and Generate stay live once a workflow exists', () => {
+    // Called out on its own line because it is the one answer that differs from the
+    // `isBusyPhase` this replaced, and a mutant restoring `|| phase === 'polling'`
+    // dies here with this assertion rather than somewhere incidental.
+    expect(isSubmittingPhase('polling')).toBe(false);
+  });
+
+  it('the two arms above are the WHOLE GenPhase union — a new phase fails this', () => {
+    // A phase nobody classified would otherwise be treated as "form live", i.e. the
+    // permissive direction on a money control.
+    const all: readonly GenPhase[] = [...SHUT, ...LIVE];
+    expect(new Set(all).size).toBe(all.length);
+    // Every phase `phaseForSnapshot`/`phaseForError`/`overallPhase` can produce is in
+    // the list. Checked against the type by assignment above; checked for completeness
+    // by the one value the union has that nothing else here names.
+    const union: Record<GenPhase, true> = {
+      idle: true,
+      'needs-consent': true,
+      estimating: true,
+      submitting: true,
+      polling: true,
+      succeeded: true,
+      failed: true,
+      insufficient: true,
+      'account-rejected': true,
+    };
+    expect(all.slice().sort()).toEqual(Object.keys(union).sort());
   });
 });
 
