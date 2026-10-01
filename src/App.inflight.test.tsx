@@ -66,8 +66,16 @@ const ESTIMATE = 13;
 const COST_1 = 211;
 const COST_2 = 457;
 
-const estimateFn = vi.fn<() => Promise<BlockWorkflowSnapshot>>();
-const submitFn = vi.fn<() => Promise<BlockWorkflowSnapshot>>();
+/**
+ * 🔴 TYPED WITH THE BODY ARGUMENT, so the WIRE can be asserted and not just the
+ * screen. The prompt that reaches `params.prompt` is the string the viewer is charged
+ * for; a test that only reads the stored record is a claim about the resume path, and
+ * the two are built by the same function precisely so they cannot disagree — which is
+ * a property worth asserting on both sides rather than assuming.
+ */
+type WireBody = { params: { prompt: string; quantity?: number } };
+const estimateFn = vi.fn<(body: WireBody) => Promise<BlockWorkflowSnapshot>>();
+const submitFn = vi.fn<(body: WireBody) => Promise<BlockWorkflowSnapshot>>();
 const pollFn = vi.fn<(workflowId: string) => Promise<BlockWorkflowSnapshot>>();
 const cancelFn = vi.fn<(workflowId: string) => Promise<unknown>>();
 const refetchWorkflows = vi.fn();
@@ -363,6 +371,91 @@ describe('🔴 editing the form mid-flight cannot touch the batch already in fli
         ),
       { timeout: 5000 },
     );
+  });
+
+  /**
+   * 🔴 THE TWO CASES BELOW EXIST BECAUSE THE FIRST VERSION OF THIS BLOCK MISSED THE
+   * HAZARD IT WAS WRITTEN FOR, AND A MUTANT PROVED IT. The realistic implementation
+   * error for "the in-flight batch must not read live form state" is a REF — exactly
+   * what this file's own App already does for the cost preview (`previewRef`) — so the
+   * mutant is: give `App` a `formSnapshotRef`, keep it current on every render, and
+   * have the submit pass and the record write read `formSnapshotRef.current` instead of
+   * the `formSnapshot` closure. That mutant SURVIVED the first three cases in this
+   * block, all green, because they edit the form only AFTER the record is already
+   * written: by then the ref and the closure hold the same value and the two
+   * implementations are indistinguishable.
+   *
+   * The window that distinguishes them is between the CLICK and the WRITE, and it is
+   * genuinely open: the prompt Textarea has never carried a `disabled` at all, so it is
+   * editable even while `estimate`/`submit` are mid-flight. These two cases hold each
+   * of those calls open, edit the prompt, release, and then assert the ORIGINAL string
+   * on each side — the wire and the record. Both now kill the ref mutant.
+   */
+  it('🔴 editing the prompt while ESTIMATE is in flight does not change the SUBMITTED body', async () => {
+    let releaseEstimate: (s: BlockWorkflowSnapshot) => void = () => {};
+    estimateFn.mockImplementation(
+      () =>
+        new Promise<BlockWorkflowSnapshot>((resolve) => {
+          releaseEstimate = resolve;
+        }),
+    );
+    submitFn.mockResolvedValue(snap({ workflowId: 'wf-a', status: 'processing' }));
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+    await user.type(screen.getByLabelText(/prompt/i), 'a red bicycle');
+    await user.click(screen.getByTestId('pm-generate'));
+    await waitFor(() => expect(estimateFn).toHaveBeenCalled());
+
+    // The window: the estimate has not resolved, so nothing has submitted, and the
+    // prompt box is still live (it carries no `disabled`, and never has).
+    await user.clear(screen.getByLabelText(/prompt/i));
+    await user.type(screen.getByLabelText(/prompt/i), 'a BLUE motorcycle');
+    expect(screen.getByLabelText(/prompt/i)).toHaveValue('a BLUE motorcycle');
+
+    releaseEstimate(snap({ workflowId: 'est', cost: { total: ESTIMATE } }));
+    await waitFor(() => expect(submitFn).toHaveBeenCalled());
+
+    // 🔴 THE WIRE CARRIES THE PROMPT THE CLICK HAD. `params.prompt` is composed from
+    // the base prompt plus the format's suffix, so this is asserted as "starts with the
+    // original and does not contain the edit" rather than as an equality against a
+    // string this test would have had to re-derive from `composePrompt`.
+    const body = submitFn.mock.calls[0][0];
+    expect(body.params.prompt).toContain('a red bicycle');
+    expect(body.params.prompt).not.toContain('BLUE motorcycle');
+  });
+
+  it('🔴 editing the prompt while SUBMIT is in flight does not change the stored RECORD', async () => {
+    let releaseSubmit: (s: BlockWorkflowSnapshot) => void = () => {};
+    submitFn.mockImplementation(
+      () =>
+        new Promise<BlockWorkflowSnapshot>((resolve) => {
+          releaseSubmit = resolve;
+        }),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+    await user.type(screen.getByLabelText(/prompt/i), 'a red bicycle');
+    await user.click(screen.getByTestId('pm-generate'));
+    await waitFor(() => expect(submitFn).toHaveBeenCalled());
+
+    // The window: the submit is accepted but has not resolved, so the record has NOT
+    // been written yet — `runGeneration` writes it after `Promise.all(settled)`.
+    expect(storedRecords()).toHaveLength(0);
+    await user.clear(screen.getByLabelText(/prompt/i));
+    await user.type(screen.getByLabelText(/prompt/i), 'a BLUE motorcycle');
+
+    releaseSubmit(snap({ workflowId: 'wf-a', status: 'processing' }));
+
+    // The record lands now, and it describes the CLICK, not the box.
+    await waitFor(() => expect(storedRecords()).toHaveLength(1));
+    const rec = storedRecords()[0];
+    expect(rec.form.prompt).toBe('a red bicycle');
+    expect(rec.form.prompt).not.toBe('a BLUE motorcycle');
+    // And the resolved per-format prompt — the string actually paid for — agrees.
+    expect(rec.form.formats[0].prompt).toContain('a red bicycle');
+    expect(rec.form.formats[0].prompt).not.toContain('BLUE motorcycle');
   });
 
   it('switching mode txt2img -> remix mid-poll does NOT kill the polling batch', async () => {
