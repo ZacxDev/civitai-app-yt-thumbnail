@@ -129,6 +129,27 @@ const promptOf = (body: unknown) =>
 const CLICKBAIT = BUILTIN_FORMATS[0];
 const CINEMATIC = BUILTIN_FORMATS[1];
 
+/**
+ * Wait for the LIVE COST PREVIEW to settle on `expectedTotal`, then zero the estimate
+ * counter so a following assertion counts only the CLICK's estimates.
+ *
+ * 🔴 WITHOUT THIS EVERY ESTIMATE COUNT AND EVERY BUTTON PRICE IN THIS FILE IS A RACE,
+ * and it would be a race that usually goes the right way — the worst kind. This token
+ * carries `ai:write:budgeted`, so the app prices the form on mount and on every
+ * price-relevant change, `ESTIMATE_DEBOUNCE_MS` after the last one. A test that
+ * clicks Generate before that timer fires sees N estimates; one that is a few
+ * milliseconds slower sees N+1. Waiting for the price to actually appear pins the
+ * boundary instead of hoping for it — and it also asserts the preview happened at
+ * all, which is the feature.
+ */
+async function settlePreview(expectedTotal: number) {
+  await waitFor(
+    () => expect(screen.getByTestId('pm-generate')).toHaveTextContent(String(expectedTotal)),
+    { timeout: 3000 },
+  );
+  estimateFn.mockClear();
+}
+
 beforeEach(() => {
   host.viewer = { id: 2, username: 'dev' };
   estimateFn.mockReset();
@@ -156,6 +177,9 @@ describe('N formats ⇒ N workflows', () => {
     // Clickbait is selected by default; add Cinematic.
     await user.click(await screen.findByTestId(`yt-format-${CINEMATIC.id}`));
     await user.type(screen.getByLabelText(/prompt/i), 'a cat on a skateboard');
+    // The live preview has already priced this form; zero the counter so the count
+    // below is the CLICK's, not the click's plus the preview's. See `settlePreview`.
+    await settlePreview(6);
     await user.click(screen.getByTestId('pm-generate'));
 
     await waitFor(() => expect(submitFn).toHaveBeenCalledTimes(2));
@@ -183,7 +207,12 @@ describe('N formats ⇒ N workflows', () => {
           snapshot: { error: 'orchestrator refused this workflow' },
         });
       }
-      return snap({ status: 'succeeded', cost: { total: 7 }, imageUrls: ['good-1', 'good-2'] });
+      return snap({
+        workflowId: 'wf-good',
+        status: 'succeeded',
+        cost: { total: 7 },
+        imageUrls: ['good-1', 'good-2'],
+      });
     });
 
     const user = userEvent.setup();
@@ -192,8 +221,9 @@ describe('N formats ⇒ N workflows', () => {
     await user.type(screen.getByLabelText(/prompt/i), 'a cat');
     await user.click(screen.getByTestId('pm-generate'));
 
-    // The surviving run's images are rendered...
-    const imgs = await screen.findAllByTestId('pm-result-img', {}, { timeout: 5000 });
+    // The surviving run's images are rendered — in the unified results/history
+    // surface, which is now the only place images appear.
+    const imgs = await screen.findAllByTestId('yt-history-img', {}, { timeout: 5000 });
     expect(imgs).toHaveLength(2);
     // ...alongside — not instead of — a named report of what failed.
     const partial = screen.getByTestId('pm-partial');
@@ -214,45 +244,112 @@ describe('N formats ⇒ N workflows', () => {
     // over a toy number so a mutant that returns one run's cost (33) is visibly
     // different from the correct total (66).
     estimateFn.mockResolvedValue(snap({ status: 'pending', cost: { total: 33 } }));
-    submitFn.mockResolvedValue(
-      snap({ status: 'succeeded', cost: { total: 33 }, imageUrls: ['x'] }),
+    let n = 0;
+    submitFn.mockImplementation(async () =>
+      snap({ workflowId: `wf-${++n}`, status: 'succeeded', cost: { total: 33 }, imageUrls: ['x'] }),
     );
 
     const user = userEvent.setup();
     render(<App />);
     await user.click(await screen.findByTestId(`yt-format-${CINEMATIC.id}`));
     await user.type(screen.getByLabelText(/prompt/i), 'a cat');
-    await user.click(screen.getByTestId('pm-generate'));
 
-    // The button shows a price only when it is IDLE (while a run is in flight it
-    // shows progress), so assert once the batch has finished.
-    await screen.findAllByTestId('pm-result-img', {}, { timeout: 5000 });
     const button = screen.getByTestId('pm-generate');
-    // 2 formats x 33 = 66 — the TOTAL...
-    expect(button).toHaveTextContent(/66/);
+    // 🔴 BEFORE THE CLICK. The price is now on the button BEFORE any Buzz is at
+    // stake — that is the whole point of the live preview, and it comes from the
+    // same `aggregateEstimate` the in-flight run uses. 2 formats × 33 = 66, the
+    // TOTAL...
+    await settlePreview(66);
     // ...and specifically NOT a single run's 33.
+    expect(button).not.toHaveTextContent(/·\s*33\s*Buzz/);
+
+    await user.click(button);
+    // And it still reads the SUM after the run, where it is `runs`, not the
+    // preview, that prices it.
+    await screen.findAllByTestId('yt-history-img', {}, { timeout: 5000 });
+    expect(button).toHaveTextContent(/66/);
     expect(button).not.toHaveTextContent(/·\s*33\s*Buzz/);
   });
 
-  it('tags every candidate with the format that produced it', async () => {
+  it('labels a multi-format batch with every format that produced it', async () => {
+    /**
+     * 🔴 THIS REPLACES A PER-IMAGE FORMAT TAG (`pm-result-format`) THAT NO LONGER
+     * EXISTS, and the reduction is deliberate rather than an oversight. The tag lived
+     * on the candidate grid, which is gone; in the unified list an image belongs to a
+     * BATCH, and attributing it to one of the batch's workflows would mean trusting a
+     * positional pairing that records written before this change do not guarantee. A
+     * wrong label is worse than a row-level list of the formats involved, which is
+     * what is asserted here.
+     */
     estimateFn.mockResolvedValue(snap({ status: 'pending', cost: { total: 3 } }));
-    submitFn.mockImplementation(async (body) =>
-      snap({
+    submitFn.mockImplementation(async (body) => {
+      const cine = promptOf(body).includes(CINEMATIC.suffix);
+      return snap({
+        workflowId: cine ? 'wf-cine' : 'wf-click',
         status: 'succeeded',
         cost: { total: 3 },
-        imageUrls: [promptOf(body).includes(CINEMATIC.suffix) ? 'cine-1' : 'click-1'],
-      }),
-    );
+        imageUrls: [cine ? 'cine-1' : 'click-1'],
+      });
+    });
     const user = userEvent.setup();
     render(<App />);
     await user.click(await screen.findByTestId(`yt-format-${CINEMATIC.id}`));
     await user.type(screen.getByLabelText(/prompt/i), 'a cat');
     await user.click(screen.getByTestId('pm-generate'));
 
-    const tags = await screen.findAllByTestId('pm-result-format', {}, { timeout: 5000 });
-    expect(tags.map((t) => t.textContent).sort()).toEqual(
-      [CLICKBAIT.label, CINEMATIC.label].sort(),
-    );
+    // ONE row for the click, carrying BOTH images...
+    const imgs = await screen.findAllByTestId('yt-history-img', {}, { timeout: 5000 });
+    expect(imgs).toHaveLength(2);
+    expect(screen.getAllByTestId('yt-history-row')).toHaveLength(1);
+    // ...and naming both formats. Both labels, so a collapsed record that recorded
+    // one format cannot pass.
+    const formats = screen.getByTestId('yt-history-formats');
+    expect(formats).toHaveTextContent(CLICKBAIT.label);
+    expect(formats).toHaveTextContent(CINEMATIC.label);
+  });
+
+  it('🔴 a SECOND run does not erase the FIRST run’s images', async () => {
+    /**
+     * THE REGRESSION THIS BATCH EXISTS FOR. The candidate grid was built from `runs`
+     * and `initRuns` resets `runs` on every Generate, so starting a second run blanked
+     * the first run's output — images the viewer had already paid for, gone from the
+     * page with no way back until a reload.
+     *
+     * 🔴 RED AT BASE, and not vacuously: at `04ca5aa` this file renders, the grid
+     * exists, and after the second click `pm-result-img` is the SECOND batch's image
+     * alone. The count is the assertion — 1 after run two, where it must be 2.
+     */
+    estimateFn.mockResolvedValue(snap({ status: 'pending', cost: { total: 3 } }));
+    let n = 0;
+    submitFn.mockImplementation(async () => {
+      n += 1;
+      return snap({
+        workflowId: `wf-run-${n}`,
+        status: 'succeeded',
+        cost: { total: 3 },
+        imageUrls: [`run-${n}-img`],
+      });
+    });
+
+    const user = userEvent.setup();
+    render(<App />);
+    await user.type(await screen.findByLabelText(/prompt/i), 'a cat');
+    await user.click(screen.getByTestId('pm-generate'));
+    await waitFor(() => expect(screen.getAllByTestId('yt-history-img')).toHaveLength(1));
+
+    // Second run, same form. Nothing about the first one may disappear.
+    await user.click(screen.getByTestId('pm-generate'));
+    await waitFor(() => expect(submitFn).toHaveBeenCalledTimes(2));
+
+    await waitFor(() => {
+      const urls = screen
+        .getAllByTestId('yt-history-img')
+        .map((img) => img.getAttribute('src'))
+        .sort();
+      expect(urls).toEqual(['run-1-img', 'run-2-img']);
+    });
+    // Two batches, two rows — not one row that swallowed both.
+    expect(screen.getAllByTestId('yt-history-row')).toHaveLength(2);
   });
 });
 

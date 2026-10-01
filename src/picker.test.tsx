@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -204,40 +204,122 @@ describe('host resource pickers', () => {
   });
 
   /**
-   * The collateral effect of the OpenAI default, pinned as BEHAVIOUR rather than
-   * as copy: on a family with no LoRAs the control is disabled and the picker is
-   * never opened. RED at bec8894 — there the default was SDXL, the button was
-   * enabled, and clicking it DID call the picker.
+   * The collateral effect of the OpenAI default, pinned as BEHAVIOUR rather than as
+   * copy: on a family with no LoRAs the control does not exist at all, so there is
+   * no route to the picker.
    *
-   * 🔴 Asserted on the picker CALL, not on the button's `disabled` attribute
-   * alone. A disabled attribute is what the user sees; whether a spend-adjacent
-   * host modal was opened is what actually matters, and the two can disagree
-   * (a click handler wired past a cosmetic disable).
+   * 🔴 THIS CASE CHANGED SHAPE, AND THE OLD SHAPE IS WHY. It used to assert a
+   * DISABLED `pm-lora-add` plus a `pm-lora-unsupported` explanation. Both are gone:
+   * the field is now hidden outright for such a family. The claim being pinned is
+   * unchanged and is still asserted on the picker CALL rather than on any attribute
+   * — whether a spend-adjacent host modal was opened is what matters, and a click
+   * handler wired past a cosmetic disable makes an attribute and a call disagree.
+   *
+   * 🔴 INVARIANT GUARD, NOT REGRESSION COVERAGE, for the call half: at base the
+   * button existed-but-disabled and the picker was likewise never opened, so that
+   * assertion passed there too. The ABSENCE half is the part that is red at base.
    */
-  it('does not open the LoRA picker on a checkpoint family that has no LoRAs', async () => {
-    // 🔴 DELIBERATELY FREE OF ANY IMPORT THAT DOES NOT EXIST AT bec8894, so its
-    // red there is a REAL ASSERTION failure about the button, not a missing
-    // export. Measured at base with App.tsx + models.ts reverted: the default
-    // was SDXL, Add LoRA was enabled, clicking it DID open the picker, and this
-    // fails on `expect(optsFor('LORA')).toBeUndefined()`.
+  it('offers no LoRA control at all on a checkpoint family that has no LoRAs', async () => {
     resourcePickerOpen.mockResolvedValue(loraPick);
+    render(<App />);
+
+    // The field is gone — button, badge, cap note and all. RED at base, where the
+    // button rendered (disabled) and this query resolved.
+    await screen.findByTestId('pm-change-model');
+    expect(screen.queryByTestId('pm-lora-add')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pm-lora-row')).not.toBeInTheDocument();
+
+    // And there is therefore no route to the LoRA browse. Asserted on the CALL:
+    // nothing the viewer can click asks the host for an incompatible resource.
+    expect(optsFor('LORA')).toBeUndefined();
+
+    // The premise, stated here so the absence above cannot be read as "the field
+    // is broken" — the shipped default really is such a family.
+    const { familyHasLoras } = await import('./models.js');
+    expect(familyHasLoras(DEFAULT_CHECKPOINT.baseModel)).toBe(false);
+  });
+
+  /**
+   * THE BUG THAT MADE HIDING THE FIELD DANGEROUS, pinned end to end.
+   *
+   * `onChangeModel` set the checkpoint and left `loras` alone. While the field stayed
+   * visible that was merely wrong — the viewer could see stale rows under a model
+   * that cannot use them. Hiding the field makes it INVISIBLE: the LoRAs still ride
+   * into `additionalResources`, the server rejects the generation, and nothing on
+   * screen names the cause.
+   *
+   * 🔴 RED AT BASE ON THE FIRST ASSERTION: there, switching Flux → the OpenAI default
+   * left `pm-lora-row` on screen.
+   */
+  it('🔴 switching to a no-LoRA family CLEARS the selection and says so; switching back re-enables Add', async () => {
     const user = userEvent.setup();
     render(<App />);
 
-    const add = await screen.findByTestId('pm-lora-add');
-    await user.click(add);
+    // Onto Flux (has LoRAs), then add one.
+    resourcePickerOpen.mockResolvedValue(checkpointPick);
+    await user.click(await screen.findByTestId('pm-change-model'));
+    await screen.findByText(/FLUX\.1 \[dev\]/);
+    resourcePickerOpen.mockResolvedValue(loraPick);
+    await user.click(screen.getByTestId('pm-lora-add'));
+    await waitFor(() => expect(screen.getAllByTestId('pm-lora-row')).toHaveLength(1));
 
-    // The picker was never opened — asserted on the CALL, not on the `disabled`
-    // attribute alone. A disabled attribute is what the user sees; whether a
-    // spend-adjacent host modal was opened is what actually matters, and a click
-    // handler wired past a cosmetic disable makes the two disagree.
-    expect(optsFor('LORA')).toBeUndefined();
-    expect(add).toBeDisabled();
-    // ...and the reason is on screen, naming the family, rather than a dead
-    // button with no explanation.
-    expect(screen.getByTestId('pm-lora-unsupported')).toHaveTextContent(
+    // Back to a family with none. The pick is the app's own default checkpoint, so
+    // the `baseModel` is `OpenAI` — the measured member of LORA_FREE_BASE_MODELS.
+    resourcePickerOpen.mockResolvedValue({
+      modelId: DEFAULT_CHECKPOINT.modelId,
+      versionId: DEFAULT_CHECKPOINT.versionId,
+      modelName: DEFAULT_CHECKPOINT.label,
+      baseModel: DEFAULT_CHECKPOINT.baseModel,
+    });
+    await user.click(screen.getByTestId('pm-change-model'));
+
+    // The selection is GONE, not merely hidden behind a disabled button...
+    await waitFor(() => expect(screen.queryByTestId('pm-lora-row')).not.toBeInTheDocument());
+    expect(screen.queryByTestId('pm-lora-add')).not.toBeInTheDocument();
+    // ...and the viewer is TOLD, naming the family and the count. An unannounced
+    // removal is a silent edit to what they are about to pay for.
+    expect(screen.getByTestId('pm-lora-cleared')).toHaveTextContent(
       DEFAULT_CHECKPOINT.baseModel,
     );
+    expect(screen.getByTestId('pm-lora-cleared')).toHaveTextContent('1');
+
+    // Switching back brings the control back, empty and usable.
+    resourcePickerOpen.mockResolvedValue(checkpointPick);
+    await user.click(screen.getByTestId('pm-change-model'));
+    const add = await screen.findByTestId('pm-lora-add');
+    expect(add).toBeEnabled();
+    expect(screen.queryByTestId('pm-lora-row')).not.toBeInTheDocument();
+    // The note went with the field it explained.
+    expect(screen.queryByTestId('pm-lora-cleared')).not.toBeInTheDocument();
+
+    // And a fresh add works, so the clear did not leave the picker wedged.
+    resourcePickerOpen.mockResolvedValue(loraPick);
+    await user.click(add);
+    await waitFor(() => expect(screen.getAllByTestId('pm-lora-row')).toHaveLength(1));
+  });
+
+  /**
+   * 🔴 A RESUME RESTORES A CHECKPOINT *AND* ITS LoRAs, and the clear above must not
+   * eat them. This is why the clearing lives in the click handler and NOT in an
+   * effect keyed on `checkpoint`: an effect would fire on the restore and wipe the
+   * LoRAs it had just put back, which is the exact failure the test above would
+   * still pass through.
+   *
+   * Asserted here at the MODEL layer rather than through the history panel — the
+   * component-level resume is covered in App.history.test.tsx. What this pins is
+   * that `lorasForCheckpoint` is a function of the FAMILY, so an SDXL restore keeps
+   * every LoRA it was handed.
+   */
+  it('🔴 a family that HAS LoRAs keeps every restored one — the resume path', async () => {
+    const { lorasForCheckpoint, familyHasLoras } = await import('./models.js');
+    const restored = [
+      { versionId: 11, modelId: 1, label: 'A', baseModel: 'SDXL 1.0', weight: 0.8 },
+      { versionId: 22, modelId: 2, label: 'B', baseModel: 'SDXL 1.0', weight: 1.2 },
+    ];
+    expect(familyHasLoras('SDXL 1.0')).toBe(true);
+    expect(lorasForCheckpoint('SDXL 1.0', restored)).toEqual(restored);
+    // The negative arm, so this is not just "the function returns its input".
+    expect(lorasForCheckpoint('OpenAI', restored)).toEqual([]);
   });
 
   it('the shipped default IS a family with no LoRAs — asserted, not assumed', async () => {

@@ -4,8 +4,9 @@ A Civitai **page money-path** App (Vite + React + TypeScript), wired to
 the published App SDK (`@civitai/blocks-react` + `@civitai/app-sdk`). It mounts
 as a full-page (W10) app at `/apps/run/yt-thumbnail` and spends Buzz to generate
 YouTube thumbnails at 1280×720: pick a checkpoint, optionally layer on a few
-LoRAs (each with a weight), choose 1–4 candidates → estimate → (lazy consent)
-→ submit → poll → gallery → text-overlay editor → download.
+LoRAs (each with a weight), choose 1–4 candidates → a **live** estimate → (lazy
+consent) → submit → poll → one results/history surface → text-overlay editor →
+download.
 
 ## What this is
 
@@ -114,25 +115,45 @@ the server **re-validates** (public? generation-covered? SFW for the domain?) an
 regardless of what the picker showed — `buildWorkflowBody` is not the enforcement
 boundary; the spend path is.
 
-### LoRA selector (host-served, server-revalidated)
+### LoRA selector (host-served — and INVISIBLE on the default model)
 
-On top of the checkpoint the user can layer up to **5 LoRAs**, each with an
-adjustable **weight** (the LoRA's `strength`, clamped to the server's `[-1, 2]`
-bound). The **Add LoRA** button calls `useResourcePicker().open({ resourceType:
+🔴 **Read this first: the field is not on screen for a viewer who has not changed
+the model.** `DEFAULT_CHECKPOINT.baseModel` is `'OpenAI'` and `'OpenAI'` is in
+`LORA_FREE_BASE_MODELS`, so on first load **every** viewer sees no LoRA control at
+all; it appears only once they pick a checkpoint from a family that has LoRAs. That
+is a deliberate operator decision, reaffirmed after being shown exactly this
+consequence — not an oversight, and not something to "fix". Everything below
+describes what the control does **once it is visible**.
+
+Once visible, the user can layer up to **5 LoRAs** on top of the checkpoint, each
+with an adjustable **weight** (the LoRA's `strength`, clamped to the server's
+`[-1, 2]` bound). **Add LoRA** calls `useResourcePicker().open({ resourceType:
 'LORA', baseModelGroup })`, the host opens its LoRA picker, and the pick
 (`BlockResourceInfo`) is appended via `loraFromPick` + `addLora`. LoRAs ride along
 as `additionalResources` in the workflow body — one `{ modelVersionId, strength }`
 entry per selected LoRA, emitted only when at least one is selected (a
-checkpoint-only body stays backward compatible).
-
-- **`src/models.ts`** — the LoRA types + the pure selection helpers (`addLora` /
-  `removeLora` / `setLoraWeight`) that enforce the dedup, the 5-LoRA cap
-  (`MAX_LORAS`), and the weight clamp, plus the pick→option mappers.
+checkpoint-only body stays backward compatible). `src/models.ts` holds the pure
+selection helpers (`addLora` / `removeLora` / `setLoraWeight`) that enforce the
+dedup, the 5-LoRA cap (`MAX_LORAS`) and the weight clamp, plus the pick→option
+mappers.
 
 LoRA picks + weights are **discovery only**, exactly like the checkpoint: the
 server is LoRA-only for additional resources and **re-validates** base-model
 compatibility + per-resource entitlement (early-access / Private) AND
 **re-prices** the whole body **before any Buzz spend**.
+
+🔴 **Hiding the field is only safe because the selection is CLEARED with it.**
+Changing the checkpoint used to leave `loras` untouched, so an SDXL LoRA stayed
+selected under an OpenAI checkpoint, rode into `additionalResources`, and the server
+rejected the generation with nothing on screen naming the cause. Visible-but-stale is
+survivable; invisible-and-stale is not — so a clear always comes with a note saying
+what was removed. `lorasForCheckpoint` is the **one** rule and has three callers: the
+model-change handler (so the viewer is told), the form snapshot every body is built
+from (so no body can carry an impossible resource), and the price signature (so the
+preview re-prices on exactly the changes that can reach the wire). The clear lives in
+the **click handler**, not in an effect keyed on `checkpoint`: a resume restores a
+checkpoint AND its LoRAs together, and an effect would fire on that restore and wipe
+what it had just put back.
 
 ### Generation modes: Generate (txt2img) and Remix (img2img)
 
@@ -196,10 +217,39 @@ nothing.
 
 ### Images per format (quantity 1–4)
 
-The picker requests 1–4 images *per format*, per run. It threads
-`params.quantity` (clamped server-side to [1, 4]); the estimate reflects the
-multiplied cost before any spend, and every returned image lands in the gallery
-**tagged with the format that produced it**.
+A **dropdown** (the pack's `Select`, over `QUANTITY_MIN..QUANTITY_MAX`) requests
+1–4 images *per format*, per run, and shares one wrapping line with the Buzz
+picker. It threads `params.quantity` (clamped by `clampQuantity` on the way in
+*and* out, then again server-side to [1, 4]); the estimate reflects the multiplied
+cost before any spend.
+
+> The pack's `Select` wraps a **native `<select>`** and therefore cannot render
+> icons — fine for the digits 1–4, and the reason the Buzz picker beside it is
+> still a custom listbox.
+
+Each returned image is listed under its **batch**, which names every format that
+produced it. There is deliberately **no VISIBLE per-image format tag**: the old
+candidate grid had one, but in the unified list an image belongs to a batch, and the
+batch already names its formats once.
+
+The attribution itself is not dropped, though — it is just not a chip. Each image's
+**filename** and **alt text** carry its own format, from `HistoryEntry.imageLabels`,
+which the join builds by pairing `workflowIds[i]` with `form.formats[i]` *before*
+dropping workflows the live page does not carry. Getting this from the render site
+instead is what made a 2-format batch save its Cinematic picture as
+`yt-thumbnail-clickbait-3.jpg`.
+
+One caveat, stated rather than ranked: **records written before this change cannot be
+labelled reliably at all.** The earlier writer recorded `workflowIds` in *completion*
+order and `form.formats` as the formats that survived *estimation*, so an old row can
+pair a multi-format batch the wrong way round (whichever format replied first takes the
+first format's name) and can also carry more formats than ids (one submit failure shifts
+every later label by one). Nothing in such a row says which format each id came from, so
+this is not repairable — only stated. It is **not** a claim that those rows are labelled
+better or worse than they were before: over a random reply order the two are a wash, and
+on a 2-format row whose second format replied first the new pairing mislabels both while
+the old one — which named every image after `formats[0]` — happened to get the first
+format's images right. Those rows age out with the orchestrator's images.
 
 ### Partial failure
 
@@ -207,6 +257,86 @@ With N workflows, some can fail while others succeed — the normal case, not an
 edge. A failed format does not discard its siblings' results, and the "Spent"
 line is summed **from what the server actually reported**, never from the
 estimate (which would cover workflows that never ran).
+
+### The live cost estimate (priced before anything is at stake)
+
+The price is on the Generate button **on mount** and again whenever anything
+price-relevant changes — checkpoint, LoRAs (including a LoRA's *weight*), quantity,
+selected formats. Before this the price only existed *after* a Generate click had
+already committed the viewer to spending: "estimate first, then submit" was true of
+the code and invisible to the user.
+
+🔴 **It is gated on the `ai:write:budgeted` scope, and it must not prompt for it.**
+`estimate()` itself 403s with *"block lacks ai:write:budgeted scope"* on an
+unconsented token (measured against the live backend 2026-09-28). Asking for consent
+on page *load* so a price can be shown is exactly what this app refuses to do — the
+scope authorises **spending**, and a permission dialog before the viewer has typed
+anything is how a page-money app gets declined. An unconsented viewer therefore keeps
+the old behaviour: no price until their first Generate, which is where the consent
+round trip already lives.
+
+The preview is **debounced**, **out-of-order safe** (a monotonic sequence number, which
+is not the debounce — it discards a slow earlier response the `clearTimeout` cannot
+reach), **never stale** (an input change drops the old figure immediately) and **never
+blocking** (a thrown or failed estimate leaves the run priceless, not terminal). Each
+has a test asserting a call **count** or **order** rather than a rendered number, since
+every defect this feature can have is invisible on screen. *Why* each property is
+load-bearing is on the effect itself in `src/App.tsx` — it is not restated here, because
+a second copy of a money rule is a second thing to get out of date.
+
+`estimateSignature` (`src/generation.ts`) is the **one** definition of
+"price-relevant". The prompt is deliberately **out** — it does not price a generation
+(the CLI's own dry-run says the prompt is not even sent with the estimate) and
+including it would fire a request per keystroke to learn nothing. The Buzz account is
+out too: it decides *whose* Buzz is debited, not *how much*.
+
+The Generate button and the Buzz picker read **one expression** (`estimatedCost`),
+sourced from the in-flight run's `runs` while a click is in flight and from the
+preview otherwise — so changing an input after a finished run re-prices the button
+instead of leaving the last run's bill on it.
+
+### One results + history surface
+
+🔴 **There used to be two, and that was a defect, not a layout choice.** A
+"candidates" grid built from the in-flight `runs`, and a collapsed History panel
+built from storage × the live queue, showing the same images from two sources.
+`initRuns` resets `runs` on every Generate, so **starting a second run blanked the
+first run's images** — output the viewer had already paid for, gone from the page with
+no way back until a reload.
+
+The fix is structural rather than a longer-lived `runs`: the batch record is inserted
+into the history list **as soon as workflow ids exist** (before the storage round
+trip), so an in-flight batch *is* the newest history row and fills in from skeleton to
+pictures where it stands. Rows are a responsive grid on the same `layoutForTier` column
+count the images use, a running batch renders `skeletonCount` tiles (`formats ×
+quantity` minus what has landed), and the editor entry point ("Add text") moved onto the
+row with the images. `src/history.ts` and `src/History.tsx` carry the reasoning for each
+rule; it is **not** restated here.
+
+Three consequences of making this the results surface are worth stating once, because
+each of them was a bug first:
+
+- **It is OPEN whenever there are rows**, not only after a submit. Generated images
+  live here now, so a collapsed panel hides output the viewer paid for — on a returning
+  visit as much as after a Generate. An explicit Hide is still honoured.
+- 🔴 **No storage state may REPLACE a row.** `anon` / `denied` / `error` and a reload
+  in flight are all banners **over** the rows — the reload one is
+  `yt-history-reloading`, added because narrowing the early return alone left a reload
+  over an existing list with no indication at all. The record is written at submit time, so
+  a rejected write is the *common* way to reach those states while paid-for images are
+  on screen; an early return there deletes the pictures and reports a storage problem
+  as though the generation had produced nothing. The whole block hides in exactly one
+  state — ready, empty and noteless (`showHistory`).
+- 🔴 **A row that EXISTS survives a reload** (`mergeUnsavedRecords`, called inside a
+  functional `setHistoryRecords`). A record whose write failed exists in memory only,
+  and a reload used to replace the list with what storage holds — so the "Try again"
+  button the error state offers *deleted* the run it was meant to recover. A reload is
+  now a merge: over the unsaved map **and** over the list as it stands when the read
+  resolves, because a batch saved *while* the read was in flight is in neither the
+  listing (taken earlier) nor the unsaved map (its write succeeded). The reload also
+  retries the writes that failed, and the state it lands on is gated on whether any of
+  them is still unsaved — a `set()` that keeps rejecting must not withdraw the banner
+  and the retry button while the record is still only in memory.
 
 ### What the platform does with `params.width`/`height`
 
@@ -262,8 +392,13 @@ picker below. That's app-specific context the chrome can't provide, so it earns
 its place. It's additive: if the balance is loading, errored, or unavailable the
 annotation just doesn't render and generation is **never blocked**.
 
-Below the LoRA selector, a **"Spend from"** picker lets the viewer choose which
-pool funds the generation:
+Beside the images-per-format dropdown, a picker **labelled "Buzz"** lets the viewer
+choose which pool funds the generation. Its *accessible* name is longer on purpose —
+`aria-label="Spend from <account>, <cost>"` — because a screen-reader user gets no
+layout to tell them this dropdown decides which wallet pays, so shortening the
+accessible name to the visible word would remove the only thing that said so.
+
+The pools:
 
 - **Auto** (the default) — omits `accountType` from the workflow body entirely.
   This is the pre-existing behavior byte-for-byte: the host drains its default
@@ -438,7 +573,7 @@ The two reads use **different credentials** — by design, and security-critical
 > `SET_USER_CHECKPOINT` persistence, the App-Storage KV protocol, in-band Buzz
 > purchase, or the `GET_BUZZ_BALANCE` read (`useBuzzBalance`) — those reply "not
 > supported in live v1" (use mock mode for them). So in `dev:live` the balance
-> reads as unavailable and the "Spend from" picker simply drops its 0-Buzz
+> reads as unavailable and the "Buzz" account picker simply drops its 0-Buzz
 > annotations — nothing else changes, and the host nav's own balance total (read
 > via your personal key through the proxy) still works. The balance resolves in
 > **`dev:harness`** (synthetic, wired to the `balance` scenario) and on the **real
@@ -493,9 +628,10 @@ npm run build         # what the platform produces (tsc typecheck + vite build)
   export quality ladder, and the file-name helper.
 - **`src/models.test.ts`** — the default checkpoint + the pick→option helpers
   (`checkpointFromPick` / `loraFromPick` from the SDK's `BlockCheckpointInfo` /
-  `BlockResourceInfo`, with missing-field tolerance), AND the LoRA selection
+  `BlockResourceInfo`, with missing-field tolerance), the LoRA selection
   helpers (`addLora`/`removeLora`/`setLoraWeight`, the dedup + 5-LoRA cap + the
-  weight clamp).
+  weight clamp), and `lorasForCheckpoint` — the one rule that drops LoRAs a
+  base-model family cannot use, in both arms.
 - **`src/nav.test.ts`** — the dev:live host nav's pure logic: the balance-response
   parser (`parseBuzzBalance`: tRPC envelope / bare / malformed / empty → safe),
   the viewer-name parser, and `navDisplay` (name present, balance present/absent).
@@ -507,7 +643,7 @@ npm run build         # what the platform produces (tsc typecheck + vite build)
   estimate → consent → submit → poll → succeeded flow through the REAL SDK
   transport against the mock host (no hook mocking) — plus: Auto omits
   `accountType`, a pick threads it, `spentAccountType` renders, a disallowed
-  pool resets to Auto, a quantity pill threads `params.quantity`, Remix mode
+  pool resets to Auto, the quantity dropdown threads `params.quantity`, Remix mode
   threads the uploaded `sourceImage`, and a gallery image opens/closes the
   editor view. This is what tells you the spend wiring still works after you
   edit the app.
@@ -519,6 +655,30 @@ npm run build         # what the platform produces (tsc typecheck + vite build)
   error (a transport blip, e.g. a not-yet-rolled-out pod) is retried, not turned
   into a terminal failure, while a genuine `failed` status stays terminal. Keep
   this if you customize `runPollLoop`.
+- **`src/App.estimate.test.tsx`** — the live cost preview. Every case asserts a call
+  **count** or a call **order**, because the defects here are invisible on screen: an
+  estimate per keystroke looks identical to one per change, and a stale response
+  overwriting a newer one shows a *wrong* number rather than a missing one. Covers
+  firing on mount and on each price-relevant change; **not** firing without the
+  budgeted scope and **not** asking for consent (with a positive control in the same
+  case, because a reassuring zero is indistinguishable from a harness wired to
+  nothing); not firing on a prompt change; the debounce; two hand-deferred in-flight
+  requests where the stale one must be discarded; the stale-price window; and that
+  the Generate button and the Buzz picker are one number — pinned as the
+  *relationship* at two different values, not as two literals.
+- **`src/App.historyvis.test.tsx`** — when the history surface exists at all (hides
+  only in ready+empty; still renders for anon / denied / error / live-error) and what
+  a still-running batch looks like (`formats × quantity` skeleton tiles; images and
+  skeletons together on a partly-delivered batch).
+
+> 🔴 **The preview races any suite whose token carries `ai:write:budgeted`.** Such a
+> suite prices the form on mount and on every price-relevant change, so a test that
+> clicks Generate before the debounce fires counts N estimates and one a few
+> milliseconds slower counts N+1. `App.formats.test.tsx`'s `settlePreview()` waits for
+> the price to *appear* and then zeroes the counter, which pins the boundary instead
+> of hoping for it. A suite that does not care about pricing should mint a token with
+> **no** budgeted scope (as `App.historyvis.test.tsx` does) so no estimate traffic
+> exists at all.
 
 ## Allowed parent origins
 
