@@ -236,7 +236,14 @@ describe('the layout the App renders, at EVERY tier', () => {
     expect(document.querySelector('[data-ultrawide]')).toHaveAttribute('data-ultrawide', 'false');
 
     const box = content();
-    expect(box).toHaveAttribute('data-result-columns', String(expected.resultColumns));
+    // 🔴 `data-result-columns` IS GONE FROM THE SHIPPED DOM with the field behind it.
+    // It reported the thumbnail grid's column count, which is the number that
+    // multiplied with the history ROW grid's identical count and produced an ~85px
+    // tile on an ultrawide block. The grid is intrinsically sized now — asserted as
+    // the `minmax` floor at four widths further down this file — so there is no count
+    // to report, and an attribute naming a number no style reads could only ever be
+    // right by coincidence. Asserted ABSENT so a revert has to update this line.
+    expect(box).not.toHaveAttribute('data-result-columns');
     expect(box).toHaveAttribute('data-min-card', String(expected.formatMinCardPx));
 
     // 🔴 THE INLINE STYLE IS THE LAYOUT — an attribute is only a report of it. The
@@ -290,7 +297,7 @@ describe('the layout the App renders, at EVERY tier', () => {
     expect(screen.getByTestId('pm-model-row')).toHaveAttribute('data-layout', expected.modelRow);
   });
 
-  it('ultrawide (1907px) gets the fourth column and the wider rail', async () => {
+  it('ultrawide (1907px) gets the wider format cards and the wider rail', async () => {
     // 🔴 THE ONLY CASE THE SDK CANNOT REACH. `xl` is unbounded, so 1523 and 1907
     // resolve to the SAME tier — the difference below is entirely the app-owned
     // `useUltrawide` threshold, and without this test that hook could be wired to
@@ -302,7 +309,10 @@ describe('the layout the App renders, at EVERY tier', () => {
 
     expect(document.querySelector('[data-block-tier]')).toHaveAttribute('data-block-tier', 'xl');
     expect(document.querySelector('[data-ultrawide]')).toHaveAttribute('data-ultrawide', 'true');
-    expect(content()).toHaveAttribute('data-result-columns', '4');
+    // 🔴 `data-result-columns` IS GONE (see the tier ladder above). The two
+    // ultrawide-only numbers that remain are the format-card floor and the rail
+    // width, and they are independent of each other, so this is not one coincidence.
+    expect(content()).not.toHaveAttribute('data-result-columns');
     expect(content()).toHaveAttribute('data-min-card', '220');
     expect(screen.getByTestId('yt-rail-grid').style.gridTemplateColumns).toBe(
       '400px minmax(0, 1fr)',
@@ -319,7 +329,10 @@ describe('the layout the App renders, at EVERY tier', () => {
     uninstall = installMockMoneyHost(VIEWER);
     render(<App />);
     await screen.findByTestId('pm-generate');
-    expect(content()).toHaveAttribute('data-result-columns', '3');
+    // 220 vs 200 and 400 vs 340 — the same two numbers the case above asserts, at the
+    // other end, which is what makes the pair a claim about `useUltrawide` rather than
+    // about the tier.
+    expect(content()).toHaveAttribute('data-min-card', '200');
     expect(screen.getByTestId('yt-rail-grid').style.gridTemplateColumns).toBe(
       '340px minmax(0, 1fr)',
     );

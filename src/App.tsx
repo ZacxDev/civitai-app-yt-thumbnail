@@ -3773,14 +3773,20 @@ function contentStyle(layout: BlockLayout): React.CSSProperties {
  * stronger witness of the two — a browser reads it, and it cannot be right while
  * the layout is wrong — so a duplicate attribute in the shipped DOM bought a second
  * assertion of the same thing and one more place to get out of step. What survives:
- * `resultColumns`, because the column count is decided at every tier but only
- * reaches a style once candidates exist, and `formatMinCardPx`, which the grid
- * carries as `minmax()` but is worth naming at the content box too.
+ * `formatMinCardPx`, which the grid carries as `minmax()` but is worth naming at the
+ * content box too.
+ *
+ * 🔴 `data-result-columns` IS GONE, AND SO IS THE FIELD BEHIND IT. It survived here
+ * on the argument that "the column count is decided at every tier but only reaches a
+ * style once candidates exist" — true, and the count itself turned out to be the
+ * defect: `History.tsx` applied it at two nested levels and the counts multiplied
+ * (see `layout.ts`). The thumbnail grid is intrinsically sized now, nothing lays out
+ * from a per-tier count, and an attribute reporting a number no style reads is a
+ * number that can only ever be right by coincidence.
  */
 function contentProps(layout: BlockLayout) {
   return {
     'data-testid': 'yt-content',
-    'data-result-columns': String(layout.resultColumns),
     'data-min-card': String(layout.formatMinCardPx),
   } as const;
 }

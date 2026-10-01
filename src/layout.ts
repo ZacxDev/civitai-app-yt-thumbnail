@@ -70,13 +70,22 @@ export interface BlockLayout {
    * `auto-fill` at 124px already fits two or three; at `xl` a count of three would
    * stretch three cards across ~1000px of main column and make each preview wider
    * than the thumbnail it previews. What the ask actually wanted — "previews at
-   * usable size" — is a minimum, so that is what this is. The RESULTS grid keeps
-   * the count ladder, because there comparability across a fixed number of
-   * candidates is the whole point. Recorded as a fork in `taste.json`.
+   * usable size" — is a minimum, so that is what this is. Recorded as a fork in
+   * `taste.json`.
+   *
+   * 🔴 THE CLAUSE THAT USED TO SIT HERE — "the RESULTS grid keeps the count ladder,
+   * because there comparability across a fixed number of candidates is the whole
+   * point" — IS GONE WITH `resultColumns`, AND THE RESULTS GRID PROVED IT WRONG.
+   * `History.tsx` applied that count at TWO NESTED levels (a grid of batch rows, and
+   * a grid of images inside each row), so the counts MULTIPLIED: 3 × 3 at `lg` made
+   * each thumbnail a ninth of the main column and 4 × 4 on an ultrawide block made it
+   * a sixteenth — an ~85px 16:9 tile on a 1920px screen. The thumbnail grid is now
+   * `auto-fill` + a px floor, like this one, and owns its own constant
+   * (`IMAGE_MIN_PX` in `ui-styles.ts`) rather than a per-tier number. Nothing in the
+   * app lays out from a column COUNT any more, which is why the field is gone rather
+   * than merely unused.
    */
   formatMinCardPx: number;
-  /** Columns in the results/candidates grid. */
-  resultColumns: number;
   /**
    * The prompt / model / LoRA / spend controls become a persistent left rail, so
    * they stay on screen while results fill the main area.
@@ -285,7 +294,6 @@ export function layoutForTier(tier: BlockSizeTier, ultrawide = false): BlockLayo
       ultrawide: wide,
       maxWidth: 640,
       formatMinCardPx: 124,
-      resultColumns: 1,
       rail: false,
       railWidth: 0,
       heroMinHeight: HERO_MIN_H_NARROW,
@@ -300,7 +308,6 @@ export function layoutForTier(tier: BlockSizeTier, ultrawide = false): BlockLayo
       ultrawide: wide,
       maxWidth: TWO_COLUMN_MAX_WIDTH,
       formatMinCardPx: 160,
-      resultColumns: 2,
       rail: false,
       railWidth: 0,
       heroMinHeight: HERO_MIN_H_NARROW,
@@ -320,7 +327,6 @@ export function layoutForTier(tier: BlockSizeTier, ultrawide = false): BlockLayo
     ultrawide: wide,
     maxWidth: null,
     formatMinCardPx: wide ? 220 : 200,
-    resultColumns: wide ? 4 : 3,
     rail: true,
     railWidth: wide ? RAIL_W_ULTRAWIDE : RAIL_W,
     heroMinHeight: HERO_MIN_H_RAIL,
