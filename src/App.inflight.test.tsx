@@ -50,10 +50,12 @@ import type { AppWorkflow, BlockWorkflowSnapshot } from '@civitai/app-sdk/blocks
  *   'pm-spent is gone in every state'            INVARIANT GUARD, asserted as a PAIR
  *     (the alert absent AND its information present on the row), so the information
  *     simply disappearing cannot satisfy it.
- *   'the pool patch'                             REGRESSION COVERAGE for two defects
- *     previously written down as accepted: the 64 KB re-check on the patch path (red
- *     against `tooLarge: false`, run) and the duplicate in-flight `set` (red against
- *     the skip-set removed, run — it measured three writes for one row).
+ *   'the pool patch'                             REGRESSION COVERAGE for three defects,
+ *     the first two previously written down as accepted: the 64 KB re-check on the patch
+ *     path (red against `tooLarge: false`, run), the duplicate in-flight `set` (red
+ *     against the skip-set removed, run — it measured three writes for one row), and the
+ *     saved-size note re-raising on every history open (red at `9ed9489` for the right
+ *     reason: the second open replaced 'Form restored.' with the size note).
  *   'the generate path survives StrictMode'      REGRESSION COVERAGE, and honestly red
  *     at `c109c526` for the right reason: 1 estimate call, 0 submit calls. It is the
  *     only case in the repo that renders the shape `main.tsx` mounts.
@@ -1237,6 +1239,85 @@ describe('🔴 the pool patch: no silent write loss, and no duplicate in-flight 
         'yellow',
       ),
     );
+  });
+
+  /**
+   * 🔴 THE SIZE NOTE IS SHOWN ONCE PER ROW, NOT ON EVERY HISTORY OPEN. Because the
+   * `tooLarge` write is never made, storage NEVER carries the pool — so every later
+   * `loadHistory` (the Show toggle, the panel's Refresh) recomputes the identical
+   * `tooLarge` patch. Pre-fix each one re-called `setHistoryNote`, which is a single
+   * slot: the size warning overwrote whatever the panel was saying, repeatedly, for a
+   * condition that had not changed since the first time it was disclosed.
+   *
+   * MATRIX: red at `9ed9489` — the second open replaced 'Form restored.' with the size
+   * note. Green with the `spendSizeNotedRef` filter.
+   *
+   * 🔴 'Form restored.' IS THE DISCRIMINATOR AND IT IS LOAD-BEARING. "The note is not
+   * re-raised" is unobservable while the note is already on screen, so the assertion
+   * needs a DIFFERENT note in the slot first. `yt-history-resume` puts one there without
+   * submitting anything, which is also why this cannot be a pure test.
+   */
+  it('🔴 does NOT re-raise the saved-size note on a later history open', async () => {
+    const { STORAGE_VALUE_MAX_BYTES } = await import('./history.js');
+    const patchWrites: string[] = [];
+    storageSet.mockImplementation(async (key: string, value: unknown) => {
+      if ((value as { spentAccount?: unknown }).spentAccount !== undefined) patchWrites.push(key);
+      store.set(key, value);
+      return { ok: true };
+    });
+    submitFn.mockResolvedValue(snap({ workflowId: 'wf-a', status: 'processing' }));
+    pollFn.mockImplementation(async (id) =>
+      snap({
+        workflowId: id,
+        status: 'succeeded',
+        cost: { total: COST_1 },
+        imageUrls: ['https://image.civitai.com/a.jpg'],
+        spentAccountType: 'yellow',
+      }),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+    await generateAndPoll(user, 'a red bicycle');
+
+    // POSITIVE CONTROL: the ordinary patch landed, so the effect is wired to something.
+    await waitFor(() => expect(storedRecords()[0]?.spentAccount).toBe('yellow'), {
+      timeout: 5000,
+    });
+
+    // Same row, unstamped and grown to sit exactly ON the ceiling — the only way a
+    // record reaches this state. Storage wins on a key collision, so the next read
+    // hands the app the padded copy.
+    const [key] = [...store.keys()].filter((k) => k.startsWith(HISTORY_PREFIX));
+    const grown = JSON.parse(JSON.stringify(store.get(key))) as GenerationRecord;
+    delete grown.spentAccount;
+    const naked = new TextEncoder().encode(JSON.stringify(grown)).length;
+    grown.form.formats[0].prompt += 'x'.repeat(STORAGE_VALUE_MAX_BYTES - naked);
+    store.set(key, grown);
+
+    // FIRST open: the viewer is told, once. This is the behaviour being kept.
+    await user.click(screen.getByTestId('yt-history-toggle'));
+    await user.click(screen.getByTestId('yt-history-toggle'));
+    await waitFor(() =>
+      expect(screen.getByTestId('yt-history-note')).toHaveTextContent(/size limit/i),
+    );
+    expect(patchWrites).toEqual([key]);
+
+    // Put a DIFFERENT note in the one note slot, without submitting anything.
+    await user.click(await screen.findByTestId('yt-history-resume'));
+    await waitFor(() =>
+      expect(screen.getByTestId('yt-history-note')).toHaveTextContent(/Form restored/i),
+    );
+
+    // SECOND open: `loadHistory` hands back the same unstamped padded row and the
+    // identical `tooLarge` patch is recomputed. The note must stay the viewer's.
+    await user.click(screen.getByTestId('yt-history-toggle'));
+    await user.click(screen.getByTestId('yt-history-toggle'));
+    await screen.findByTestId('yt-history-resume');
+    expect(screen.getByTestId('yt-history-note')).toHaveTextContent(/Form restored/i);
+    expect(screen.getByTestId('yt-history-note')).not.toHaveTextContent(/size limit/i);
+    // And still no doomed write — the dedup is about the NOTE, not about the skip.
+    expect(patchWrites).toEqual([key]);
   });
 });
 

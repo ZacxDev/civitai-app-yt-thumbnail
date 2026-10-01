@@ -268,12 +268,27 @@ export function parseRecord(raw: unknown): GenerationRecord | null {
  * disagreement — a batch whose second format is still running has one pool known
  * and that is not a conflict.
  *
- * 🔴 SO THIS FUNCTION'S ANSWER IS PROVISIONAL, AND ONLY A CALLER THAT RECOMPUTES IT
- * MAY ACT ON IT. Ignoring the unknowns is right for a RENDER — `joinHistory` runs on
- * every render, so a bolt painted from one known pool is corrected the moment the
- * second format reports. It is wrong for a WRITE: formats finish seconds apart, so the
- * first answer is almost always alone, and a stamp is permanent. `spendPatches` is
- * therefore the half that waits for every workflow; see its own note.
+ * 🔴 AND NO LIVE CALLER DEPENDS ON THAT RULE — THE RENDER PATH THIS NOTE USED TO NAME
+ * DOES NOT EXIST. `joinHistory` never calls this function: it reads
+ * `record.spentAccount ?? null` straight off the stored row (see its `spentAccount:`
+ * line), so no render recomputes a provisional answer and nothing is "corrected when
+ * the second format reports". This function's ONLY caller in the app is `spendPatches`
+ * below, and that caller requires EVERY workflow in the batch to have reported before
+ * it calls here — so `pools[id]` is never `undefined` on the live path and the
+ * `pool !== undefined` test below is unreachable from production code.
+ *
+ * It is kept, and NOT as defence-in-depth: it IS the contract stated above rather than
+ * a guard over it. Without it `seen` would collect `undefined` as though it were a
+ * pool. Measured by deleting it and running the whole suite: exactly 2 of 841 cases red,
+ * both of them this function's own, and both with the predicted failures — a
+ * partly-reported batch returned `null` where `'blue'` is correct (a disagreement that
+ * is not there), and an all-unknown batch returned `undefined` where `null` is correct.
+ * Nothing else in the suite moved. So those unit tests are its only exercisers, and the
+ * alternative is not a simpler function but a differently-wrong one.
+ *
+ * The ignore rule is wrong for a WRITE, which is why `spendPatches` does not rely on
+ * this function alone: formats finish seconds apart, so the first answer is almost
+ * always the only answer, and a stamp is permanent. See its own note.
  */
 export function agreedSpentPool(
   workflowIds: readonly string[],
@@ -325,6 +340,39 @@ export interface SpendPatch extends StoredRecord {
  * It is NOT a terminal-status check, deliberately: this module has no status for a
  * workflow the live page has not delivered yet, and a batch whose last format never
  * reports simply keeps the neutral bolt — the same answer it has today while running.
+ *
+ * 🔴 AND THAT NEUTRAL BOLT IS THEN PERMANENT FOR THAT ROW. The app-side half is
+ * unconditional: a pool is recorded ONLY from a snapshot that actually carries
+ * `spentAccountType` (`App.tsx` `applySnapshotToRun`), so a workflow whose pool never
+ * arrives contributes nothing, `every` above holds the WHOLE batch back, and no write is
+ * ever made. There is no later repair: the pool map is session state filled only by the
+ * SUBMIT poll loop, which runs for the batch being submitted and never re-polls an older
+ * one. So after a reload the map starts empty and no unstamped row can learn its pool
+ * again, whatever ended it — the write only ever happens in the session that submitted
+ * the batch, while that batch's own poll loop is still running.
+ *
+ * That already makes one trigger CERTAIN and host-independent: a batch still running
+ * when the viewer reloads or closes the tab keeps the neutral bolt for good, because
+ * nothing will ever poll it again.
+ *
+ * ⚠ THE OTHER TWO SHAPES ARE HOST-DEPENDENT AND THE DEPENDENCE IS UNVERIFIED: the
+ * shipped `yt-history-cancel` button (`History.tsx`), and one format of a multi-format
+ * batch failing while its siblings succeed. Both reach this rule ONLY IF the host leaves
+ * `spentAccountType` off the terminal snapshot — and whether it does is untested here,
+ * because every test of this path runs against the MOCK host. Note the poll loop does
+ * keep running after a cancel until it sees a terminal status, so the app does get one
+ * more snapshot; the open question is purely what that snapshot carries. If the host
+ * stamps a pool on it, these two shapes largely disappear; if it does not, any
+ * multi-format batch with one casualty keeps a grey bolt forever. This note asserts
+ * neither.
+ *
+ * 🔴 ACCEPTED BY THE OPERATOR, with both alternatives on the table: treating a terminal
+ * non-success as "reported", or reverting to a memory-only colour. Neither was taken. A
+ * neutral bolt means "we do not know", which is TRUE in every shape above, and both
+ * alternatives trade that for a row that can assert the WRONG pool on a surface about
+ * the viewer's money. `history.test.ts` pins the rule so it stays deliberate rather than
+ * incidental — what it pins is the app's behaviour given a missing pool, not when the
+ * host leaves one missing.
  *
  * 🔴 AND THE 64 KB CEILING IS RE-CHECKED, because the pool field is what can cross it.
  * `recordFits` was consulted once, at submit, where the record carries no

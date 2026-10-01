@@ -26,7 +26,7 @@ import {
 } from './history.js';
 import { DEFAULT_CHECKPOINT } from './models.js';
 
-import type { AppWorkflow } from '@civitai/app-sdk/blocks';
+import type { AppWorkflow, BuzzAccountType } from '@civitai/app-sdk/blocks';
 
 /**
  * 🔴 RED/GREEN MATRIX FOR THIS WHOLE FILE — read the label, do not assume.
@@ -685,6 +685,59 @@ describe('🔴 spendPatches — the write that makes the pool survive a reload',
     // A single-workflow batch is unaffected: one known pool IS every pool.
     const solo = spendPatches([stored('k2', { workflowIds: ['wf-a'] })], { 'wf-a': 'green' });
     expect(solo.map((p) => p.record.spentAccount)).toEqual(['green']);
+  });
+
+  /**
+   * 🔴 THE ACCEPTED COST, PINNED SO IT STAYS DELIBERATE. A workflow that ends without
+   * the server reporting a pool never contributes one — the app records a pool only
+   * from a snapshot carrying `spentAccountType` — and `every` then holds the WHOLE batch
+   * back. So a multi-format batch in which ANY workflow's pool never arrives keeps the
+   * neutral bolt for good: nothing is written, and every later ask returns the same
+   * empty answer.
+   *
+   * One trigger is CERTAIN and host-independent: a batch still running when the viewer
+   * reloads keeps the neutral bolt for good, because the pool map is session state and
+   * nothing ever re-polls an older batch. Two more SHAPES are host-dependent — the
+   * shipped `yt-history-cancel` button, and one format failing while its siblings
+   * succeed — and reach this rule only if the host leaves `spentAccountType` off the
+   * terminal snapshot. See the ⚠ below; this case does not assert that it does.
+   *
+   * 🔴 OPERATOR DECISION, NOT AN OVERSIGHT. The alternatives — treat a terminal
+   * non-success as "reported", or revert to a memory-only colour — were both declined.
+   * A neutral bolt means "we do not know", which is TRUE here; both alternatives trade
+   * that for a row that can assert the WRONG pool on a money surface. This case exists
+   * so changing that is a visible decision rather than a quiet edit.
+   *
+   * INVARIANT GUARD, not a regression test: `9ed9489` behaves exactly as asserted here.
+   *
+   * ⚠ UNVERIFIED and it decides the SIZE of this case: whether the real host stamps
+   * `spentAccountType` on a failed or cancelled snapshot. Every pool test in this repo
+   * runs against the mock. This case asserts the app's rule given a missing pool; it
+   * asserts nothing about when the host leaves one missing.
+   */
+  it('🔴 a batch with ONE never-reporting workflow is never stamped, however often it is asked', () => {
+    // wf-b is the workflow whose pool never arrives — a cancel, a failure, or a session
+    // that ended while it was still running. Its id simply never appears in the map.
+    const row = stored('k1', { workflowIds: ['wf-a', 'wf-b', 'wf-c'] });
+
+    // The siblings report, and they AGREE — the only thing missing is wf-b's key.
+    const pools: Record<string, BuzzAccountType> = { 'wf-a': 'yellow', 'wf-c': 'yellow' };
+    expect(spendPatches([row], pools)).toEqual([]);
+
+    // Asked again — this is what a Show toggle or a panel Refresh does, and what a
+    // reload would do if the map survived one. Still nothing, forever.
+    expect(spendPatches([row], pools)).toEqual([]);
+    // And a workflow OUTSIDE this batch reporting does not satisfy `every` either, which
+    // a mutant counting map entries rather than checking THIS row's ids would allow.
+    expect(spendPatches([row], { ...pools, 'wf-other': 'yellow' })).toEqual([]);
+
+    // 🔴 AND THE ONLY-MISSING-ONE ARM IS WHAT MAKES THAT MEAN SOMETHING. Hand the same
+    // row wf-b's pool and it patches immediately — so the `[]` above is the absent
+    // workflow, not a batch size this function refuses to touch. `blue` here is distinct
+    // from the `yellow` above, so a mutant returning a constant cannot satisfy both.
+    const complete = spendPatches([row], { 'wf-a': 'blue', 'wf-b': 'blue', 'wf-c': 'blue' });
+    expect(complete).toHaveLength(1);
+    expect(complete[0].record.spentAccount).toBe('blue');
   });
 
   it('patches several rows in one pass and keeps them keyed apart', () => {

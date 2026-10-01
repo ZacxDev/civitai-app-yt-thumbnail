@@ -439,6 +439,17 @@ export function App() {
    * not do: writing it would retrigger the very effect it is damping.
    */
   const spendWritesRef = useRef<Set<string>>(new Set());
+  /**
+   * Keys whose saved-size note has already been shown this session.
+   *
+   * A `tooLarge` patch is never written, so storage never carries the pool and the
+   * patch is recomputed identically by every later `loadHistory` — the Show toggle, the
+   * panel's Refresh. Without this the note re-raised on each one, clobbering whatever
+   * note the panel was showing. A ref for the same reason as `spendWritesRef`: state
+   * here would retrigger the effect that sets it. Session-scoped deliberately, so a
+   * reload does tell the viewer once more.
+   */
+  const spendSizeNotedRef = useRef<Set<string>>(new Set());
   /** The unsaved map as the list shape everything else here speaks. */
   const unsavedRecords = useCallback(
     (): StoredRecord[] => [...unsavedRecordsRef.current].map(([key, record]) => ({ key, record })),
@@ -1966,9 +1977,9 @@ export function App() {
    * `spendPatches` would keep returning it and this effect would re-write on every
    * dependency change forever. Patching memory regardless makes the function return
    * `[]` on the next pass, which is what terminates it. A storage failure therefore
-   * costs the pool colour on the NEXT reload and nothing else — hygiene, like the
-   * prune above, so it is deliberately silent rather than a banner over images the
-   * viewer already owns.
+   * costs the pool colour from the next reload ON — see the no-retry paragraph below for
+   * how long "on" really is — and nothing else: hygiene, like the prune above, so it is
+   * deliberately silent rather than a banner over images the viewer already owns.
    *
    * 🔴 THE CEILING IS RE-CHECKED HERE, AND IT WAS A SILENT WRITE LOSS BEFORE. A record
    * inside the 64 KB per-value limit by fewer bytes than `,"spentAccount":"yellow"`
@@ -1977,8 +1988,17 @@ export function App() {
    * the rejection, so the row lost its pool colour on the next reload with nothing on
    * screen saying so. `spendPatches` now flags such a row (`tooLarge`), the doomed
    * round trip is not made, and the viewer is told. This was written down as KNOWN AND
-   * ACCEPTED and the operator withdrew that acceptance: silent data loss on a money
-   * surface is not an accepted cost.
+   * ACCEPTED and the operator withdrew that acceptance for the SIZE cause.
+   *
+   * 🔴 ONLY THE SIZE CAUSE IS SURFACED — EVERY OTHER REJECTION IS STILL SWALLOWED, AND
+   * THAT IS THE DELIBERATE HALF, NOT AN OVERSIGHT. The `.catch(() => undefined)` below
+   * is unchanged, so a quota, transport or scope rejection of this `set` still costs the
+   * row its pool colour with nothing on screen saying so. That is the trade in the
+   * paragraph above — not a banner over images the viewer already owns, for a colour.
+   * Size is treated differently only because it is PREDICTABLE: `recordFits` knows
+   * before the round trip, so the viewer can be told without the app guessing at a
+   * rejection it has not had. So "silent data loss is not an accepted cost" holds for
+   * the size case and is NOT a claim about every way this write can fail.
    *
    * 🔴 AND THE LIST IS NO LONGER ITS OWN TRIGGER FOR A WRITE ALREADY IN FLIGHT.
    * `historyRecords` is both a dependency of this effect and what its `.then` sets, so
@@ -1988,8 +2008,26 @@ export function App() {
    * flight and they are skipped, which breaks the cycle at the only place it can be
    * broken: the memory patch cannot land sooner, because it is what the `.then` does.
    * The key is released in the same `.then` whatever the write's outcome, so a failure
-   * cannot wedge a row out of ever being patched again. This was the second KNOWN AND
-   * ACCEPTED item, and it is withdrawn too.
+   * cannot wedge the SKIP SET: no stale key is left behind to block a later pass. This
+   * was the second KNOWN AND ACCEPTED item, and it is withdrawn too.
+   *
+   * 🔴 THAT IS A CLAIM ABOUT THE KEY, NOT ABOUT THE ROW — AND NOTHING SCHEDULES A RETRY.
+   * The same `.then` applies the memory patch regardless of the write's OUTCOME, which
+   * sets `spentAccount`, and `spendPatches` never returns a row that already carries one.
+   * So this effect does not re-attempt a rejected `set` on its own: the released key
+   * means only that no stale entry blocks a later pass, not that a later pass will come.
+   * Not re-attempting is also what terminates the effect — the alternative is the
+   * forever-rewrite loop the paragraph above describes.
+   *
+   * What CAN re-attempt it, and this is incidental rather than a retry policy, is a
+   * reload of the STORED half within the same session — the Show toggle, the panel's
+   * Refresh. Storage wins on a key collision (`mergeUnsavedRecords`), so the unstamped
+   * stored copy replaces the patched one in memory and the patch is recomputed from a
+   * pool map that is still populated. Across a page reload there is no second chance at
+   * all: the pool map is filled only by the submit poll loop and nothing re-polls an
+   * older batch (see `spendPatches`' own note). So a write that keeps failing, or a
+   * session that ends before the next history open, costs that row its pool colour for
+   * good.
    *
    * 🔴 AND THE `alive` CANCELLATION IS GONE WITH IT, BECAUSE THE TWO TOGETHER WOULD HAVE
    * BEEN A THIRD DEFECT. The skip-set is the only thing that can stop a duplicate write,
@@ -2010,7 +2048,14 @@ export function App() {
     // the MEMORY patch below still applies to it, because that is what stops this effect
     // returning the same row forever.
     const writable = patches.filter((p) => !p.tooLarge);
-    if (writable.length < patches.length) {
+    // Once per row per session. Because the `tooLarge` write is never made, storage
+    // never carries the pool, so every later `loadHistory` — the Show toggle, the
+    // panel's Refresh — recomputes the identical `tooLarge` patch and would re-raise
+    // this note, overwriting whatever the panel was saying at the time. The condition
+    // is permanent; the disclosure is not news twice.
+    const unnoted = patches.filter((p) => p.tooLarge && !spendSizeNotedRef.current.has(p.key));
+    if (unnoted.length > 0) {
+      for (const p of unnoted) spendSizeNotedRef.current.add(p.key);
       setHistoryNote(
         "This run is at its saved-size limit, so which Buzz pool funded it couldn't be saved. " +
           'Everything else about the run is saved, and the figure above is correct.',
