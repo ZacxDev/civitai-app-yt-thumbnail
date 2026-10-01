@@ -15,16 +15,17 @@ Ship **YT Thumbnail** — a Civitai page-money app generating YouTube thumbnails
 - **Arcs 1–5 all MET** (2026-09-27 … 2026-09-30), FROZEN, kept as history.
 
 ## State now
-- **No clawgate task** (`resolve` exited 5 — nothing resolved; an unknown id also answers 200/empty, so not a clean bill of health). No field written.
-- ✅ **ALL FOUR PRs MERGED — nothing open in this repo.** `main` = **`b094401`**, clean. Verified **by CONTENT** on the merged main, never ancestry (a squash makes the branch head a permanent non-ancestor): **`civitai/civitai#5277` → `fd3831b0`** (the `orchestration-new` allowlist fix; new host present, other three intact, `https:`-only check untouched) · **`#24` → `eb35ef41`** (the UI batch; StrictMode reset, `relative-time.ts`, the `deferred` helper) · **`#19` → `b0944017`** (another session's; two `RESOLVED BY DECISION` entries, the palette docblock) · **`devrc#1951` → `dc5f6af9`** (flow corrections; zero FQDN literals remain under `scripts/browser-bridge/`).
-- ✅ **`main` re-verified AS A MERGED TREE after both merges landed** — that exact form had only been tested as an integration branch: `tsc` rc 0, **841 tests / 32 files green × 3 consecutive runs**, `npm run build` rc 0, `civitai app validate .` → `✓ . is valid`.
-- 🔴 **ARC 6 IS ONE FREE CLICK FROM CLOSING AND NOTHING BLOCKS IT.** Criteria 1 and 2 MET (values below); criterion 3's blocker is **merged** (`fd3831b0`). **To close it:** laptop bridge → click `[data-testid=yt-history-save]` on a completed history row → read `[data-testid=pm-save-note]`. **BROKEN** = `Couldn't save that image: image url is not allowed`; **FIXED** = no error + a download. 🔴 **Saving costs ZERO Buzz**, so this needs no spend approval. ⚠ `#5277` is a **HOST-side** change shipping with `civitai.com`, **not** with the block bundle — do NOT wait for a new `index-*.js` hash; the block still serves `index-BQ7kpc1g.js` and that is expected.
-- ✅ **ARC 6 criteria 1+2 — carried forward, because `State now` is REPLACED each round and these values ARE the arc's proof.** (1) Three `DONE` generations on the operator's account, 2026-09-30 CDT: **17:51:22 / 209 Buzz** (1 format, 1 img) · **17:56:30 / 418** (2, 2) · **23:06:03 / 836** (4, 4), all ChatGPT Images `1×`, delivered 1536×864 — 23:06:03 being **nine minutes after 0.1.7 went live (22:57)**, so the money path is proven on 0.1.7 itself. (2) `yt-history-resume` on the newest row moved three values at once: prompt `""` → the stored 61-char prompt, formats `clickbait` → `clickbait+cinematic+tutorial+gaming`, button `209` → **`836 Buzz`**, app printing *"Form restored. Nothing was submitted."*, `Thumbnails 3` unchanged. Also still true: the `apps:storage:read`/`write` scopes ARE consented and the round-trip works; the two `shared` scopes are untested.
-- 🔴 **UNVERIFIED, AND IT IS THE OPERATOR'S OWN ASK: the VISUAL result of the seven-item UI batch.** jsdom lays nothing out, so every grid assertion is a **style contract**, not a tile size. Nobody has seen the larger thumbnails, icon buttons, per-pool Buzz bolt, dropped badge or relative timestamps render. **#24 is merged but NOT deployed** — it needs a version bump + submit first.
-- 🔴 **A PUBLIC-REPO SECURITY GATE WAS RED THROUGH FOUR AUDIT ROUNDS AND NOBODY LOOKED.** `devrc#1951`'s `tekton/devrc-pytests` failed from its FIRST commit on `test_no_client_subdomain_literal_is_committed` (1 of 24,744): five client-subdomain FQDN literals committed to a PUBLIC repo. Every round ran 3 of 30 hermetic targets, passed, and said the rest was UNRUN — honestly, and that caveat was the whole story. Fixed without widening the allowlist (the scanner matches `<label>.<apex>`, so bare **labels** satisfy it and carry the finding anyway); red-before/green-after, then all four Tekton gates green, **which is also the first time the full suite has actually run on this work**. **Lesson is cross-cutting, not app-specific — it belongs in `RULES.md`/the audit-pr skill, not here: before merging, read `gh api …/commits/<sha>/status` AND `/check-runs`, and attribute any red with a sibling-PR control.**
+- **No clawgate task.** `clawgate_handoff.sh resolve` exited **5** — nothing resolved. An unknown session id also answers 200/empty, so that is **not** a clean bill of health; no field written. ⚠ Read its OUTPUT, not `$?` through a pipe.
+- **`main` = `3a27351`**, clean, **no open PRs, no leftover worktrees** (all removed).
+- ✅ **FIVE PRs merged, each verified by CONTENT on the merged `main`** (never ancestry — a squash makes the head a permanent non-ancestor): **`civitai#5277` → `fd3831b0`** (the `orchestration-new` allowlist fix — **ARC 6's blocker, gone**) · **`#24` → `eb35ef41`** (UI batch) · **`#19` → `b0944017`** (another session's; rebased by me) · **`devrc#1951` → `dc5f6af9`** (flows) · **`#26` → `e994fed0`** (0.1.8 bump). Plus archive PRs #25/#27.
+- ✅ **`main` re-verified AS A MERGED TREE** (that form had only been tested as an integration branch): `tsc` rc 0, **841/32 × 3 runs**, build rc 0, `validate ✓`. `tsc` rc 0 again at `02b6cf0`.
+- 🔴 **0.1.8 IS APPROVED BUT ITS DEPLOY FAILED, AND THE CAUSE IS NOT OUR CODE.** `pubreq_01M3WJ0CQEX9JA8V97KYTMP8JY`, source `e994fed`, submitted 15:20 CDT → reviewed **15:21** (one minute — by far the fastest moderation observed here) → deploy `failed` 15:22. `SCAN-BLOCKED (F10)`: Trivy found **4 HIGH pcre2 CVEs in the platform's own base image**. See the investigation block. **0.1.7 is still live and serving `index-BQ7kpc1g.js`** — unaffected.
+- 🔴 **CONSEQUENCE: the seven UI changes are still invisible to viewers and their VISUAL result is unverified by anything.** jsdom lays nothing out, so every grid assertion is a **style contract**, not a tile size — nobody has seen the thumbnails, icon buttons, Buzz bolt, dropped badge or relative timestamps render. The deploy is what blocks it.
+- ✅ **ARC 6 criteria 1+2 — carried forward; `State now` is REPLACED each round and these values ARE the arc's proof.** (1) Three `DONE` generations on the operator's account, 2026-09-30 CDT: **17:51:22 / 209 Buzz** (1 fmt, 1 img) · **17:56:30 / 418** (2, 2) · **23:06:03 / 836** (4, 4), ChatGPT Images `1×`, delivered 1536×864 — 23:06:03 is **nine minutes after 0.1.7 went live (22:57)**, so the money path is proven on 0.1.7 itself. (2) `yt-history-resume` moved three values at once: prompt `""` → the stored 61-char prompt, formats `clickbait` → `+cinematic+tutorial+gaming`, button `209` → **`836 Buzz`**, app printing *"Form restored. Nothing was submitted."*, `Thumbnails 3` unchanged. Also still true: `apps:storage:read`/`write` ARE consented and round-trip; the two `shared` scopes are untested.
+- 🔴 **ARC 6's last criterion is UNBLOCKED, FREE, and does NOT need 0.1.8.** `fd3831b0` is **HOST-side** — it ships with `civitai.com`, not the block bundle — so the save-check runs against **live 0.1.7** now. Click `yt-history-save`, read `pm-save-note`: **BROKEN** = `Couldn't save that image: image url is not allowed`; **FIXED** = no error + a download. Zero Buzz. ⚠ A new block bundle hash is the WRONG signal; do not wait for one.
 - **Buzz spent this session: 0.** `pm-generate` never clicked.
-- **Operator decisions standing:** (a)–(k) as recorded, plus **(l)** keep Buzz-pool persistence + fix both defects; **(m)** grey bolt: accept honest-neutral, name the triggers, no behaviour change; **(n)** allowlist fix as a minimal 2-edit PR, not a consolidation; **(o)** merge all four PRs. **Do not re-litigate.**
-- ⚠ The 7 Buzz reconciliation gap from arc 3 is still unexplained. ⚠ `.claude/` is still not gitignored and holds agent worktrees.
+- **Operator decisions standing:** (a)–(k) as recorded, plus **(l)** keep Buzz-pool persistence + fix both defects; **(m)** grey bolt: accept honest-neutral, name the triggers, no behaviour change; **(n)** allowlist fix as a minimal 2-edit PR, not a consolidation; **(o)** merge all four PRs; **(p)** bump to 0.1.8 and submit. **Do not re-litigate.**
+- ⚠ The 7 Buzz reconciliation gap from arc 3 is still unexplained. ⚠ `.claude/` is still not gitignored (a `git add -A` hazard — and see the packaging gotcha, which `.gitignore` does NOT fix).
 
 ## Version history (server-confirmed, never from a CLI exit code)
 | ver | pubreq | source | state |
@@ -148,20 +149,32 @@ ARCHIVED → `claudedocs/handoff-yt-thumbnail-ARCHIVE.md`. Short version: `orche
 - **Leading hypothesis:** none outstanding — the mechanism is established and the control pair closes it.
 - **Next probe:** none for this. If the suite ever flakes here again, timestamp the mock's calls first; aggregate timings are the wrong instrument.
 
+### 🔴 0.1.8 approved but DEPLOY FAILED — the platform's base image, not our code
+- as-of: 2026-10-01
+- **Symptom + exact repro:** `civitai app status` (no slug) shows `yt-thumbnail 0.1.8 approved failed e994fed`. Detail via `civitai app status yt-thumbnail` — safe here only because our row IS the newest; **a sourceless twin makes that view lie, so prefer the no-slug form and grep your sha.**
+- **Observed (with values):** `Deploy detail:` carries `SCAN-BLOCKED (F10): trivy found un-ignored HIGH/CRITICAL vulnerabilities in image.tar -- failing the build BEFORE publish.` · `image.tar (alpine 3.23.4)` · `Total: 4 (HIGH: 4, CRITICAL: 0)`, all in **pcre2**, installed **10.47-r0**: `CVE-2026-103111` (fixed 10.49-r0, out-of-bounds write), `CVE-2026-86145` (fixed 10.48-r0, arbitrary code execution), `CVE-2026-89157`, `CVE-2026-89161` (memory corruption in `pcre2_jit_match`). `Source commit: e994fed04c00a0767ea549f614bac41290f9390f (reported clean)`. Timeline: submitted **15:20 CDT**, reviewed **15:21**, deploy updated **15:22**. `via: command`
+- **Ruled out — our source.** The gate names only `image.tar`'s alpine packages; this app ships no pcre2, and the scan reports the source commit clean. The same tree passed `tsc` rc 0, 841/841, `npm run build` rc 0 and `civitai app validate .` locally. `via: measurement` + `via: code`
+- **Ruled out — a packaging mistake of ours.** The bundle was inspected with `--package-only` first: **6.8 MB / 114 files**, zero `.claude` paths, scan completed, one known-benign hit. `via: measurement`
+- 🔴 **Ruled out — that this is a transient to re-submit through, which CORRECTS guidance now in the ARCHIVE.** That evicted note said to "treat `failed` as a re-submit rather than a source problem". That is wrong for THIS failure: the blocking CVEs are in the base image, so a re-submit rebuilds the same image and fails identically until the platform bumps pcre2 to ≥10.48-r0. `via: code`
+- ⚠ **NOT a control:** yt-thumbnail is the only app whose newest row is `failed` (8 `live`, 8 withdrawn/pending). But those 8 builds PREDATE these `CVE-2026-*` entries, so they say nothing about a build started now — any app building today would likely hit the same gate. `via: measurement`
+- **Leading hypothesis:** the platform's builder base image is pinned to an alpine 3.23.4 with pcre2 10.47-r0, and its Trivy DB has since learned four HIGH pcre2 CVEs. Nothing in this repo can move it; the fix is a platform-side base-image bump or an ignore entry. **NOT established:** whether the platform team already knows, and whether F10 has a documented waiver path.
+- **Next probe, verbatim:** `civitai app status | grep e994fed` — does the deploy state move on its own (the builder may retry on a newer base image)? If still `failed` later, re-submit once (`civitai app submit --yes` from a clean `main`); an identical failure confirms it is platform-side and the ask goes to whoever owns the App Blocks builder. 🔴 **Do NOT withdraw 0.1.8** — that deletes the store listing and everything on it, and 0.1.7 is live, so there is nothing to rescue.
+
 ## Next steps (ranked)
-1. 🔴 **Close ARC 6 — one free click, no spend.** See `State now` for the exact click path and the two outcomes. Record the observed value either way. Repo: none (live app).
+1. 🔴 **Close ARC 6 — free, needs no spend, and does NOT wait for 0.1.8.** `fd3831b0` is host-side, so it is live on `civitai.com` independently of the block bundle. Click path and the two expected strings are in `State now`. Record the observed value either way; that single observation closes the arc's last criterion. Repo: none (live app).
    forcing: user — arc 6's closing condition is frozen and this is its last unmet criterion
-2. 🔴 **Deploy #24, then LOOK at it in a browser.** Version bump (`package.json` + `block.manifest.json` in **LOCKSTEP** — `manifest.test.ts` pins them, so a manifest-only bump fails) → `civitai app submit --yes` → poll `civitai app status` **with NO slug**, grepping your source sha (a sourceless twin becomes the newest row and the single-app view reports only that). Then check the seven asked-for changes render. Repo: `civitai-app-yt-thumbnail`.
-   forcing: user — he asked for these seven changes and nobody has seen any of them render
+2. 🔴 **Get 0.1.8 deployed, then LOOK at the seven UI changes.** Start with the investigation block's next probe. The visual half is unverified by anything and no test can see it. ⚠ Do not withdraw the publish request to "retry cleanly" — that deletes the store listing. Repo: `civitai-app-yt-thumbnail`, and an ask to whoever owns the App Blocks builder.
+   forcing: incident — `SCAN-BLOCKED (F10)`, 4 HIGH pcre2 CVEs, deploy `failed` at 15:22 CDT on `pubreq_01M3WJ0CQEX9JA8V97KYTMP8JY` while 0.1.7 stays live
 3. **Re-shoot the 4 store screenshots as a listing revision**, AFTER rank 2 deploys so the shots match what ships. ⚠ The capture recipe was corrected this session — the "fixed 640px card in a 1600px iframe" constant was false at 0.1.7 (the rail shape sets `maxWidth: null`), which made the old recipe dereference a null rect; it now reads `[data-testid=yt-content]`. Repo: `civitai-app-yt-thumbnail` (shots), `civitai` (an `app-capture` recipe).
    forcing: gate
-4. **Fix `audit-dispatch.py`'s operator-asks block, wrong in BOTH directions** — on `devrc#1951` it credited this session's asks about a *different repo's* UI to that PR; on `#24`, where asks existed, it reported `NO OPERATOR ASK COULD BE READ`. Have it name the repo/paths its asks concern. Repo: `devrc`.
+4. **Two devrc tooling items, batched.** (a) **Fix `audit-dispatch.py`'s operator-asks block, wrong in BOTH directions** — on `devrc#1951` it credited this session's asks about a *different repo's* UI to that PR; on `#24`, where asks existed, it reported `NO OPERATOR ASK COULD BE READ`. Have it name the repo/paths its asks concern, or warn that trailer-matched asks may belong to unrelated work. (b) 🔴 **Register the cairn scope — blocked THIRTEEN times, refused verbatim again this session.** `cairn create` REFUSES because `civitai-app-yt-thumbnail` is absent from `~/.config/subsystem-store/routes.json`; the fix is one line there (`"civitai-app-yt-thumbnail": "<alias>"`, instances: personal, civitai). A `history` entry was drafted and locally validated and blocked only by that. Its durable content is already in this doc and the ARCHIVE, so nothing is lost. Repo: `devrc` (both).
    forcing: none
 5. **Everything still unexercised in production, as ONE batch:** `cancel()`, quantity 2–4 under the 900 budget, whether the server clamps 900, Remix/img2img on OpenAI, the shared/publish board. 🔴 Never fire an in-frame click at `pm-generate` to see whether it works; the old "read `.disabled` first" heuristic no longer discriminates. Repo: none (live app).
    forcing: none
 
 ## Defects (batched)
-- **None outstanding anywhere.** Across the session: 1 deploy-blocker, 5 should-fix, 5 nits, 6 deletion candidates, 1 flaky money-path guard and 1 public-repo security gate — all fixed and merged, each with its red→green matrix on its PR.
+- **None outstanding in any repo we own.** The session's 18 findings (1 deploy-blocker, 5 should-fix, 5 nits, 6 deletions) plus a flaky money-path guard and a public-repo security gate are all fixed and merged, each with its red→green matrix on its PR.
+- 🔴 **One OPEN and outside our control:** the 0.1.8 deploy is blocked by 4 HIGH pcre2 CVEs in the platform's builder base image. Not ours to fix.
 
 ## Gotchas / decisions / dead-ends
 - 🔴 **`civitai app listing status` is a snapshot, and approval moves under you.** Two reads ~5 min apart this session returned `draft` then `approved`; `set-icon` refused in between with "this listing is live". **Re-read listing state immediately before an attach, not at the top of the task** — the attach path is materially different on each side of that line (direct edit vs. moderator-reviewed revision).
@@ -181,7 +194,6 @@ ARCHIVED → `claudedocs/handoff-yt-thumbnail-ARCHIVE.md`. Short version: `orche
 - 🔴 **A bundle-grep zero is worthless if you invented the token.** `pm-format-row` returned 0 and nearly became "the formats work did not deploy" — the real ids use a **`yt-` prefix**. Derive probe names from source, and always report a pair with a known-present control.
 - **The LSP lags branch switches; `tsc` is the arbiter.** Three separate waves of diagnostics this session (`selectedFormats` unused, `THUMB_PROMPT_STYLES` missing, whole-module "cannot find") were all stale — `tsc --noEmit` was clean each time, with `noUnusedLocals` ON.
 - **Listing media auto-submits the revision once the publish floor is met**, and batched attaches join ONE revision (measured: 4 screenshots all landed on `alpr_01M3MZECSN49QVBT5WG1TYZA5B`). Put the real `--changelog` on every attach — you cannot tell in advance which one is last.
-- **The icon's YouTube-mark hazard.** The best generated icon was a red rounded square with a play triangle — essentially the YouTube logo. The app's NAME is nominative descriptive use and is fine; reproducing the MARK on a public listing for an unaffiliated app is not. Final icon uses a magenta/cyan burst with no red, and a VECTOR play mark composited over generated art (generated play symbols are mushy and die at 32px).
 - **The `civitai` CLI commit guard blocks heredocs**: `git commit -F <file>` (write the message with the Write tool). A compound `checkout -b && commit` is also refused because the guard reads the branch at parse time — split them.
 
 - 🔴 **`git checkout -- <file>` with uncommitted work in it destroys that work.** Done this session mid-mutation-battery, intending to undo a mutant; the file was actually at HEAD + my unlanded edits, and all of it went. Nothing was lost only because the diff was still in the transcript. **Commit before running a mutation battery**, not after.
@@ -205,7 +217,6 @@ ARCHIVED → `claudedocs/handoff-yt-thumbnail-ARCHIVE.md`. Short version: `orche
 
 - **Pricing on ChatGPT Images v2.0 is ASPECT-DEPENDENT, which a flat per-image figure hides:** 1:1 estimated and charged **287**/image, 16:9 **209**/image. Dry-run each aspect rather than extrapolating from one.
 - **`manifest.test.ts` pins `block.manifest.json` and `package.json` versions in LOCKSTEP.** A manifest-only bump fails with `expected '0.1.5' to be '0.1.4'`. A version bump here is always a two-file commit.
-- **Calibrate the icon trademark argument.** The hazard this repo recorded is *"a red rounded square with a play triangle — essentially the YouTube logo"*. The icon that was live was a **white triangle in a dark circle** — a generic play glyph, not YouTube's mark. Dropping the play mark is defensible given the app's name, but it is a mild precaution, not removal of a clear infringement, and it is not worth paying much legibility for.
 - **Batched listing attaches join ONE revision** (measured again: icon + cover both landed on `alpr_01M3SMGWAM0WEMF2GZDAWXECST`), and the attach that completes the publish floor submits the whole revision with whatever `--changelog` IT carried — so put the real changelog on **every** attach. `set-icon`/`set-cover` take `--changelog` but no `--yes`.
 
 - **The listing-media round trip, for planning:** icon + cover attached 12:07, approved ~12:29 — about 22 minutes. The app's own 0.1.5 request sat `pending` for at least 24 minutes across 40 polls before moving. ⚠ **0.1.4's 6-minute submit→approve was ONE observation and is not a rate** — it was nearly treated as one. Moderation is human-paced; budget for tens of minutes, not single digits.
@@ -220,11 +231,9 @@ ARCHIVED → `claudedocs/handoff-yt-thumbnail-ARCHIVE.md`. Short version: `orche
 - **The `browser` CLI is NOT on this host and i3 is not reachable from the agent shell** (`i3-msg: Could not determine i3 socket path`), so the `app-capture` recipe path is unavailable here. The operator's route is `ssh zach@10.42.0.100`. A recipe's `crop.rect` is only valid against the viewport it was measured in (`frame.py` refuses on >2px drift), so a recipe cannot be authored without a real measured run.
 - **A `#` in a generation prompt is consumed server-side as a wildcard reference** (`targets.prompt[0].category` came back `"FF49BD"` from a literal `#FF49BD`). Write "hex FF49BD". Separately, the token **`strips`** tripped generation moderation ("Inappropriate minor content") and charged nothing — reword rather than re-run.
 
-- 🔴 **`civitai app listing status` takes NO positional slug** — `civitai app listing status yt-thumbnail` fails with `unknown command "yt-thumbnail"`. Every `civitai app listing *` subcommand resolves the app from `block.manifest.json` in the CWD, or from `--slug`; only `civitai app status <blockId>` takes a positional. An earlier revision of this doc spelled the listing form with a positional and it is simply wrong.
 - **The public listing API is readable with NO credentials** — `env -i curl -sS https://civitai.com/api/v1/apps/yt-thumbnail` returns `name`, `iconUrl`, `coverUrl`, `updatedAt`, `kindData.liveUrl`. `env -i` is load-bearing: a probe carrying ambient auth proves nothing about what a stranger can see. (This is also the measurement the devrc hostname pin's "genuinely public" justification needs.)
 - **`iconUrl`/`coverUrl` are re-encoded JPEGs at a width suffix** (`/width=320/`, `/width=1200/`), so a byte-compare against the 512×512 source PNG is meaningless — compare by colour histogram or by eye. Fetch with `curl -sSL`: `image.civitai.com` 301s and a bare `curl` writes a 0-byte file that ImageMagick reports as "insufficient image data".
 - **Key a deploy watcher on the publish-request ID, not just deploy state.** Emitting on any change of `(version, status, deploy, req)` means a SUPERSEDING request announces itself, so one instrument both watches the deploy and tests the spawn hypothesis. Validate it both ways before arming: parse the real output AND feed it a synthetic `Deploy state: live` to confirm the exit branch fires.
-- **This doc had accumulated 11 duplicate gotcha bullets (~4.0 KB) from repeated appends** — same lesson appended twice in different words, e.g. `node_modules`-as-symlink, the mirrored hero, the playwright version skew. Pruned 2026-09-30 by keeping the more informative copy of each pair verbatim. **Before adding a gotcha, grep the section for its first six words** — the append bucket never dedupes.
 
 - 🔴 **`civitai app status <slug>` CAN REPORT A STATE THAT IS FLATLY WRONG FOR YOUR APP — it is not merely "incomplete".** Measured 2026-09-30: it printed `Status: withdrawn`, `Deploy state: -`, `Publish request: pubreq_01M3T83AQHM30Y7PV7N15QDXFX` while the app was **`approved` + `live` and serving our code**. It reports only the NEWEST publish request, and a spawned twin (previous note) is newer than yours. **Always read `civitai app status` with NO SLUG and grep YOUR source commit:** `civitai app status | grep <short-sha>`. The single-app view is safe only while no twin exists, which you cannot know from it.
 - **Moderation latency has a two-order spread and NO usable rate.** Observed submit→approve: 0.1.4 **6 min**, 0.1.5 **≥24 min**, 0.1.6 **~2h34m**. Listing-media revisions: arc 4 **~22 min**, the icon revision **~12 min**. Budget hours, not minutes, and never quote one of these as an ETA.
@@ -237,7 +246,6 @@ ARCHIVED → `claudedocs/handoff-yt-thumbnail-ARCHIVE.md`. Short version: `orche
 - 🔴 **`estimate()` 403s on an unconsented token**, so a cost preview CANNOT run on load for a first-time viewer. The live estimate is gated on `granted`; an unconsented viewer sees no price until their first Generate, and **no consent prompt fires on page load** — a deliberate decision, recorded in `App.tsx`.
 - 🔴 **A bundle token must be a STRING LITERAL to survive minification.** `yt-history-reloading` (a `data-testid`) is a valid discriminator; `mergeUnsavedRecords` / `historyOwnerRef` are function and variable names, get renamed, and would read as a confident false ZERO. Derive probes from source, and always report a pair with a known-present control.
 - **A fix agent that DELETES its own guard is behaving correctly.** Round 4 shipped a third fence, mutation-checked it, found no mutant could kill it, and removed it rather than keep a guard that reads as coverage while providing none. Prefer that to a kept-but-unjustified guard.
-- **An auditor's finding can be incomplete in the direction that matters.** Round 3 called an `else if` branch a no-op; the fix round declined to narrow it and was RIGHT — the `else` below is an *unconditional* `setHistoryState('ready')`, so the branch's real work is stopping that from clobbering a more specific state. Verified against the code before accepting the pushback. **Check a disagreement rather than deferring to either side.**
 - **The scratchpad is SHARED across agents.** One round's commit-message drafts overwrote another's. Give every agent scratch filenames unique to it.
 - **A worktree's `node_modules` symlink must be unlinked BEFORE `git worktree remove --force`** — otherwise a recursive delete can follow it into the base clone's real `node_modules`. Unlink first, then remove, then re-count the base clone's entries.
 - **The LSP here emits phantom repo-wide "cannot find module" errors** whenever an agent worktree's `node_modules` is unresolved or just removed — every local import plus the jest-dom matchers fail at once. That signature is an unresolved dependency tree, not broken code. `tsc --noEmit` on a clean checkout is the arbiter; it was rc 0 every single time this fired.
@@ -249,7 +257,6 @@ ARCHIVED → `claudedocs/handoff-yt-thumbnail-ARCHIVE.md`. Short version: `orche
 
 - 🔴 **`open … --wake=N` can fail the wake while the open SUCCEEDS — exit 3, tab is real.** Measured `cdp_attach_refused:<no-scheme>` (tab still pre-navigation when wake attached) with a valid `result.data.tabId`. Its stderr says so. Re-run `wake` as its own op; do NOT re-`open` (that discards your url).
 - **The block's own `<script src>` beats `curl` as an artifact check** — a framed `js` over `script[src]` gives the bundle the viewer is ACTUALLY running, where `curl /` only proves what the CDN will serve. Immune to the stale-artifact trap.
-- 🔴 **`civitai app status`'s `SUBMITTED` column is UTC-dated while the app renders history in the viewer's LOCAL zone.** 0.1.7 reads `2026-10-01` there and went live `2026-09-30 22:57 CDT`. Comparing them naively makes a post-release generation look pre-release — it would have DISCARDED the one piece of evidence proving the money path on 0.1.7. Confirm the browser host's zone (`date +%Z`) before attributing any history row to a version.
 - 🔴 **A near-homograph in a config list is invisible on inspection: `orchestration-next` vs `orchestration-new`.** Two lists in one codebase, same predicate, differing by three characters — and the one holding the production host is NOT the one on the save path. When two lists both mean "the blob hosts", diff them mechanically; do not read them.
 - **`[data-testid^=yt-format-]` is a PREFIX match that catches LAYOUT nodes** — it returned `yt-format-grid`/`-card`/`-check` alongside the six real format buttons. Harmless here only because the six are unambiguous; any count or "exactly one" assertion over it would have been wrong.
 - **This doc's append-only sections had drifted to 9 byte-identical duplicate bullets again** (~2.8 KB) on top of the 11 pruned on 2026-09-30, and the doc is **over the 65,536 B ceiling**, so `handoff_doc.py` refuses GROWTH. `--prune FILE --prune-count N` combines with `--update` in one run but refuses any line that is not EXACTLY-ONCE — which rules out every `- as-of: …` line, and H3 blocks entirely (a partial-block removal is refused). Script the dedupe (normalise, group by first 8 significant words, keep the LONGEST copy, assert `count == 1`) rather than eyeballing it.
@@ -274,48 +281,32 @@ ARCHIVED → `claudedocs/handoff-yt-thumbnail-ARCHIVE.md`. Short version: `orche
 - 🔴 **`civitai app submit` PACKAGES AGENT WORKTREES, AND `.gitignore` DOES NOT SAVE YOU. `--package-only` FIRST, EVERY TIME.** Measured 2026-10-01 on the 0.1.8 submit: with five finished `.claude/worktrees/agent-*` present, the preview bundle was **41 MB / 674 files**, carried four copies of `src/setup-dev-live.test.ts` flagged as credential-bearing, and **the credential scan GAVE UP after 526 of 674 files at its 8 MiB budget — the remaining 148 were never scanned.** The CLI states it reports and does **not** stop the upload, and that the bundle is read by a reviewer and **cannot be recalled**. After removing the worktrees: **6.8 MB / 114 files**, zero `.claude` paths, scan completed, one warning left — the known-benign `tok123`/`key456` fixture at `src/setup-dev-live.test.ts:25`. 🔴 **A `.gitignore` entry would NOT have fixed it:** the packager honours no `.gitignore`; it excludes a FIXED list of 18 directory NAMES (`.git`, `node_modules`, `dist`, `build`, `.venv`, … — read `submit --help`) plus `.env*`/`*.zip` patterns, and **`.claude` is on none of them.** So the hook that blocks `git add -A` protects the repo and not the upload, and the two hazards need different fixes. **Remove finished agent worktrees before any submit, and read the preview's file COUNT and MiB, not just its exit code.**
 - **The lockfile's root `version` reads 0.1.0 and never moved across 0.1.1–0.1.8 — leave it.** `npm ci --dry-run` is rc 0 against the mismatch (npm checks DEPENDENCY agreement, not that field); every release shipped this way.
 
+- 🔴 **`approved` + `failed` CAN BE A HARD PLATFORM BLOCK, NOT A RE-SUBMIT.** Read `Deploy detail:` (`civitai app status <slug>`) before deciding which kind — it carries the Trivy table verbatim. Evidence in the investigation block; the evicted re-submit advice is wrong for a base-image CVE block.
+- ⚠ **Submit→approve spread is now 1 min · 6 min · ≥24 min · ~77 min · ~2h34m** (0.1.8 took ONE minute) — no usable rate, never quote one as an ETA. And `approved` is not the end of the watch: the deploy is a separate gate that can fail after it.
+- 🔴 **Withdrawing a publish request DELETES the store listing and everything on it** (the CLI says so verbatim). "Withdraw and re-submit cleanly" is NOT a neutral retry, and with 0.1.7 live there is nothing to rescue.
+
 ## How to verify
 ```bash
 cd /home/zach/workspace/civit/civitai-app-yt-thumbnail
-npx tsc -p tsconfig.json --noEmit && npx vitest run   # at b293455: 791/791 across 30 files
-npm run build && civitai app validate .
-# 🔴 NEVER `civitai app status <slug>` ALONE — a sourceless twin becomes the newest row and that
-# view shows only the newest; it printed `withdrawn` for two approved+live/building releases.
-civitai app status | grep b293455   # expect: 0.1.7 approved live b293455 (SUBMITTED col is UTC)
-civitai app listing status          # NO positional slug — resolves from block.manifest.json
-B=$(curl -sS https://yt-thumbnail.civit.ai/ | grep -oE 'assets/index-[A-Za-z0-9_-]+\.js' | head -1)
-echo "$B"   # 2026-09-30: assets/index-BQ7kpc1g.js — a DIFFERENT hash proves a real redeploy
-# 🔴 READ content-type, NEVER the status code — this host 200s EVERY path (SPA fallback):
-curl -sSI https://yt-thumbnail.civit.ai/hero-banner.jpg | grep -i '^content-type'   # image/jpeg
-curl -sSI https://yt-thumbnail.civit.ai/definitely-not-a-real-file-xyzzy.jpg | grep -i '^content-type'  # text/html
+npx tsc -p tsconfig.json --noEmit && npx vitest run    # at 02b6cf0: 841/841 across 32 files
+npm run build && civitai app validate .                 # rc 0 and `✓ . is valid`
+# 🔴 NEVER `civitai app status <slug>` as the primary read — a sourceless twin becomes the
+# newest row and that view reports only the newest. Use the NO-slug form and grep YOUR sha:
+civitai app status | grep e994fed      # 0.1.8: expect `approved`; DEPLOY is the open question
+civitai app status yt-thumbnail        # only for `Deploy detail:` — carries the Trivy table
+# served bundle — 0.1.7 until 0.1.8 actually deploys:
+curl -sS https://yt-thumbnail.civit.ai/ | grep -oE 'assets/index-[A-Za-z0-9_-]+\.js' | head -1
+# 🔴 BEFORE ANY SUBMIT: inspect the bundle. It packages agent worktrees and honours no
+# .gitignore. Expect ~6.8 MB / 114 files; 41 MB / 674 means .claude/worktrees/ got in.
+civitai app submit --package-only && unzip -l yt-thumbnail-*.zip | tail -1 && rm -f yt-thumbnail-*.zip
 ```
-```bash
-# THE RUNNING CODE, in the operator's real browser — the browser lives on the LAPTOP.
-# 🔴 hidden tab throughout: no activate, no focus move, no workspace switch.
-# 🔴 stderr -> a file; NEVER 2>&1 into a JSON parser (the hidden-tab advisory breaks it).
-BB='~/workspace/devrc/scripts/browser-bridge/browser'
-ssh zach@10.42.0.100 "$BB whoami"      # expect host.label=laptop, instance `work` connected
-ssh zach@10.42.0.100 "$BB --instance work open https://civitai.com/apps/run/yt-thumbnail"
-# -> tabId. Then `wake` (own op), `frames` for the yt-thumbnail OOPIF id (it CHANGES every load),
-# then EVERY DOM op with --frame <id>. Ready anchor pm-generate; logged-out tell pm-signin.
-#   document.querySelectorAll("script[src]") -> /assets/index-BQ7kpc1g.js
-# ARC 6 criterion 3, the one still failing — re-run after the rank-1 platform fix:
-#   click [data-testid=yt-history-save] then read [data-testid=pm-save-note]
-#   BROKEN today: "Couldn't save that image: image url is not allowed"
-#   FIXED: no pm-save-note error, and the image downloads.
-# 🔴 Do NOT click pm-generate — enabled and armed at 209 Buzz from the moment the page loads.
-ssh zach@10.42.0.100 "$BB --instance work --tab <id> close"   # leave no armed form behind
-```
-```bash
-# The platform-side control for rank 1 — runs the HOST's real function, edits nothing:
-cd /home/zach/workspace/civit/civitai && npx tsx <<'EOF'
-import { CIVITAI_IMAGE_HOSTS, isAllowedSaveImageUrl } from './src/components/AppBlocks/saveImageDownload';
-console.log([...CIVITAI_IMAGE_HOSTS].sort());   // today: image, orchestration, orchestration-NEXT
-const live = 'https://orchestration-new.civitai.com/v2/consumer/blobs/x-0.jpg?sig=a';
-console.log('prod blob host ->', isAllowedSaveImageUrl(live, 'https://image.civitai.com'));
-// false today = the defect. Keep the three passing hosts as positive controls, so a green
-// cannot come from a function that returns true for everything.
-EOF
-```
+🔴 **ARC 6's last criterion — FREE, no spend, does NOT wait for 0.1.8.** The full driving
+recipe now lives where a browser session actually loads it: devrc's
+`scripts/browser-bridge/flows/yt-thumbnail.civit.ai.md` (+ `flows/civit.ai.md` as its
+prerequisite), merged as `dc5f6af9`. In one line: `ssh zach@10.42.0.100` →
+`~/workspace/devrc/scripts/browser-bridge/browser --instance work open <run-url>` → `wake`
+→ `frames` → every DOM op with `--frame <id>` → click `[data-testid=yt-history-save]` → read
+`[data-testid=pm-save-note]`. 🔴 stderr to a file, never `2>&1` into a parser. 🔴 Do NOT
+click `pm-generate` — enabled and armed at 209+ Buzz from the moment the page loads.
 ## The four open PRs — read this before touching anything
 🔴 **STALE HEADING — there are NO open PRs.** All four merged 2026-10-01; shas and per-PR content checks are in `State now`. The heading survives only because `--prune` refuses a section heading and this doc's `Open investigations` blocks are unprunable (their `- as-of:` lines are not unique, 4× each). Ignore the title; read `State now`.
