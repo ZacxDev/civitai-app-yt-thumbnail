@@ -111,7 +111,19 @@ const hash = (p) => createHash('sha256').update(readFileSync(p)).digest('hex');
  * Never an exit code, in either case.
  */
 function runSuite() {
-  const r = spawnSync('npx', ['vitest', 'run', ...testFiles], {
+  // 🔴 `--no-cache` IS NOT OPTIONAL, AND LEAVING IT OFF ONCE ALREADY COST A CONTROL.
+  // `claude/RULES.md`'s positive-control bullet has TWO halves: a cache keyed on a
+  // coarse mtime can serve the ORIGINAL module to a run that believes it is testing
+  // a mutant — scoring SURVIVED without the mutant ever executing — so you sweep
+  // with the cache off AND keep a known-caught mutant as the control. The first
+  // consolidation of this driver kept the detector (control #8) and dropped the
+  // preventer, in a PR whose title said no control was lost. Both halves live here
+  // now: this flag, and `positiveControl` below.
+  //
+  // An EMPTY `testFiles` means the WHOLE SUITE, which is what the lightbox set
+  // needs — see its own header. `...[]` spreads to nothing, so vitest selects
+  // everything, which is exactly the intent.
+  const r = spawnSync('npx', ['vitest', 'run', '--no-cache', ...testFiles], {
     cwd: ROOT,
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
@@ -184,7 +196,11 @@ process.on('exit', () => {
 // --- control ----------------------------------------------------------------
 
 console.log(`spec: ${SPEC}`);
-console.log(`files under test: ${testFiles.join(' ')}`);
+// Say WHICH it is out loud: an empty list is the whole suite, and a blank after
+// "files under test:" would read as a harness selecting nothing.
+console.log(
+  `files under test: ${testFiles.length === 0 ? '(THE WHOLE SUITE — no selection)' : testFiles.join(' ')}`,
+);
 console.log(`files this sweep rewrites: ${touched.join(' ')}`);
 console.log(`pristine copies: ${stash}\n`);
 
@@ -204,7 +220,22 @@ if (!readable(control)) {
   process.exit(3);
 }
 if (control.lines.red !== 0) {
-  console.error('\n🔴 ABORT: the UNMUTATED tree is red. Fix that before sweeping.');
+  // 🔴 NAME THE RED TESTS. This branch used to abort with the count alone, and the
+  // first whole-suite sweep hit it — one red out of 933, with no way to tell WHICH,
+  // so the failure could not be reproduced or even looked up. An abort the operator
+  // cannot act on is barely better than no abort. The titles are already parsed for
+  // the per-mutant report; print them here too.
+  console.error(
+    `\n🔴 ABORT: the UNMUTATED tree is red — ${control.lines.red} of ${
+      control.lines.green + control.lines.red
+    } test(s). Fix that before sweeping. The red test(s):`,
+  );
+  for (const t of redTitles(control.out)) console.error(`    × ${t}`);
+  console.error(
+    '  If this does not reproduce on a plain `npx vitest run`, it is a FLAKE, and a\n' +
+      '  flake here voids a whole sweep rather than one test — fix the timing\n' +
+      '  dependency, do not re-run until it passes.',
+  );
   process.exit(3);
 }
 if (control.lines.green === 0) {

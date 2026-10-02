@@ -25,7 +25,18 @@
 // guard's error killing your mutant is green for the wrong reason, and stays green
 // with the intended guard deleted.
 
-export const testFiles = ['src/lightbox.test.ts', 'src/History.lightbox.test.tsx'];
+// 🔴 EMPTY ON PURPOSE — THIS SET SWEEPS THE WHOLE SUITE, BOTH TIERS, EXACTLY AS THE
+// PYTHON DRIVER DID. The first consolidation declared the two obvious files here and
+// narrowed the observation window from 884 tests to 41 without saying so, in a PR
+// whose title claimed nothing was lost. The narrowing is SAFE FOR GRADING — a mutant
+// killed only outside the window scores SURVIVED and exits 1, loudly — but it cannot
+// support a WHOLE-SUITE SURVIVED claim, and this set has two mutants whose entire
+// point is such a claim: M-A survived all 884 before the url anchor existed, and M-F
+// survived all 884, which is why a production arm was DELETED rather than guarded. A
+// set that cannot reproduce its own founding measurements is not the same set.
+//
+// The cost is runtime, and runtime is the cheaper thing to spend here.
+export const testFiles = [];
 
 const VIEW = 'src/lightbox.ts';
 const DIALOG = 'src/Lightbox.tsx';
