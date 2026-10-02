@@ -510,9 +510,15 @@ describe('the boot skeleton width ladder is the app’s own, offset by the shell
     expect(RUNGS[1]).toEqual({ at: firstViewportFor('sm'), cap: layoutForTier('sm').maxWidth });
   });
 
-  it('the third rung drops the cap, at the viewport where the app reaches lg', () => {
-    expect(layoutForTier('lg').maxWidth).toBeNull();
-    expect(RUNGS[2]).toEqual({ at: firstViewportFor('lg'), cap: null });
+  it('the third rung drops the cap, at the viewport where the app reaches xl', () => {
+    // 🔴 `xl`, NOT `lg`. `lg` lost the rail (see `shapeForTier`) and with it the uncapped
+    // content column: it is a two-column tier now and keeps `TWO_COLUMN_MAX_WIDTH`. Both
+    // halves are asserted, because "the rung is at the xl viewport" and "xl is where the
+    // cap actually drops" are two claims and the pair is what makes this more than a
+    // literal — the sweep below would see them disagree, but only in aggregate.
+    expect(layoutForTier('lg').maxWidth).toBe(layoutForTier('sm').maxWidth);
+    expect(layoutForTier('xl').maxWidth).toBeNull();
+    expect(RUNGS[2]).toEqual({ at: firstViewportFor('xl'), cap: null });
   });
 
   it('there are exactly three rungs', () => {
@@ -571,8 +577,22 @@ describe('the boot skeleton width ladder is the app’s own, offset by the shell
   it('the sweep CAN see a disagreement — positive control', () => {
     // 🔴 WITHOUT THIS, THE ZERO ABOVE IS INDISTINGUISHABLE FROM A SWEEP THAT
     // COMPARES A NUMBER WITH ITSELF. The control is the exact defect: the rungs at
-    // the RAW breakpoints instead of the offset ones. It must reproduce the measured
-    // band 768–815 and the 127px worst case.
+    // the RAW breakpoints instead of the offset ones.
+    //
+    // 🔴 IT IS TWO BANDS NOW, NOT ONE, AND THE SECOND ONE IS WHY THIS CASE IS WORTH
+    // RE-READING. Every rung above `at: 0` contributes a band `SHELL_INSET` wide: the
+    // un-offset rung fires 48px of viewport too early, so for those 48px the card is
+    // sized by the NEXT rung's cap while the app is still on the previous one. While the
+    // cap dropped at the `lg` viewport there were two rungs above zero (816, 1232) but
+    // the 1232 one dropped the cap to `none` on BOTH sides of the comparison for part of
+    // its band, so only 48 widths disagreed. With the drop moved to `xl` (1488) the
+    // second band is fully visible: 768–815 (the card jumps to 1184 while the app is
+    // still capped at 640, worst case 127px) and 1440–1487 (the card uncaps while the app
+    // is still capped at 1184; worst case at the band's last viewport, 1487, where an
+    // uncapped card is 1487 − 48 = 1439px against a settled column of 1184px — 255px).
+    //
+    // Both bands are asserted by their edges, not only by a count, so a shift in either
+    // one fails here rather than being absorbed by the total.
     const unoffset = RUNGS.map((r) => ({ at: r.at === 0 ? 0 : r.at - SHELL_INSET, cap: r.cap }));
     const bad: number[] = [];
     let worst = 0;
@@ -584,8 +604,19 @@ describe('the boot skeleton width ladder is the app’s own, offset by the shell
         worst = Math.max(worst, Math.abs(card - column));
       }
     }
-    expect(bad.length, 'the un-offset ladder agrees everywhere — the sweep proves nothing').toBe(48);
-    expect([bad[0], bad[bad.length - 1]]).toEqual([768, 815]);
-    expect(worst).toBe(127);
+    expect(bad.length, 'the un-offset ladder agrees everywhere — the sweep proves nothing').toBe(
+      2 * SHELL_INSET,
+    );
+    // The two bands, each one `SHELL_INSET` wide and starting at the RAW breakpoint the
+    // rung above it is derived from.
+    const firstBand = RUNGS[1].at - SHELL_INSET;
+    const secondBand = RUNGS[2].at - SHELL_INSET;
+    expect(bad.slice(0, SHELL_INSET)).toEqual(
+      Array.from({ length: SHELL_INSET }, (_, i) => firstBand + i),
+    );
+    expect(bad.slice(SHELL_INSET)).toEqual(
+      Array.from({ length: SHELL_INSET }, (_, i) => secondBand + i),
+    );
+    expect(worst).toBe(255);
   });
 });

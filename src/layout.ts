@@ -35,29 +35,30 @@ export interface BlockLayout {
   /**
    * px cap on the content column, or `null` for "fill the block".
    *
-   * The cap is a function of `columns`, not of the tier: a single column wants a
-   * readable measure, and a multi-column grid already spends the width. So the
-   * ladder is 640 at one column, 1184 at two, uncapped at three or more.
+   * The cap is a function of the SHAPE, not of the tier: a single column wants a
+   * readable measure, and a three-column grid already spends the width. So the
+   * ladder is 640 at one column, 1184 at two, uncapped at the rail.
    *
-   * 🔴 THE ONE-COLUMN CAP IS MEANT TO BIND; THE TWO-COLUMN ONE IS NOT. At `base`/
-   * `xs` the 640 cap binds from 641px up, and that is its whole job — a single text
-   * column wants a readable measure. Two columns are already spending the width, so
-   * there the requirement is the opposite: a two-column block fills its width. 1184
-   * is the `lg` boundary, one past the top of `md`, so the two-column cap cannot
-   * bind at ANY width in `sm` (768–1023) or `md` (1024–1183).
+   * 🔴 THE ONE-COLUMN CAP IS MEANT TO BIND; THE TWO-COLUMN ONE BINDS AT `lg` ONLY.
+   * At `base`/`xs` the 640 cap binds from 641px up, and that is its whole job — a
+   * single text column wants a readable measure. For the TABLET tiers the requirement
+   * is the opposite — "full width on a tablet" — and 1184 is one past the top of `md`
+   * (1183), so the cap cannot bind at ANY width in `sm` (768–1023) or `md`
+   * (1024–1183). It DOES bind at `lg` (1184–1439), which joined the two-column shape
+   * when the rail moved to `xl`: see `TWO_COLUMN_MAX_WIDTH` for the tile arithmetic
+   * that makes that the right answer rather than a regression. Both halves are pinned
+   * by `layout.test.ts` — the tablet case and the `lg` case are two separate tests
+   * because they are two opposite claims.
    *
    * 🔴 IT WAS 1100, AND THAT GUTTERED THE TOP OF `md`. `md` runs to 1183, so a
    * block 1101–1183px wide got a 1100px column centred in it — 40px of gutter
    * either side at 1180px, which is the landscape width of the 10.9-inch tablet
-   * class. Pinned by `layout.test.ts`'s "the TWO-column cap cannot gutter" case and
-   * by `responsive.test.tsx`'s 1180px arm.
+   * class. Pinned by `layout.test.ts`'s tablet-gutter case and by
+   * `responsive.test.tsx`'s 1180px arm.
    *
-   * 🔴 SO WHAT DOES THE NUMBER STILL DO? Nothing, at any width its tiers admit —
-   * and that is stated rather than dressed up. It is the two-column rung of "cap by
-   * column count" written as a value instead of a special case. It is not `null`
-   * because in this module `null` means "the rail is on" — an invariant
-   * `layout.test.ts` asserts in both directions — and spending the same word on
-   * "two columns, no cap" would make it mean two things.
+   * It is not `null` at two columns because in this module `null` means "the rail is
+   * on" — an invariant `layout.test.ts` asserts in both directions — and spending the
+   * same word on "two columns, no cap" would make it mean two things.
    */
   maxWidth: number | null;
   /**
@@ -225,10 +226,29 @@ export const ULTRAWIDE_MIN = 1800;
 export const FORMATS_RAIL_WIDTH = 320;
 
 /**
- * The two-column content cap — the `lg` boundary, so it cannot bind inside `sm` or
- * `md`. Named rather than inlined because the `maxWidth` docblock's whole argument
- * is that this value IS the next breakpoint; a bare literal makes that a
- * coincidence a reader has to check.
+ * The content cap for every tier between `sm` and `lg` inclusive — the tiers that get
+ * the one-column tabbed layout with a readable measure rather than the three-column
+ * rail.
+ *
+ * 🔴 IT USED TO BE INERT AND IT IS NOW LIVE, DELIBERATELY. While `md` was the widest
+ * capped tier this number was the NEXT breakpoint (1184 = the `lg` floor), so it could
+ * never bind: `md` tops out at 1183px of block, i.e. 1135px of content after two
+ * `SHELL_PADDING`s. `lg` joining the capped tiers makes 1184 that tier's FLOOR instead,
+ * so from a 1233px block up the content column is centred inside gutters. That is the
+ * decision, and the argument is the thumbnail grid's step function, not a measure
+ * preference:
+ *
+ *   - CAPPED at 1184, every width in `lg` renders a 1164px grid container (1184 less one
+ *     `panelRowStyle` inset) → 3 tiles, flat across 1184–1439. The step into the rail at
+ *     1440 costs ONE tile (672px of main → 2).
+ *   - UNCAPPED, a 1439px block renders a 1371px container → 4 tiles, and the SAME step
+ *     into the rail at 1440 costs TWO. That is the defect this round exists to fix,
+ *     relocated from 1183→1184 to 1439→1440 rather than removed.
+ *
+ * So the cap is what makes the one discontinuity this layout still has a one-tile step
+ * instead of a two-tile cliff. `layout.test.ts` pins both halves: that the cap does NOT
+ * gutter at `sm`/`md` (where "full width on a tablet" is the requirement), and that it
+ * DOES bind inside `lg` with the tile count that justifies it.
  */
 const TWO_COLUMN_MAX_WIDTH = 1184;
 
@@ -242,7 +262,7 @@ const HERO_MIN_H_RAIL = 132;
 /** The hero's height floor below the rail — a phone, or the `model.sidebar_top` slot. */
 const HERO_MIN_H_NARROW = 104;
 
-/** Rail width at `lg`/`xl`. Wide enough for the prompt textarea to stay usable. */
+/** Rail width at `xl`. Wide enough for the prompt textarea to stay usable. */
 const RAIL_W = 340;
 /** Rail width once there is a fourth column's worth of room to spare. */
 const RAIL_W_ULTRAWIDE = 400;
@@ -251,6 +271,15 @@ const RAIL_W_ULTRAWIDE = 400;
 type TierShape = 'one-column' | 'two-column' | 'rail';
 
 /**
+ * 🔴 `lg` IS A TWO-COLUMN TIER, NOT A RAIL TIER, AND THAT IS THE OPERATOR'S DECISION
+ * AFTER MEASUREMENT. It had the rail for one revision and the cost was counted in
+ * thumbnails: at `lg` the three-column grid leaves 416px inside the history row's inset,
+ * which is ONE tile, where the tabbed layout one pixel below (1183px) renders three and
+ * the two-column rail that shipped before rendered two. Crossing 1183 → 1184 therefore
+ * LOST TWO TILES on an ordinary 1280×800 laptop — the app's primary object halved by
+ * getting wider. The rail needs 340 + 320 of fixed track plus two 20px gaps before the
+ * grid sees a pixel, and `lg` does not have that much to spare; `xl` does.
+ *
  * The `return 'rail'` is a FALLTHROUGH, and it carries the same assumption
  * `admitsUltrawide` documents at length: an unrecognised tier counts as wider than
  * `xl`. Right for a tier APPENDED above `xl` (the only direction this scale has
@@ -260,7 +289,7 @@ type TierShape = 'one-column' | 'two-column' | 'rail';
  */
 function shapeForTier(tier: BlockSizeTier): TierShape {
   if (tier === 'base' || tier === 'xs') return 'one-column';
-  if (tier === 'sm' || tier === 'md') return 'two-column';
+  if (tier === 'sm' || tier === 'md' || tier === 'lg') return 'two-column';
   return 'rail';
 }
 
@@ -295,10 +324,12 @@ const TIER_LADDER = ['base', 'xs', 'sm', 'md', 'lg', 'xl'] as const;
  *
  * 🔴 AND IT IS NOT "any tier that gets the rail" EITHER — that was the first attempt
  * at this fix and it was wrong in the OTHER direction, caught by `layout.test.ts`'s
- * own clamp case. `lg` spans 1184–1439, so no block wide enough to be ultrawide can
- * ever report it; admitting `('lg', true)` would hand a 1184px block four columns and
- * a 400px rail, which is exactly the contradictory-input case the clamp exists to
- * reject.
+ * own clamp case. Since `lg` left the rail shape that spelling would no longer admit
+ * `lg`, so it would pass the clamp case today and remain wrong for the same reason: it
+ * ties an ULTRAWIDE question to a SHAPE question, and the two are independent. The
+ * clamp's job is to reject a contradiction between two observers — `lg` spans 1184–1439,
+ * so no block wide enough to be ultrawide can ever report it, and `('lg', true)` is a
+ * disagreement to be resolved in the tier's favour, whatever shape `lg` happens to get.
  *
  * 🔴 AN UNRECOGNISED TIER COUNTS AS WIDER THAN `xl`, AND THAT IS AN ASSUMPTION, NOT A
  * DEDUCTION. It is right for a tier APPENDED above `xl`, which is the defect above and
@@ -372,9 +403,10 @@ export function layoutForTier(tier: BlockSizeTier, ultrawide = false): BlockLayo
     };
   }
 
-  // The `'rail'` shape: `lg` (1184+), `xl` (1440+), and any tier the SDK adds above
-  // them. All get the rail and the side-by-side editor; only a genuinely ultrawide
-  // block gets the fourth column.
+  // The `'rail'` shape: `xl` (1440+) and any tier the SDK adds above it. `lg` used to be
+  // here and was moved out — see `shapeForTier` for the tile count that decided it. All
+  // get the rail and the side-by-side editor; only a genuinely ultrawide block gets the
+  // fourth column.
   return {
     tier,
     ultrawide: wide,

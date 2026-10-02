@@ -130,6 +130,34 @@ const CLICKBAIT = BUILTIN_FORMATS[0];
 const CINEMATIC = BUILTIN_FORMATS[1];
 
 /**
+ * Click a control in the FORMATS surface, having first proved a viewer could.
+ *
+ * 🔴 WHY A HELPER RATHER THAN A BARE `user.click`. These tests stub no block width, so
+ * jsdom reports `clientWidth: 0`, the tier resolves to `base`, and the app renders its
+ * TABBED layout — Thumbnails and Formats as two `display: none` panels. For one revision
+ * the selected tab started on Thumbnails, which put every format control in this file
+ * inside a HIDDEN panel; the suite stayed green because `getByTestId` does not check
+ * visibility and `userEvent.click` gates on `pointer-events`, not on visibility. So the
+ * whole format-interaction surface stopped representing a reachable path and no test moved.
+ *
+ * The app now defaults to the Formats tab while there is nothing in Thumbnails, which is
+ * why these controls are reachable again. `toBeVisible()` is what makes that a CHECKED
+ * fact rather than a belief: if a future change hides the formats panel on a first render,
+ * every case in this file fails here with this message instead of passing against a panel
+ * a viewer cannot see. An assertion that merely finds the id in the DOM is exactly what
+ * failed before.
+ */
+async function clickFormatControl(
+  user: ReturnType<typeof userEvent.setup>,
+  testid: string,
+): Promise<HTMLElement> {
+  const el = await screen.findByTestId(testid);
+  expect(el, `${testid} is not visible — this file is driving a hidden tab panel`).toBeVisible();
+  await user.click(el);
+  return el;
+}
+
+/**
  * Wait for the LIVE COST PREVIEW to settle on `expectedTotal`, then zero the estimate
  * counter so a following assertion counts only the CLICK's estimates.
  *
@@ -175,7 +203,7 @@ describe('N formats ⇒ N workflows', () => {
     render(<App />);
 
     // Clickbait is selected by default; add Cinematic.
-    await user.click(await screen.findByTestId(`yt-format-${CINEMATIC.id}`));
+    await clickFormatControl(user, `yt-format-${CINEMATIC.id}`);
     await user.type(screen.getByLabelText(/prompt/i), 'a cat on a skateboard');
     // The live preview has already priced this form; zero the counter so the count
     // below is the CLICK's, not the click's plus the preview's. See `settlePreview`.
@@ -217,7 +245,7 @@ describe('N formats ⇒ N workflows', () => {
 
     const user = userEvent.setup();
     render(<App />);
-    await user.click(await screen.findByTestId(`yt-format-${CINEMATIC.id}`));
+    await clickFormatControl(user, `yt-format-${CINEMATIC.id}`);
     await user.type(screen.getByLabelText(/prompt/i), 'a cat');
     await user.click(screen.getByTestId('pm-generate'));
 
@@ -259,7 +287,7 @@ describe('N formats ⇒ N workflows', () => {
 
     const user = userEvent.setup();
     render(<App />);
-    await user.click(await screen.findByTestId(`yt-format-${CINEMATIC.id}`));
+    await clickFormatControl(user, `yt-format-${CINEMATIC.id}`);
     await user.type(screen.getByLabelText(/prompt/i), 'a cat');
 
     const button = screen.getByTestId('pm-generate');
@@ -301,7 +329,7 @@ describe('N formats ⇒ N workflows', () => {
     });
     const user = userEvent.setup();
     render(<App />);
-    await user.click(await screen.findByTestId(`yt-format-${CINEMATIC.id}`));
+    await clickFormatControl(user, `yt-format-${CINEMATIC.id}`);
     await user.type(screen.getByLabelText(/prompt/i), 'a cat');
     await user.click(screen.getByTestId('pm-generate'));
 
@@ -370,10 +398,14 @@ describe('the format selection invariant', () => {
     // Clickbait is the lone default selection; its control is disabled so the
     // click cannot produce a zero-workflow Generate.
     const only = await screen.findByTestId(`yt-format-${CLICKBAIT.id}`);
+    // VISIBLE, not merely present — see `clickFormatControl` for the hidden-panel trap
+    // this guards. A disabled control inside a `display: none` panel is two different
+    // kinds of unreachable and only one of them is the invariant under test.
+    expect(only).toBeVisible();
     expect(only).toBeDisabled();
 
     // Select a second -> the first becomes deselectable again.
-    await user.click(screen.getByTestId(`yt-format-${CINEMATIC.id}`));
+    await clickFormatControl(user, `yt-format-${CINEMATIC.id}`);
     await waitFor(() => expect(screen.getByTestId(`yt-format-${CLICKBAIT.id}`)).toBeEnabled());
   });
 });
@@ -385,13 +417,15 @@ describe('private custom formats (useAppStorage)', () => {
     storageGet.mockResolvedValue([{ id: 'custom:1', label: 'Noir', suffix: 'hard shadows' }]);
     render(<App />);
     await waitFor(() => expect(storageGet).toHaveBeenCalledWith(CUSTOM_FORMATS_KEY));
-    expect(await screen.findByTestId('yt-format-custom:1')).toHaveTextContent('Noir');
+    const custom = await screen.findByTestId('yt-format-custom:1');
+    expect(custom, 'the viewer’s own format is in a hidden panel').toBeVisible();
+    expect(custom).toHaveTextContent('Noir');
   });
 
   it('🔴 writes the whole list back under the same key, in the round-trippable shape', async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(await screen.findByTestId('yt-format-new'));
+    await clickFormatControl(user, 'yt-format-new');
     await user.type(screen.getByTestId('yt-format-label'), 'Retro VHS');
     await user.type(screen.getByTestId('yt-format-suffix'), 'analog vhs grain');
     await user.click(screen.getByTestId('yt-format-save'));
@@ -410,7 +444,7 @@ describe('private custom formats (useAppStorage)', () => {
   it('validates before writing — a blank name never reaches storage', async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(await screen.findByTestId('yt-format-new'));
+    await clickFormatControl(user, 'yt-format-new');
     await user.type(screen.getByTestId('yt-format-suffix'), 'a look with no name');
     await user.click(screen.getByTestId('yt-format-save'));
 
@@ -425,7 +459,7 @@ describe('private custom formats (useAppStorage)', () => {
     storageSet.mockRejectedValue(new Error('PAYLOAD_TOO_LARGE'));
     const user = userEvent.setup();
     render(<App />);
-    await user.click(await screen.findByTestId('yt-format-new'));
+    await clickFormatControl(user, 'yt-format-new');
     await user.type(screen.getByTestId('yt-format-label'), 'Too Big');
     await user.type(screen.getByTestId('yt-format-suffix'), 'x'.repeat(40));
     await user.click(screen.getByTestId('yt-format-save'));
@@ -445,11 +479,15 @@ describe('private custom formats (useAppStorage)', () => {
     host.viewer = null;
     render(<App />);
     expect(await screen.findByTestId('yt-storage-anon')).toHaveTextContent(/sign in/i);
+    // VISIBLE as well as disabled: "the button looks enabled and eats your work" is the
+    // defect, and a button nobody can see makes neither claim. See `clickFormatControl`.
+    expect(screen.getByTestId('yt-format-new')).toBeVisible();
     expect(screen.getByTestId('yt-format-new')).toBeDisabled();
     // Nothing is even attempted against storage for an anonymous viewer.
     expect(storageGet).not.toHaveBeenCalled();
-    // The built-ins are still usable — the app is not bricked for them.
-    expect(screen.getByTestId(`yt-format-${CLICKBAIT.id}`)).toBeInTheDocument();
+    // The built-ins are still usable — the app is not bricked for them, and they are on
+    // screen rather than merely mounted.
+    expect(screen.getByTestId(`yt-format-${CLICKBAIT.id}`)).toBeVisible();
   });
 });
 
@@ -462,7 +500,7 @@ describe('🔴 publishing puts the suffix in the MODERATED field', () => {
     ]);
     const user = userEvent.setup();
     render(<App />);
-    await user.click(await screen.findByTestId('yt-format-publish-custom:9'));
+    await clickFormatControl(user, 'yt-format-publish-custom:9');
 
     await waitFor(() => expect(sharedAppend).toHaveBeenCalledTimes(1));
     const value = sharedAppend.mock.calls[0][0] as {
@@ -500,7 +538,7 @@ describe('the published board', () => {
     });
     const user = userEvent.setup();
     render(<App />);
-    await user.click(await screen.findByTestId('yt-board-toggle'));
+    await clickFormatControl(user, 'yt-board-toggle');
 
     const row = await screen.findByTestId('yt-published-row');
     expect(row).toHaveTextContent('Neon Noir');
@@ -524,7 +562,7 @@ describe('the published board', () => {
     });
     const user = userEvent.setup();
     render(<App />);
-    await user.click(await screen.findByTestId('yt-board-toggle'));
+    await clickFormatControl(user, 'yt-board-toggle');
 
     // Rendering it would make `data` a working channel for unmoderated prompt
     // text — the exact thing putting the suffix in `body` exists to prevent.
@@ -545,7 +583,7 @@ describe('the published board', () => {
     });
     const user = userEvent.setup();
     render(<App />);
-    await user.click(await screen.findByTestId('yt-board-toggle'));
+    await clickFormatControl(user, 'yt-board-toggle');
     await user.click(await screen.findByTestId('yt-published-report-shared_9'));
 
     await waitFor(() => expect(sharedReport).toHaveBeenCalledTimes(1));
@@ -568,7 +606,7 @@ describe('the published board', () => {
     });
     const user = userEvent.setup();
     render(<App />);
-    await user.click(await screen.findByTestId('yt-board-toggle'));
+    await clickFormatControl(user, 'yt-board-toggle');
     const voteBtn = await screen.findByTestId('yt-published-vote-shared_10');
     expect(voteBtn).toHaveTextContent(/voted/i);
 

@@ -156,9 +156,9 @@ import { useUltrawide } from './useUltrawide.js';
 type GenMode = 'generate' | 'remix';
 
 /**
- * Which of the two co-equal output/picker surfaces is on screen below `lg`.
+ * Which of the two co-equal output/picker surfaces is on screen below `xl`.
  *
- * At `lg`+ Thumbnails and Formats are two separate COLUMNS and this type is not
+ * At `xl`+ Thumbnails and Formats are two separate COLUMNS and this type is not
  * consulted; below it there is only one column, so they become tabs rather than a
  * stack — a stacked picker put the thumbnail grid and the format cards on two
  * different scroll positions on exactly the devices with the least scrollport.
@@ -493,19 +493,44 @@ export function App() {
   const [saveNote, setSaveNote] = useState<string | null>(null);
 
   /**
-   * Which of the two panels is on screen BELOW `lg`, where Thumbnails and Formats
-   * share one column and become tabs. Ignored at `lg`+, where both are visible at
+   * Which of the two panels is on screen BELOW `xl`, where Thumbnails and Formats
+   * share one column and become tabs. Ignored at `xl`+, where both are visible at
    * once in their own columns and no tab control is rendered at all.
+   *
+   * 🔴 IT STARTS ON FORMATS, NOT ON THUMBNAILS, AND THAT IS THE OPERATOR'S DECISION.
+   * A first-run viewer has no thumbnails: landing them on a selected-but-empty
+   * Thumbnails tab means their first screen is a tab that renders nothing, with the one
+   * surface they can actually act on hidden behind a tap. `showHistory` returns false
+   * for exactly that state (ready, zero rows), so the panel is not merely sparse — it is
+   * EMPTY. Formats is the surface a first-run viewer has something to do on.
+   *
+   * The swap back is the first-batch latch — the `useEffect` on `hasBatch`, next to
+   * `historyEntries`: the moment there is a first batch, Thumbnails becomes the selected
+   * tab, because from then on it holds the app's primary object. ONE-WAY and ONE-SHOT, and
+   * it never overrides a manual choice.
    *
    * 🔴 DELIBERATELY NOT PERSISTED. Every other preference this app remembers is a
    * property of the WORK (the prompt, the formats, the model); this is a property of
    * the WINDOW, and `useAppStorage` is a postMessage round-trip to the host. Restoring
    * "you were last looking at Formats" on a cold load would hide the thumbnails a
    * returning viewer already paid for behind a tap, for a fact that stops being true
-   * the moment they widen the block past `lg`. The operator settled this as local
+   * the moment they widen the block past `xl`. The operator settled this as local
    * state only.
    */
-  const [narrowPanel, setNarrowPanel] = useState<NarrowPanel>('thumbnails');
+  const [narrowPanel, setNarrowPanel] = useState<NarrowPanel>('formats');
+  /**
+   * Has the viewer picked a tab THEMSELVES? Once they have, the first-batch latch below
+   * stops moving the selection — the same discipline `accountTouchedRef` applies to the
+   * Buzz pool. A format checkbox is not a tab choice; only the tablist sets this.
+   */
+  const panelTouchedRef = useRef(false);
+  /**
+   * Has a batch ever existed in this session? The latch fires on the empty → non-empty
+   * EDGE, so a viewer who deletes their last row is not thrown back to Formats, and a
+   * viewer who switches to Formats after their first batch is not yanked back on the
+   * second.
+   */
+  const sawFirstBatchRef = useRef(false);
 
   // --- The published board ---
   const [boardOpen, setBoardOpen] = useState(false);
@@ -1950,6 +1975,37 @@ export function App() {
   const historyEntries = joinHistory(historyRecords, liveWorkflows);
 
   /**
+   * BELOW `xl`: hand the selected tab to Thumbnails the first time a batch exists.
+   *
+   * 🔴 AN EDGE, NOT A CONDITION, AND THE DIFFERENCE IS THE WHOLE BEHAVIOUR. `narrowPanel`
+   * defaults to Formats because a first-run viewer's Thumbnails tab is EMPTY (see that
+   * state's docblock, and `showHistory`). The moment a batch exists the primary object is
+   * back, so the selection should follow it — ONCE. Written as a latch on the empty →
+   * non-empty transition rather than as a derivation from `historyEntries.length`, so:
+   *
+   *   - a viewer who switches to Formats AFTER their first batch stays there, through
+   *     every later batch (a derivation would re-assert Thumbnails on each one);
+   *   - a viewer who deletes their last row is not thrown back to Formats mid-task;
+   *   - a viewer who chose a tab BEFORE the first batch arrived is not overridden at all
+   *     — `panelTouchedRef`, the same discipline `accountTouchedRef` applies to the pool.
+   *
+   * 🔴 IT FIRES AT SUBMIT, NOT AT COMPLETION, AND THAT IS RIGHT. `historyEntries` is the
+   * join of stored rows with live workflows, so the row (and its skeletons) exists as
+   * soon as the batch is submitted — which is the moment the viewer wants to be looking
+   * at it. It also fires for a RETURNING viewer whose stored rows arrive after mount,
+   * which is the same claim: there is something in Thumbnails now.
+   *
+   * No dependency on `narrowPanel`: this reads refs and `historyEntries.length` only, so
+   * it cannot re-run because of the state it sets.
+   */
+  const hasBatch = historyEntries.length > 0;
+  useEffect(() => {
+    if (!hasBatch || sawFirstBatchRef.current) return;
+    sawFirstBatchRef.current = true;
+    if (!panelTouchedRef.current) setNarrowPanel('thumbnails');
+  }, [hasBatch]);
+
+  /**
    * Prune storage rows no live workflow matches, so the halves cannot drift.
    *
    * 🔴 BOUNDED BY THE OLDEST WORKFLOW WE ACTUALLY FETCHED — see
@@ -2485,7 +2541,7 @@ export function App() {
                 /* 🔴 THE CANVAS IS 1280×720 AND USED TO RENDER ABOVE ITS OWN
                    CONTROLS IN A 640px COLUMN — half resolution, with the
                    sliders pushed off screen, while ~900px of the block sat
-                   empty. At `lg`+ the canvas takes the wide half and its text
+                   empty. At `xl`+ the canvas takes the wide half and its text
                    controls sit beside it, so a title tweak and its result are
                    visible at the same time. */
                 <div
@@ -2642,7 +2698,7 @@ export function App() {
   // ---- Render pieces ----
   //
   // Each constant below is ONE surface, hoisted out of the return so the two
-  // layouts (rail at `lg`+, single column below it) share ONE copy of it. Same
+  // layouts (rail at `xl`+, single column below it) share ONE copy of it. Same
   // idiom `modelRow` above already used: only the CONTAINER differs between the
   // branches, never the content — which is what stops the two layouts drifting
   // into two different apps.
@@ -2761,12 +2817,30 @@ export function App() {
     />
   );
 
-  // FORMATS. Multi-select, and the selection count IS the workflow count: each
-  // format runs its own generation with its own prompt suffix, so picking a
-  // second format is picking a second bill. That is stated once, here, and again
-  // as the summed price on Generate.
-  const formatsBlock = (
-    <div style={fieldStyle}>
+  // FORMATS, IN TWO BLOCKS — the PICKER and everything the picker OPENS.
+  //
+  // 🔴 THE SPLIT IS WHAT MAKES THE FORMATS RAIL SAFE, AND IT IS THE OPERATOR'S DECISION.
+  // At `xl`+ the picker is a 320px fixed column (`FORMATS_RAIL_WIDTH`), which leaves a
+  // 286px content box inside the rail's chrome. That is right for the picker — its cards
+  // have a 200px floor and a second card column would need 442px, so the rail is sized to
+  // exactly one column of cards and every extra pixel belongs to the thumbnail grid.
+  //
+  // It is WRONG for everything below the picker. `ComposedPromptPreview` holds the REAL
+  // prompt strings `bodyFor` submits — the money path's editor — and `FormatEditor` holds
+  // a format being written; both are textareas, and a 286px textarea is not a surface you
+  // edit a prompt in. `PublishedBoard` is a browsable list of other people's formats.
+  // Those three went into the rail with the picker in the first revision of this change
+  // and all three were measurably worse for it: squeezed, and reachable only by scrolling
+  // the rail's own 100dvh-bounded scrollport, so "+ New" opened an editor far below the
+  // fold of a column the viewer was not looking at.
+  //
+  // So: `formatsPickerBlock` is the column, `formatsDetailBlock` is what it opens, and
+  // the detail block renders in the MAIN column at `xl`+ (beside the thumbnails, at full
+  // width) and inside the Formats tab panel below it. Both blocks are ONE binding each,
+  // rendered by both layouts — see `thumbnailsPanel` for why a second JSX copy is the
+  // shape that forks silently.
+  const formatsPickerBlock = (
+    <div style={fieldStyle} data-testid="yt-format-picker">
       <Group justify="space-between" align="center" gap={8}>
         <span style={fieldLabelStyle}>
           Formats{' '}
@@ -2815,22 +2889,6 @@ export function App() {
         minCardPx={layout.formatMinCardPx}
       />
 
-      {/* 🔴 WHAT WILL ACTUALLY BE SENT, AND NOW ALSO WHERE YOU CHANGE IT. A
-          format is a prompt SUFFIX composed at body-build time, deliberately
-          never typed into the prompt box — which is what lets N formats be N
-          different prompts. These boxes hold the REAL strings: `effectivePrompt`
-          is the same function `bodyFor` calls, so the field cannot drift from
-          the money path, and an edit stays scoped to its own workflow. */}
-      <ComposedPromptPreview
-        prompt={prompt}
-        formats={selectedFormats}
-        edits={promptEdits}
-        disabled={busy}
-        onEdit={(id, text) => setPromptEdits((cur) => setPromptEdit(cur, id, text))}
-        onReset={(id) => setPromptEdits((cur) => clearPromptEdit(cur, id))}
-        pal={pal}
-      />
-
       {/* 🔴 The anonymous path, said out loud. `useAppStorage` resolves null on
           read and REJECTS every write for an anonymous viewer, so a "New format"
           button that looked enabled would simply eat their work. */}
@@ -2849,6 +2907,29 @@ export function App() {
           {storageNote}
         </span>
       )}
+    </div>
+  );
+
+  // What the picker OPENS — see `formatsPickerBlock` for why these three are not in the
+  // formats rail. Rendered in the MAIN column at `xl`+ and inside the Formats tab panel
+  // below it, which is the one place a prompt textarea has the block's full width.
+  const formatsDetailBlock = (
+    <div style={fieldStyle} data-testid="yt-format-detail">
+      {/* 🔴 WHAT WILL ACTUALLY BE SENT, AND NOW ALSO WHERE YOU CHANGE IT. A
+          format is a prompt SUFFIX composed at body-build time, deliberately
+          never typed into the prompt box — which is what lets N formats be N
+          different prompts. These boxes hold the REAL strings: `effectivePrompt`
+          is the same function `bodyFor` calls, so the field cannot drift from
+          the money path, and an edit stays scoped to its own workflow. */}
+      <ComposedPromptPreview
+        prompt={prompt}
+        formats={selectedFormats}
+        edits={promptEdits}
+        disabled={busy}
+        onEdit={(id, text) => setPromptEdits((cur) => setPromptEdit(cur, id, text))}
+        onReset={(id) => setPromptEdits((cur) => clearPromptEdit(cur, id))}
+        pal={pal}
+      />
 
       {formatDraft && (
         <FormatEditor
@@ -3124,17 +3205,23 @@ export function App() {
   // THE ONLY REASON FOR THE SPLIT IS GONE. The format picker sat BETWEEN them below
   // `lg`, because it is an input that decides the bill and belonged next to the prompt
   // rather than after the Generate button; at `lg`+ it moved to the main column, so the
-  // two halves were joined there. The picker is now a TAB below `lg` and its own COLUMN
-  // at `lg`+, which means it sits between them in neither layout, and a split with no
+  // two halves were joined there. The picker is now a TAB below `xl` and its own COLUMN
+  // at `xl`+, which means it sits between them in neither layout, and a split with no
   // remaining reason is two names a reader has to reconcile. Both layouts render the
   // same block constants; only the containers differ.
   //
-  // 🔴 A CONSEQUENCE WORTH NAMING: below `lg` the picker is now ABOVE the prompt rather
-  // than below it. That follows from the tabs, not from a preference — the thumbnails
-  // panel has to stay above the controls (the app's primary object is the first thing on
-  // screen, pinned by `responsive.test.tsx`), the two panels share one tab control, and
-  // a tab control cannot be in two places. Called out because it reverses the
-  // prompt-then-formats reading order the old split deliberately produced.
+  // 🔴 WHERE THIS BLOCK SITS, IN BOTH LAYOUTS, AND WHAT PINS IT. Below `xl` it is
+  // rendered BEFORE the tab control, so the reading order is hero -> prompt -> model ->
+  // quantity/pool -> Generate -> the two output panels; the picker is inside the Formats
+  // panel and therefore AFTER the prompt. At `xl`+ it is the inputs rail, the FIRST child
+  // of the rail grid, so the prompt again precedes both the thumbnails column and the
+  // formats rail. One order, two containers.
+  //
+  // What pins it: `responsive.test.tsx` asserts the document order of the prompt against
+  // the thumbnail images at both tiers, and asserts the rail grid's three children as an
+  // ordered list. Nothing pins the order of the fields WITHIN this fragment — mode,
+  // prompt, model, LoRA, quantity/pool, submit are in source order and a reshuffle of
+  // them would fail no test. Said plainly rather than implied.
   const inputs = (
     <>
       {modeBlock}
@@ -3203,12 +3290,12 @@ export function App() {
   // THUMBNAILS — the output surface, as ONE binding, rendered by both layouts.
   //
   // 🔴 IT IS A BINDING RATHER THAN TWO COPIES BECAUSE THE PANELS MUST NOT FORK. At
-  // `lg`+ this is the middle column; below `lg` it is one of two tab panels, and the
+  // `xl`+ this is the middle column; below `xl` it is one of two tab panels, and the
   // ONLY difference between the two is the container. Two JSX copies of
   // `{resultsBlock}{historyBlock}` would be a predicate open-coded twice — the shape
   // `layout.ts`'s module docblock says is wrong at N−1 sites — and the failure would
   // be silent: a block that stopped rendering the partial-failure alert on phones
-  // only. A FRAGMENT, not a wrapped div, so at `lg`+ its two children are still
+  // only. A FRAGMENT, not a wrapped div, so at `xl`+ its two children are still
   // direct flex items of the same `Stack` and the gaps are unchanged (`Stack` is a
   // plain flex container with a CSS `gap`).
   const thumbnailsPanel = (
@@ -3220,12 +3307,17 @@ export function App() {
 
   // ---- The two layouts ----
 
-  // 🔴 AT `lg`+ THE CONTROLS BECOME A PERSISTENT RAIL. The whole point of a
+  // 🔴 AT `xl`+ THE CONTROLS BECOME A PERSISTENT RAIL. The whole point of a
   // 1600px block is that the inputs and the output can be on screen together: a
   // stacked layout pushes the candidate grid below the fold, so tweaking a prompt
   // and judging the result are two separate scroll positions. The persistence here
   // is the SIDE-BY-SIDE arrangement, not `position: sticky` — see `railStyle` for
   // why sticky is inert in a host-auto-sized iframe.
+  //
+  // 🔴 `xl`, NOT `lg`, AND THE BOUNDARY MOVED FOR A MEASURED REASON. Three columns need
+  // 340 + 320 of fixed track and two 20px gaps before the thumbnail grid sees a pixel,
+  // which at `lg` left ONE tile per row where the tabbed layout renders three. See
+  // `shapeForTier` in `layout.ts`.
   if (layout.rail) {
     return (
       <div {...rootProps}>
@@ -3241,23 +3333,32 @@ export function App() {
                 <Stack gap={16}>{inputs}</Stack>
               </aside>
               {/* 🔴 THUMBNAILS TAKE WHAT IS LEFT — the only `fr` track in the grid.
-                  The format picker used to sit UNDER this column; it is now the third
+                  The format PICKER used to sit UNDER this column; it is now the third
                   column, and it is a FIXED px track so that every px the block gains
                   goes to the thumbnail grid rather than being split with a surface
-                  that cannot spend it. The arithmetic is in `FORMATS_RAIL_WIDTH`. */}
+                  that cannot spend it. The arithmetic is in `FORMATS_RAIL_WIDTH`.
+                  🔴 AND `formatsDetailBlock` IS HERE, NOT IN THE RAIL. The composed-prompt
+                  boxes, the format editor and the published board are full-width surfaces
+                  — the first two are prompt textareas on the money path — and the rail's
+                  content box is 286px. They sit AFTER the thumbnails so the app's primary
+                  object stays the first thing in this column; see `formatsPickerBlock`. */}
               <main style={mainColumnStyle} data-testid="yt-main">
-                <Stack gap={16}>{thumbnailsPanel}</Stack>
+                <Stack gap={16}>
+                  {thumbnailsPanel}
+                  {formatsDetailBlock}
+                </Stack>
               </main>
               {/* 🔴 FORMATS GET THEIR OWN RAIL, WITH `railStyle` — the SAME function the
                   inputs rail uses, not a copy of its chrome. Both are bounded, sticky,
                   self-scrolling columns flanking the grid, and the height bound is the
                   load-bearing half here too: the picker is about to grow from 6 formats
-                  to 12, so an unbounded sticky column would strand its tail (the
-                  composed-prompt boxes, the format editor, the published board) below
-                  the fold for the whole sticky range. One function means the two rails
-                  cannot drift into disagreeing about that. */}
+                  to 12, so at one card column per row an unbounded sticky column would
+                  strand the tail of the LIST below the fold for the whole sticky range.
+                  One function means the two rails cannot drift into disagreeing about
+                  that. What is NO LONGER stranded here is everything the picker opens —
+                  that moved to the main column (`formatsDetailBlock`). */}
               <aside style={railStyle(pal)} data-testid="yt-formats-rail" aria-label="Formats">
-                <Stack gap={16}>{formatsBlock}</Stack>
+                <Stack gap={16}>{formatsPickerBlock}</Stack>
               </aside>
             </div>
           </Stack>
@@ -3266,14 +3367,23 @@ export function App() {
     );
   }
 
-  // Below `lg` everything is one column, in the order it is used — except the
-  // results, which jump to the top once they exist (phase 2: the app's primary
-  // object is the first thing on screen). The history surface is part of "the
-  // results" now, so it sits with them and NOT at the bottom: a viewer on a phone
-  // must not have to scroll past every input to reach the images they just bought.
-  // It renders nothing at all until there is something in it — see `showHistory`.
+  // Below `xl` everything is one column, and THIS IS THE ORDER, as the operator settled
+  // it: hero, then the controls, then the two output panels as tabs.
   //
-  // 🔴 AND THE TWO OUTPUT SURFACES ARE TABS HERE, NOT A STACK. At `lg`+ Thumbnails and
+  // 🔴 THE CONTROLS COME FIRST AND THAT REVERSES "RESULTS ABOVE THE CONTROLS". That
+  // earlier rule put the results at the top of the column because the app's primary
+  // object should be the first thing on screen, and it was right while the picker sat
+  // BETWEEN the two halves of the inputs. Tabs ended that: Thumbnails and Formats share
+  // one tab control, a tab control cannot be in two places, so whichever side of the
+  // inputs the tabs land on takes BOTH panels with it. Putting them above the inputs put
+  // the format PICKER above the prompt box — and the picker decides the bill, so reading
+  // "pick your formats" before "say what you want" inverts the sentence the form is. The
+  // operator chose prompt-then-formats, i.e. controls first. Below the rail tier the
+  // results are therefore BELOW the prompt, which `responsive.test.tsx` now pins as the
+  // order rather than its opposite. It is the same order the rail tier renders, where the
+  // inputs rail is the first grid child and the thumbnails column the second.
+  //
+  // 🔴 AND THE TWO OUTPUT SURFACES ARE TABS HERE, NOT A STACK. At `xl`+ Thumbnails and
   // Formats are two columns; below it there is one column, and stacking them put the
   // grid and the picker at two different scroll positions on the devices with the least
   // scrollport — the same "two scroll positions" problem the rail exists to solve at
@@ -3286,11 +3396,26 @@ export function App() {
         <Card padding="lg" style={fillStyle}>
           <Stack gap={16}>
             {hero}
+            {inputs}
             <SegmentedControl
               fullWidth
               aria-label="Output panel"
               value={narrowPanel}
-              onChange={(v) => setNarrowPanel(v as NarrowPanel)}
+              onChange={(v) => {
+                // A manual pick freezes the FORMATS -> THUMBNAILS default: from here on
+                // the first-batch latch never moves the selection again. Same discipline
+                // as `accountTouchedRef`. Safe to set HERE because the latch bypasses
+                // `onChange` entirely — it calls `setNarrowPanel` directly — so the only
+                // thing that reaches this line is a viewer pressing a tab.
+                panelTouchedRef.current = true;
+                // 🔴 NOT `v as NarrowPanel`. The pack types `onChange` as
+                // `(value: string)`, so a cast launders any third string into the state —
+                // and `panelStyle` would then resolve `false` for BOTH panels and hide the
+                // entire output surface. Mapped instead, with Thumbnails as the total
+                // function's default: an unknown value shows the primary object, never
+                // nothing.
+                setNarrowPanel(v === 'formats' ? 'formats' : 'thumbnails');
+              }}
               data-testid="yt-panel-tabs"
               data={[
                 { value: 'thumbnails', label: 'Thumbnails' },
@@ -3309,15 +3434,23 @@ export function App() {
                      panel — the behaviour conditional rendering would buy.
                   3. the two panels' content is then identical to what the stacked
                      layout rendered BY CONSTRUCTION, which is the requirement.
-                The cost is that both subtrees render on every pass below `lg`. They
+                The cost is that both subtrees render on every pass below `xl`. They
                 already did, in the stacked layout this replaces.
                 🔴 WHAT IS MISSING AND WHY: `aria-controls` / `aria-labelledby` between
                 each tab and its panel. The pack's `SegmentedControl` takes its segments
                 as `{value, label, disabled}` and puts no caller-supplied id or
                 `aria-controls` on the buttons it renders, so the association cannot be
-                expressed from here. Each panel carries its own `aria-label` instead. */}
+                expressed from here. Each panel carries its own `aria-label` instead.
+                🔴 `tabIndex={0}` IS NOT DECORATION. A `role="tabpanel"` is expected to be
+                focusable: a keyboard user who tabs off the tablist must land ON the panel
+                they just selected, and without it focus skips the whole panel and lands on
+                the next interactive thing after it. It is NOT blocked by the pack's API the
+                way `aria-controls` is, so it is not in the paragraph above. The hidden
+                panel is `display: none`, which removes it from the tab order regardless —
+                so this adds one stop, not two. */}
             <div
               role="tabpanel"
+              tabIndex={0}
               aria-label="Thumbnails"
               data-testid="yt-panel-thumbnails"
               style={panelStyle(narrowPanel === 'thumbnails')}
@@ -3326,13 +3459,14 @@ export function App() {
             </div>
             <div
               role="tabpanel"
+              tabIndex={0}
               aria-label="Formats"
               data-testid="yt-panel-formats"
               style={panelStyle(narrowPanel === 'formats')}
             >
-              {formatsBlock}
+              {formatsPickerBlock}
+              {formatsDetailBlock}
             </div>
-            {inputs}
           </Stack>
         </Card>
       </div>
@@ -4000,7 +4134,7 @@ function shellStyle(pal: Palette): React.CSSProperties {
  * 🔴 THIS IS THE LINE THAT WAS THE WHOLE DEFECT. It was
  * `{ width: '100%', maxWidth: 640 }` on every screen, so a ~1600px block rendered
  * a 640px column and left ~60% of itself empty. `maxWidth: null` means "fill the
- * block", which is what `lg`+ returns.
+ * block", which is what `xl`+ returns.
  */
 function contentStyle(layout: BlockLayout): React.CSSProperties {
   return { width: '100%', maxWidth: layout.maxWidth ?? undefined };
@@ -4071,7 +4205,7 @@ function railGridStyle(layout: BlockLayout): React.CSSProperties {
 }
 
 /**
- * One of the two tab panels below `lg`: a grid when it is the selected tab, gone when
+ * One of the two tab panels below `xl`: a grid when it is the selected tab, gone when
  * it is not.
  *
  * `display: grid` with the same `gap: 16` the enclosing `Stack` uses, so wrapping the
@@ -4112,7 +4246,7 @@ function panelStyle(active: boolean): React.CSSProperties {
  * `civitai@main`):
  *
  *  - FULL PAGE (`/apps/run/<slug>`) — the only surface wide enough to reach the
- *    `lg` rail in the first place. `PageBlockHost.tsx` handles NO `RESIZE_IFRAME`
+ *    `xl` rail in the first place. `PageBlockHost.tsx` handles NO `RESIZE_IFRAME`
  *    message at all; `IframeHost.tsx` is the only host component that does. It
  *    sizes the frame `height: 100%` with `min-height: calc(100dvh - <site header>)`,
  *    so the frame is viewport-height whatever the app reports and the app's own
@@ -4142,7 +4276,7 @@ function panelStyle(active: boolean): React.CSSProperties {
  * `needs-consent` / `insufficient` / `account-rejected` alerts that gate the spend —
  * stays below the fold for the whole sticky range. That inverts the rail's purpose,
  * because the control that debits the viewer's Buzz is the one thing that must be
- * reachable from wherever the prompt is. At `lg`+ the rail carries mode toggle →
+ * reachable from wherever the prompt is. At `xl`+ the rail carries mode toggle →
  * prompt → model → up to `MAX_LORAS` LoRA rows → quantity → spend-from → Generate →
  * alerts, so it exceeds a 1280x800 laptop's ~740px of scrollport well before the
  * LoRA cap. `maxHeight` + `overflowY: auto` give the rail its OWN scrollport, so its
@@ -4296,7 +4430,7 @@ function canvasStyle(pal: Palette): React.CSSProperties {
 }
 
 /**
- * The editor: canvas beside its controls at `lg`+, stacked below it.
+ * The editor: canvas beside its controls at `xl`+, stacked below it.
  *
  * `minmax(0, 1fr)` on both tracks rather than `1fr`: a `<canvas>` carries an
  * intrinsic width of 1280px, and a bare `1fr` track refuses to shrink below its

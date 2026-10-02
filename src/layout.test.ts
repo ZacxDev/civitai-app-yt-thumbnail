@@ -42,6 +42,16 @@ const INSIDE: Record<BlockSizeTier, number> = {
 /** A width that is BOTH `xl` and ultrawide — the only shape 4 columns is real at. */
 const INSIDE_ULTRAWIDE = 1907;
 
+/**
+ * The narrowest block width the SDK resolves to `tier` — found by scanning rather than
+ * written down, so a breakpoint move shows up as a changed expectation instead of a
+ * stale literal this file quietly keeps asserting.
+ */
+function tierFloor(tier: BlockSizeTier): number {
+  for (let w = 1; w <= 4000; w++) if (resolveBlockTier(w) === tier) return w;
+  throw new Error(`no width in range resolves to ${tier}`);
+}
+
 interface Case {
   readonly name: string;
   readonly tier: BlockSizeTier;
@@ -120,24 +130,30 @@ const CASES: readonly Case[] = [
     },
   },
   {
-    name: 'lg — the rail appears here',
+    // 🔴 `lg` IS NOT A RAIL TIER AND THIS CASE IS WHERE THAT IS STATED AS A NUMBER.
+    // It had the rail for one revision; at 1184–1439px of block the three fixed-plus-
+    // flexible tracks leave ONE thumbnail per row where the tabbed layout renders three,
+    // so crossing 1183 → 1184 made the app's primary object smaller. The operator moved
+    // the rail to `xl`. Every field below is `md`'s except the tier itself, which is the
+    // whole claim — `lg` is a wider `md`, not a narrower `xl`.
+    name: 'lg — the rail does NOT appear here; it is a two-column tier',
     tier: 'lg',
     ultrawide: false,
     width: INSIDE.lg,
     expected: {
       tier: 'lg',
       ultrawide: false,
-      maxWidth: null,
-      formatMinCardPx: 200,
-      rail: true,
-      railWidth: 340,
-      heroMinHeight: 132,
-      editorSideBySide: true,
+      maxWidth: 1184,
+      formatMinCardPx: 160,
+      rail: false,
+      railWidth: 0,
+      heroMinHeight: 104,
+      editorSideBySide: false,
       modelRow: 'row',
     },
   },
   {
-    name: 'xl, not ultrawide — a windowed desktop browser, or a 1600/1680 monitor',
+    name: 'xl, not ultrawide — the rail appears here: a windowed desktop browser, or a 1600/1680 monitor',
     tier: 'xl',
     ultrawide: false,
     width: INSIDE.xl,
@@ -296,23 +312,29 @@ describe('layoutForTier', () => {
       expect(new Set(all.map((l) => l.formatMinCardPx)).size).toBe(4);
     });
 
-    it('the TWO-column cap cannot gutter, at ANY width inside its own tiers', () => {
-      // 🔴 THE ONE-COLUMN CAP DELIBERATELY DOES GUTTER AND THE TWO-COLUMN ONE MUST
+    it('the TABLET tiers cannot gutter — the cap is above every width `sm`/`md` admit', () => {
+      // 🔴 THE ONE-COLUMN CAP DELIBERATELY DOES GUTTER AND THE TABLET TIERS MUST
       // NOT, so this is scoped rather than universal. 640 at `base`/`xs` gutters
       // from 641px up, which is the point of it: a single text column wants a
       // readable measure. Two columns are already spending the width, and "full
       // width on a tablet" is the requirement, so a cap narrower than the tier's
       // own top width is a defect — it was 1100 against a tier that runs to 1183.
       //
+      // 🔴 SCOPED TO `sm`/`md` AND *NOT* TO EVERY TIER THAT SHARES THEIR CAP. `lg` joined
+      // them when the rail moved to `xl`, and at `lg` the cap DOES bind, on purpose — the
+      // case below is that claim, with its arithmetic. This title used to say "at ANY
+      // width inside its own tiers" while the body enumerated two tiers; the two now
+      // agree, because the honest scope is the device class, not the shape.
+      //
       // Each pair is `[tier, the widest width that tier admits]`, one below the next
-      // breakpoint on the SDK ladder; the case below re-derives them through
+      // breakpoint on the SDK ladder; the loop below re-derives them through
       // `resolveBlockTier` so they cannot drift into fiction.
-      const TWO_COLUMN_TIERS = [
+      const TABLET_TIERS = [
         ['sm', 1023],
         ['md', 1183],
       ] as const;
 
-      for (const [tier, top] of TWO_COLUMN_TIERS) {
+      for (const [tier, top] of TABLET_TIERS) {
         const cap = layoutForTier(tier).maxWidth;
         expect(cap, `${tier} is meant to be capped`).not.toBeNull();
         expect(
@@ -326,10 +348,54 @@ describe('layoutForTier', () => {
       // The control: each `top` really IS the last width in that tier, and one more
       // pixel is the next tier. Without this the loop above could pass against two
       // invented numbers.
-      for (const [tier, top] of TWO_COLUMN_TIERS) {
+      for (const [tier, top] of TABLET_TIERS) {
         expect(resolveBlockTier(top)).toBe(tier);
         expect(resolveBlockTier(top + 1)).not.toBe(tier);
       }
+    });
+
+    it('🔴 the cap DOES bind inside `lg`, and that is what keeps the step into the rail one tile', () => {
+      // 🔴 THE GUTTER THE CASE ABOVE DOES NOT COVER, ASSERTED RATHER THAN LEFT SILENT.
+      // `lg` shares `sm`/`md`'s cap but runs to 1439px, so from a 1233px block up the
+      // content column is centred inside gutters — up to 103px a side at 1439. That is
+      // not an oversight and this is where a reader finds out: it is the reason the one
+      // discontinuity this layout still has costs ONE thumbnail instead of two.
+      //
+      // Capped, every width in `lg` renders the same grid container, so the tile count is
+      // flat across the tier and the step at 1440 is 3 -> 2. Uncapped, a 1439px block
+      // would render 4 and the step would be 4 -> 2 — the same two-tile cliff that moving
+      // the rail to `xl` exists to remove, relocated rather than fixed. The tile
+      // arithmetic itself lives in `responsive.test.tsx`, against the emitted CSS; what
+      // is assertable in this pure module is that the cap binds and where.
+      const cap = layoutForTier('lg').maxWidth as number;
+      expect(cap, '`lg` is meant to be capped').not.toBeNull();
+
+      // It binds, and the sharp statement is WHERE: the cap IS the tier's own floor, so
+      // the content column stops growing exactly where `lg` begins. That is why the tile
+      // count is FLAT across 1184–1439 rather than merely bounded somewhere inside it.
+      // Both numbers come out of `resolveBlockTier`, so neither is a literal here.
+      const LG_FLOOR = tierFloor('lg');
+      const LG_TOP = tierFloor('xl') - 1;
+      expect(resolveBlockTier(LG_TOP)).toBe('lg');
+      expect(
+        cap,
+        `the \`lg\` cap is ${cap}px but the tier floor is ${LG_FLOOR}px. If the cap is ` +
+          `ABOVE the floor the column grows with the block again, and the step into the ` +
+          `rail at ${LG_TOP + 1} goes back to TWO tiles — the defect moving the rail to ` +
+          `\`xl\` exists to remove. Move the tile-count case in responsive.test.tsx first ` +
+          `and change this one with it.`,
+      ).toBe(LG_FLOOR);
+      // ...and the tier really is wider than its floor, or "flat across the tier" would be
+      // a claim about a one-pixel range.
+      expect(LG_TOP).toBeGreaterThan(LG_FLOOR);
+
+      // ...and it is the SAME cap the tablet tiers get, not a third number. A `lg`-only
+      // cap would pass the bound above and be a per-tier ladder nobody asked for.
+      expect(cap).toBe(layoutForTier('md').maxWidth);
+      expect(cap).toBe(layoutForTier('sm').maxWidth);
+      // The control: `xl` really is uncapped, so "capped" above is a distinction the
+      // ladder can express.
+      expect(layoutForTier('xl').maxWidth).toBeNull();
     });
 
     it('the 640px column this pass removed survives ONLY below sm', () => {
@@ -384,13 +450,26 @@ describe('layoutForTier', () => {
       // The lower bound as a DERIVATION rather than a second literal: the card floor at
       // the rail tiers comes off the layout, and `railStyle`'s padding + border is 34px.
       // Without this the band above is two numbers somebody chose.
+      //
+      // 🔴 THE UPPER HALF OF THIS CASE WAS DELETED, NOT MOVED. It asserted that the rail
+      // does not clear a SECOND card column — `< floor * 2 + 8 + RAIL_CHROME`, i.e. < 482
+      // — which cannot fail while the band case above caps the constant at 360. A bound
+      // dominated by a tighter bound in the same file reads as a constraint and provides
+      // none. The ARGUMENT it carried (extra width buys the picker nothing, so it belongs
+      // to the thumbnail grid) is not lost: it is the whole of `FORMATS_RAIL_WIDTH`'s
+      // docblock, and the tile-count cases in `responsive.test.tsx` are what measure it.
+      //
+      // The floor is read off `xl` — the narrowest RAIL tier. It used to read `lg` too,
+      // which stopped being a rail tier when the operator moved the rail up.
       const RAIL_CHROME = 16 * 2 + 1 * 2;
-      const floor = Math.max(layoutForTier('lg').formatMinCardPx, layoutForTier('xl', true).formatMinCardPx);
+      const floor = Math.max(
+        layoutForTier('xl').formatMinCardPx,
+        layoutForTier('xl', true).formatMinCardPx,
+      );
       expect(FORMATS_RAIL_WIDTH).toBeGreaterThan(floor + RAIL_CHROME);
-      // ...and it does NOT clear a SECOND card column (2 × floor + the picker's 8px
-      // gap + chrome), which is the argument for why extra width buys the picker
-      // nothing and therefore belongs to the thumbnail grid.
-      expect(FORMATS_RAIL_WIDTH).toBeLessThan(floor * 2 + 8 + RAIL_CHROME);
+      // The control: `floor` really is the rail tiers' card floor and not, say, 0 — the
+      // bound above would pass against anything small.
+      expect(floor).toBeGreaterThan(layoutForTier('md').formatMinCardPx);
     });
 
     it('is DISTINCT from every width the inputs rail can be', () => {
@@ -404,16 +483,13 @@ describe('layoutForTier', () => {
       expect(railWidths.size).toBeGreaterThan(1);
     });
 
-    it('is NOT a per-tier field — one value at every rail tier', () => {
-      // `railWidth` widens at ultrawide because a prompt textarea genuinely reads
-      // better wider; this one would just be a wider single card column. Stated as a
-      // test because the obvious "improvement" is to add it to `BlockLayout` and give
-      // it a ladder, and that is the change this asserts somebody has to justify.
-      for (const tier of ['lg', 'xl'] as const) {
-        expect(layoutForTier(tier, false)).not.toHaveProperty('formatsRailWidth');
-      }
-      expect(layoutForTier('xl', true)).not.toHaveProperty('formatsRailWidth');
-    });
+    // 🔴 `is NOT a per-tier field` WAS DELETED HERE. It asserted
+    // `not.toHaveProperty('formatsRailWidth')` on three layouts — a guard on one SPELLING
+    // of the hazard, which `formatsRail`, `formatsWidth` or `railWidthRight` all walk
+    // while being the same change. The structural claim is already made where it can be
+    // made properly: `expectedRailTracks` in `responsive.test.tsx` builds the expected
+    // track list from `layoutForTier(...).railWidth` and the module-level constant, so a
+    // per-tier formats width can only reach the DOM by disagreeing with that string.
   });
 
   // =========================================================================
@@ -481,12 +557,21 @@ describe('layoutForTier', () => {
     });
 
     it('but a tier no ultrawide block can REPORT is still clamped', () => {
-      // The other direction, and the reason "any tier that gets the rail" is not the
-      // fix: `lg` spans 1184–1439, so no block ≥ULTRAWIDE_MIN ever reports it.
+      // The other direction: `lg` spans 1184–1439, so no block ≥ULTRAWIDE_MIN ever
+      // reports it, and `('lg', true)` is two observers disagreeing rather than a real
+      // geometry. The tier wins.
+      //
+      // 🔴 THIS CASE'S EXPECTED VALUES MOVED WHEN `lg` LEFT THE RAIL, AND THAT IS WHY IT
+      // IS STILL HERE. It used to read as "the rail at lg is the NON-ultrawide rail";
+      // `lg` has no rail now, so the clamp is visible in a different pair of numbers —
+      // the ultrawide flag itself, and the two-column card floor rather than 220. The
+      // claim is unchanged: `ultrawide` is clamped to the tier, not trusted.
       expect(resolveBlockTier(ULTRAWIDE_MIN)).not.toBe('lg');
-      expect(layoutForTier('lg', true).formatMinCardPx).toBe(200);
-      expect(layoutForTier('lg', true).railWidth).toBe(340);
       expect(layoutForTier('lg', true).ultrawide).toBe(false);
+      expect(layoutForTier('lg', true)).toEqual(layoutForTier('lg', false));
+      // ...and the clamp is a real distinction, not a tautology: at `xl` the same `true`
+      // IS honoured, so the two calls differ there.
+      expect(layoutForTier('xl', true)).not.toEqual(layoutForTier('xl', false));
     });
   });
 });
