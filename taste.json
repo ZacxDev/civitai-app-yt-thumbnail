@@ -169,6 +169,36 @@
       "item": "The format picker's `auto-fill` minimum (124/160/200/220) was reasoned from the built-in format count and the 16:9 preview aspect, not measured against real previews at real widths.",
       "closingCondition": "MECHANICAL: the browser capture above exists AND the format grid at 361px still fits >=2 cards per row while the grid at 1523px shows previews >=200px wide. If either fails, the ladder in layout.ts moves and layout.test.ts's literals move with it.",
       "checkedBy": "the same capture run; the two numbers are readable off the screenshots."
+    },
+    {
+      "item": "THE LIGHTBOX PANEL'S WIDTH OVERRIDE IS DERIVED FROM THE PACK'S STYLESHEET TEXT, NOT MEASURED IN AN ENGINE. `Lightbox.tsx` leaves `Modal`'s `size` at its default and sets `style={{ maxWidth: 'min(1536px, calc(100vw - 32px))' }}`, on the reasoning that `style` is spread onto the PANEL element — the same element carrying the `[data-size]` rule — and that the pack's `max-width` rules carry no `!important`, so an inline value wins outright. Both halves were read out of `@civitai/blocks-react@0.49.0`'s `dist/ui/styles.js` and `Modal.js` and re-confirmed by an independent reviewer; neither is a measurement. jsdom computes no cascade, so `History.lightbox.test.tsx`'s assertion proves only that the inline string REACHES the element.",
+      "closingCondition": "MECHANICAL: with a batch generated, open a history tile's lightbox in a real engine at a >=1600px viewport and read the panel's computed `max-width`. It closes when that value is the inline one and not 440px. If the pack ever adds `!important` to the preset, this becomes a real conflict and `size` has to be forked instead.",
+      "checkedBy": "the operator, in the same browser run as the other items here — it needs the app built and a batch in history, which `civitai app dev-tunnel` gives."
+    },
+    {
+      "item": "NOTHING HAS OBSERVED A FULL-SIZE CANDIDATE ACTUALLY FITTING. The image is `maxHeight: max(200px, calc(100vh - 220px))` with `objectFit: contain`, chosen so a 1536x864 candidate sits inside the viewport with the Prev / position / Next row still above the fold, and so a short viewport cannot compute a negative height. The 220px is the dialog's own chrome plus that control row, reasoned from the pack's padding values rather than measured.",
+      "closingCondition": "MECHANICAL: at 1280x800 AND at a deliberately short viewport (around 1280x560), open the lightbox on a 16:9 candidate and confirm (a) the whole picture is visible with no crop, and (b) the Prev / position / Next row is reachable — visible, or reached by the overlay's own scroll. If the control row is stranded at 800px tall, the 220px is wrong and moves with the test literal in `the picture is CONTAINed, not cropped`.",
+      "checkedBy": "the operator, same run; both numbers are readable off the screenshots."
+    },
+    {
+      "item": "`Modal` DOES NOT PORTAL, SO THE OVERLAY RENDERS INSIDE `yt-history-row` — AND NOTHING HAS CHECKED THAT ITS `position: fixed` SURVIVES THAT. A `transform`, `filter` or `contain` on any ancestor makes a fixed child position against THAT ancestor instead of the viewport, which would leave the overlay covering one history row rather than the page. The history panel's own styles do not set any of the three today, but that is a read of this app's CSS, not an observation of the rendered result, and jsdom lays nothing out.",
+      "closingCondition": "MECHANICAL: open the lightbox from a history row that is SCROLLED DOWN the page and confirm the overlay covers the whole viewport with the panel centred in it — not a box pinned to the row. It closes on that screenshot. If it fails, the fix is first-party (ask the pack to portal) rather than a local override.",
+      "checkedBy": "the operator, same run."
+    },
+    {
+      "item": "THE TILE IS NOW A `<button>` WRAPPING THE `<img>`, AND THE CLAIM THAT IT MEASURES WHAT THE BARE IMAGE MEASURED IS REASONING FROM CSS. `imageButtonStyle` zeroes padding, border and background and sets `display: block; width: 100%` specifically so `imageGridStyle`'s sizing contract is unchanged — but no test would fail if the button grew a border, and `cursor: zoom-in` is asserted nowhere at all. jsdom measures no boxes.",
+      "closingCondition": "MECHANICAL: screenshot the candidate grid before and after this change at the same viewport and confirm the tiles are the same size and the grid has not reflowed; and confirm the cursor is a magnifier over a tile. It closes when both read true. Cheap to check and cheap to get wrong, which is why it is listed rather than assumed.",
+      "checkedBy": "the operator, same run — the before shot is the live approved build."
+    },
+    {
+      "item": "THE FOCUS BEHAVIOUR IS TESTED THROUGH ONE EMULATED STEP, AND `Modal` IS DOCUMENTED NOT TO TRAP FOCUS. `document.activeElement` and `.focus()` are real in jsdom, so 'closing returns focus to the tile that opened it' is genuine behaviour — but the browser's implicit focus-on-mousedown is not, and `userEvent.click` stands in for it by focusing the nearest focusable ancestor. Separately, `Modal`'s own doc comment states Tab can still reach content behind the overlay ('v0 limitation'); this app does not paper that over, and the arrow-key fix in `keysBelongToThisDialog` exists precisely because that gap is real. What nobody has watched is a real Tab traversal out of the panel and back.",
+      "closingCondition": "MECHANICAL: with the lightbox open, Tab repeatedly and record where focus goes; then Escape and confirm focus lands back on the tile that was clicked. It closes when the traversal is recorded — a NOTE either way, since reaching content behind the overlay is the KNOWN first-party behaviour and not a failure of this app. If the traversal turns out to strand focus somewhere unrecoverable, that is a first-party bug report, not a local trap.",
+      "checkedBy": "the operator, same run; the traversal is what the screenshots cannot show, so it needs a written note rather than an image."
+    },
+    {
+      "item": "THERE IS NO SCROLL LOCK BEHIND THE OPEN LIGHTBOX, AND HOW BAD THAT LOOKS IS UNMEASURED. `Modal` sets no `overflow: hidden` outside itself, so the history panel still scrolls under a wheel or trackpad swipe while the dialog is open. This is the app's FIRST use of `Modal`, so the gap is newly EXPOSED here rather than new. It is deliberately not patched locally: a body-level `overflow` write from a leaf component is a global side effect belonging to whoever owns the overlay, and two writers would fight over restoring it. The arrow keys, which ARE the dialog's, no longer scroll anything — they are `preventDefault`ed.",
+      "closingCondition": "MECHANICAL, and it is a DECISION the check feeds rather than a bug the check closes: open the lightbox and scroll. It closes when someone records whether the background drift is tolerable. If it is not, the fix is first-party — a `lockScroll` prop or equivalent on `Modal` — and this app adopts it; a local `document.body.style.overflow` write here is explicitly the WRONG resolution and must not be taken as the closing action.",
+      "checkedBy": "the operator, same run. The judgement about tolerability is theirs, not an agent's."
     }
   ],
   "tests": {

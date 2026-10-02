@@ -248,9 +248,6 @@ export function ImageLightbox({
   );
 }
 
-/** Elements that own their own caret keys, whatever else is on screen. */
-const CARET_OWNING_TAGS: ReadonlySet<string> = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
-
 /**
  * Is this keydown the DIALOG's to take?
  *
@@ -262,20 +259,31 @@ const CARET_OWNING_TAGS: ReadonlySet<string> = new Set(['INPUT', 'TEXTAREA', 'SE
  * lightbox instead, with focus still in the textarea. Measured: `defaultPrevented`
  * true, the dialog's `src` moved, the caret did not.
  *
- * The rule, in the order it is applied:
+ * THE RULE IS CONTAINMENT, AND IT IS THE WHOLE RULE:
  *
- *  1. An editable target ALWAYS keeps its keys, wherever it sits. Checked first and
- *     not as part of the containment test, so an editable control added inside the
- *     panel later still owns its caret rather than inheriting the dialog's answer.
- *  2. Otherwise the dialog takes the key if the target is INSIDE its own panel —
- *     which is the normal case, since `Modal` focuses the panel on open and the
- *     Prev/Next buttons are in it.
- *  3. …or if nothing on the page holds focus at all (`<body>` / the root element is
- *     the target). The open dialog is then the only thing the arrows could mean.
+ *  1. The dialog takes the key if the target is INSIDE ITS OWN PANEL — the normal
+ *     case, since `Modal` focuses the panel on open and Prev/Next are in it.
+ *  2. …or if nothing on the page holds focus at all (`<body>` or the root element is
+ *     the target). The open dialog is then the only thing the arrows could mean, and
+ *     this arm is REACHED: a focused button that becomes `disabled` at an end drops
+ *     focus to `<body>`.
  *
- * Anything else — a button, a link, a scroller, a slider behind the overlay — keeps
- * its own arrow keys. The dialog is not entitled to them: it is not trapping focus,
- * so it does not get to act as though it had.
+ * Anything else — a textarea, an input, a button, a link, a scroller, a slider behind
+ * the overlay — keeps its own arrow keys. The dialog is not entitled to them: it is
+ * not trapping focus, so it does not get to act as though it had.
+ *
+ * 🔴 AN EXPLICIT "AN EDITABLE TARGET ALWAYS KEEPS ITS KEYS" ARM WAS WRITTEN HERE AND
+ * THEN DELETED, BECAUSE IT WAS MEASURED UNREACHABLE. `scripts/lightbox-mutants.py`'s
+ * M-F removes it and the whole suite stays green — 884/884 — and that is not a
+ * coverage gap to fill but the arm having no caller: every editable element in this
+ * app is OUTSIDE the panel, where rule 1 already rejects it, and there is no editable
+ * control inside the panel for the arm to protect. A guard that cannot execute reads
+ * as cover while providing none.
+ *
+ * SO THE FORWARD HAZARD IS NAMED INSTEAD: if an editable control is ever added INSIDE
+ * this panel, rule 1 hands it to the dialog and its caret keys break. That is a
+ * decision for whoever adds it — with a test that can fail — not a branch kept warm
+ * for years on the chance.
  *
  * `inside` is any element within the panel; the panel itself is found by walking up
  * to `role="dialog"`, which `Modal` sets. Reaching for the panel through
@@ -283,12 +291,6 @@ const CARET_OWNING_TAGS: ReadonlySet<string> = new Set(['INPUT', 'TEXTAREA', 'SE
  * which is true today and is exactly the kind of claim that stops being true.
  */
 function keysBelongToThisDialog(target: EventTarget | null, inside: Element | null): boolean {
-  if (
-    target instanceof HTMLElement &&
-    (target.isContentEditable || CARET_OWNING_TAGS.has(target.tagName))
-  ) {
-    return false;
-  }
   const panel = inside?.closest('[role="dialog"]') ?? null;
   if (panel !== null && target instanceof Node && panel.contains(target)) return true;
   return target === null || target === document.body || target === document.documentElement;
