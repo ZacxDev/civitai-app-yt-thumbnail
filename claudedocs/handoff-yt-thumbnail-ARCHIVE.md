@@ -188,3 +188,19 @@ already live as gotchas in the main doc.
 - **Consolidation found a second, latent bug.** The single-shot idiom was open-coded at **five** sites. Only `estimate` had a second app-internal caller, but `runGeneration` issues one `submit` **per format**, so **both submit holds were wrong by construction** and would hang silently the day a second format is selected by default. All five now use `deferred`. `via: code`
 - **Leading hypothesis:** none outstanding — the mechanism is established and the control pair closes it.
 - **Next probe:** none for this. If the suite ever flakes here again, timestamp the mock's calls first; aggregate timings are the wrong instrument.
+
+## Evicted from `claudedocs/handoff-yt-thumbnail.md` — 2026-10-02
+
+Closed investigation blocks evicted by rule (s) on 2026-10-02, when ARC 7 closed and 0.1.11 went into review.
+
+From `Open investigations — live diagnosis state`:
+
+- **How it was measured, verbatim-reusable:** `browser --instance work open <run-url>` → `emulate --width W --height 1000` → `wake --wait` → `frames` → `--frame <id> js` reading `getComputedStyle(...).gridTemplateColumns`. 🔴 **`emulate` REQUIRES TAB OWNERSHIP and is refused on a `--tab` you merely name**, so open+emulate+measure must all run in ONE ssh invocation; ownership does not survive a separate one.
+- **Observed (with values) — block width vs layout vs THUMBNAIL GRID COLUMNS:**
+  `vw=1456 → block=1184 TABS, thumbTrack=1112, columns=3` · `vw=1502 → block=1184 TABS, 1112, 3` · `vw=1503 → block=1440 THREE-COL, thumbTrack=718, columns=2, rail=320` · `vw=1600 → block=1537 THREE-COL, 815, 2` · `vw=1920 → block=1857 THREE-COL, 1075, 3`. `formatCards=12` at every width. `via: measurement`
+- 🔴 **THE CLIFF IS REAL AND IT RELOCATED RATHER THAN VANISHED — and this is the DELIBERATE tradeoff, not a regression discovered late.** Crossing into three columns at block 1440 drops the thumbnail grid **3 → 2**, recovering 3 by block 1857. PR #33's own commit predicted exactly this: *"uncapped, 1439 renders 4 tiles and the two-tile cliff simply RELOCATES to 1439→1440. Capped, the step is one tile."* The step is one column, as chosen. `via: measurement`
+- 🔴 **NOT established — whether this is worse than 0.1.8 at any width.** 0.1.8 is superseded and was never measured; comparing would be arithmetic dressed as measurement. Do not assert a regression without measuring a build that still serves it.
+- ✅ **Ruled out — the lightbox width override being unprovable.** The auditor flagged it as derived from the pack's stylesheet TEXT, not measured. Measured now at vw=1920: `panelMaxWidth: 1536px`, `panelWidth: 1536`, image rendered **1498×632** from `naturalSize 1376×768` — a full-size candidate genuinely fits. `position "1 of 2"`, `prevDisabled true`, `nextDisabled false` — the clamp holds in a browser. `via: measurement`
+- 🔴 **Ruled out — a tile-starvation finding I nearly filed, and the instrument is the lesson.** A first pass reported `tilesPerRow=[2,2,2,…]` and read as starvation. It was counting **how many IMAGES each batch contains** (most runs are 1–2), not how many COLUMNS fit; the ancestor chain shows `yt-history-images` carrying `cols = 351.656px 351.672px 351.656px` — THREE columns — inside a 1075px track. **The instrument for grid capacity is `gridTemplateColumns`, never a count of rendered children.** The audit's arithmetic was right and my inference that it was wrong was itself wrong. `via: measurement`
+- **Leading hypothesis:** none outstanding for layout. The remaining question is product judgement, not fact: is the 3→2 column step at 1440 an acceptable price for Formats being permanently visible?
+- **Next probe:** none for the numbers. Put the live app in front of the operator — that is ARC 7's closing condition and nothing an agent runs can answer it.
