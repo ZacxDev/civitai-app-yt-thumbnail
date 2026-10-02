@@ -218,3 +218,12 @@ From `Open investigations — live diagnosis state`:
 - 🔴 **How to grep a civitai production bundle — because the obvious way returns a confident ALL-ZERO.** `_buildManifest.js` names **249** `static/chunks/*.js`, but those are turbopack **page-chunk loaders** (`__turbopack_load_page_chunks__("<route>", [...])`), ~1.2 KB each, containing **no app code**. Grepping them scored **0 for every positive control** (`image.civitai.com` → 0), which is the only reason the mistake was caught. Resolve one level: find the loader naming your route, fetch the **26** chunks IT lists, grep those — controls then read `image url is not allowed` → 1 and `image.civitai.com` → 2. **Report the control pair, never the zero alone.** `via: measurement`
 - **Leading hypothesis:** none outstanding. Both sides are established — the host code is deployed, and a file the click produced is on disk.
 - **Next probe:** none for the save; re-running it spends nothing but proves nothing new. The open question is ARC 7's: get a version past 0.1.7 deployed so the UI can be looked at.
+
+## Evicted from `claudedocs/handoff-yt-thumbnail.md` — 2026-10-02
+
+Evicted 2026-10-02: a twin-recurrence note superseded by 0.1.11 spawning one, and a pointer to a past eviction.
+
+From `Gotchas / decisions / dead-ends`:
+
+- **The sourceless twin did NOT recur on 0.1.10.** 0.1.5/0.1.6/0.1.7/0.1.9 each produced exactly one; 0.1.10 produced none and deployed on our own commit. The "every approval spawns a twin" hypothesis is weakened, not confirmed.
+- 📁 **EVICTED verbatim to `claudedocs/handoff-yt-thumbnail-ARCHIVE.md`, two sections:** §"…2026-09-30 (arc 6)" (12 bullets, PR #23) and §"…2026-10-01 (arc 6 close)" (16, PR #25). The second is half **relocated** — the browser-driving facts now live in devrc's `flows/yt-thumbnail.civit.ai.md`, `flows/civit.ai.md`, `reference/errors.md` (PR #1951), where a browser session loads them — and half **closed with arcs 3–5**: the listing-media/CLI mechanics **rank 2 should read in the ARCHIVE**. 🔴 Commit a companion file FIRST and separately — the handoff tool commits path-limited, so a delta adding pointers ships them without their target.
