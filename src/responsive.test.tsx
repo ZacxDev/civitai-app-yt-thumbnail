@@ -760,6 +760,17 @@ describe('the formats rail is a FIXED third column, never a share of the thumbna
     // of the `xl` breakpoint. It sits ON that breakpoint deliberately — this case is
     // arithmetic at a real device width, not a test of the tier comparison — and the
     // tier is asserted explicitly so the arithmetic cannot be done for the wrong one.
+    //
+    // 🔴 WHAT THIS CASE IS AND IS NOT, MEASURED. The 50/50 figure is COMPUTED here, not
+    // read from the DOM, so this case does NOT die on a mutant that puts a second `fr`
+    // in `railGridStyle` — the guards above that one are what kill that, and they were
+    // watched doing it. What this one is: an invariant guard tying `FORMATS_RAIL_WIDTH`,
+    // `SHELL_PADDING`, the rail grid's gap, `panelRowStyle`'s inset and `IMAGE_MIN_PX`
+    // to a TILE COUNT, so none of them can move without someone reading what it costs
+    // the grid. It also dies on a swapped track order (the parsed inputs-rail width
+    // stops matching the layout's). Its reachability control is a rail widened to 420px:
+    // that reports `expected 1 to be 2`, i.e. the case really can see a width that costs
+    // a column. Labelled rather than counted as regression coverage for the CSS.
     const BLOCK = 1440;
     await renderAt(BLOCK);
     expect(document.querySelector('[data-block-tier]')).toHaveAttribute('data-block-tier', 'xl');
