@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { BlockWorkflowSnapshot } from '@civitai/app-sdk/blocks';
 
-import { BUILTIN_FORMATS, CUSTOM_FORMATS_KEY } from './formats.js';
+import { BUILTIN_FORMATS, CUSTOM_FORMATS_KEY, hasPreviewArt } from './formats.js';
 
 /**
  * HOOK-BOUNDARY coverage for formats, storage, publishing and the
@@ -391,6 +391,133 @@ describe('N formats ⇒ N workflows', () => {
 
 // ---------------------------------------------------------------------------
 
+describe('🔴 the picker renders EVERY built-in, with or without preview art', () => {
+  /**
+   * All twelve built-ins now carry generated art. `Format.preview` is STILL
+   * optional and `FormatPicker` still branches on it — `<img>` when there is art,
+   * a letter placeholder when there is not — because every CUSTOM and PUBLISHED
+   * format has none. This suite is the only thing that proves the placeholder
+   * branch is actually taken in the shipped DOM.
+   *
+   * 🔴 THE PREVIEWLESS CASE IS NOW DRIVEN FROM A CUSTOM FORMAT, NOT A BUILT-IN,
+   * and that is a real change in what is covered rather than bookkeeping. When the
+   * six new built-ins got their art, the old version of that test — which filtered
+   * `BUILTIN_FORMATS` for `preview === undefined` and asserted the result was
+   * non-empty — had exactly two futures: delete it, or let it select nothing and
+   * pass vacuously. Both lose the only DOM-level evidence that the placeholder
+   * branch runs. A custom format is where previewless formats permanently live, so
+   * that is what the test mounts.
+   *
+   * 🔴 SELECTION IS BY EXACT TESTID, NEVER BY THE `yt-format-` PREFIX. That
+   * prefix also matches `yt-format-grid`, `yt-format-card`, `yt-format-check`,
+   * `yt-format-label`, `yt-format-suffix`, `yt-format-save`, … — a count over it
+   * is wrong by a number that changes with the layout, not with the format list.
+   * `yt-format-card` IS exact, so counting cards is safe; matching chips is not.
+   */
+
+  /** The chip button for one format id. Exact testid — see the note above. */
+  const chip = (id: string) => screen.getByTestId(`yt-format-${id}`);
+
+  it('renders one chip per built-in, found by its own exact id', async () => {
+    render(<App />);
+    await screen.findByTestId('yt-format-grid');
+
+    for (const f of BUILTIN_FORMATS) {
+      const el = chip(f.id);
+      expect(el, `no chip for ${f.id}`).toBeInTheDocument();
+      expect(el).toHaveAttribute('role', 'checkbox');
+      expect(el).toHaveTextContent(f.label);
+    }
+    // One card per format and nothing else: `yt-format-card` is an EXACT testid,
+    // so this count is about the format list rather than the layout.
+    expect(screen.getAllByTestId('yt-format-card')).toHaveLength(BUILTIN_FORMATS.length);
+  });
+
+  /**
+   * A previewless format in the picker. Custom formats never carry art, so a
+   * stored one is the honest fixture for the placeholder branch — and it is the
+   * population that will still be previewless however much built-in art lands.
+   */
+  // `preview` is declared (and left absent) so `hasPreviewArt` can be called on the
+  // fixture directly — a weak-type object with no field in common would not compile,
+  // and the point is to run the SAME predicate the component runs.
+  const PREVIEWLESS: { id: string; label: string; suffix: string; preview?: string } = {
+    id: 'custom:placeholder',
+    label: 'Zeta Look',
+    suffix: 'a look of my own',
+  };
+
+  it('🔴 EVERY built-in renders its art as an <img> with the exact declared src', async () => {
+    render(<App />);
+    await screen.findByTestId('yt-format-grid');
+
+    // All twelve have art, so this is unconditional now — and the `checked` count
+    // at the end is what stops it quietly covering fewer than it claims.
+    expect(BUILTIN_FORMATS.every((f) => hasPreviewArt(f)), 'a built-in lost its art').toBe(true);
+    let checked = 0;
+    for (const f of BUILTIN_FORMATS) {
+      const img = chip(f.id).querySelector('img');
+      expect(img, `${f.id} has art but rendered no <img>`).not.toBeNull();
+      expect(img).toHaveAttribute('src', f.preview as string);
+      // Decorative: the label beside it already names the format.
+      expect(img).toHaveAttribute('alt', '');
+      checked += 1;
+    }
+    expect(checked).toBe(BUILTIN_FORMATS.length);
+  });
+
+  it('🔴 a format with NO preview renders a placeholder, never an <img>', async () => {
+    // The previewless format is a CUSTOM one — see the suite note. It is loaded
+    // from storage so it reaches the real picker through the real code path.
+    storageGet.mockResolvedValue([PREVIEWLESS]);
+    render(<App />);
+    await screen.findByTestId(`yt-format-${PREVIEWLESS.id}`);
+
+    // Positive control: prove this assertion can SEE an <img> at all, by checking a
+    // format that HAS art. Without it, the `toBeNull()` below is indistinguishable
+    // from a query that never matches anything.
+    const withArt = BUILTIN_FORMATS.filter((f) => hasPreviewArt(f));
+    expect(withArt.length, 'no format has art — the control below is vacuous').toBeGreaterThan(0);
+    const controlImg = chip(withArt[0].id).querySelector('img');
+    expect(controlImg, 'the control format rendered no <img> — this query sees nothing').not.toBeNull();
+    expect(controlImg).toHaveAttribute('src', withArt[0].preview as string);
+
+    // The case under test. An <img> with an empty/absent/wrong src is exactly what
+    // paints a broken-image icon, so the claim is that there is NO img node at all.
+    expect(hasPreviewArt(PREVIEWLESS), 'the fixture is not previewless').toBe(false);
+    const el = chip(PREVIEWLESS.id);
+    expect(el.querySelector('img'), `${PREVIEWLESS.id} has no art but rendered an <img>`).toBeNull();
+    // The placeholder is the format's initial, and it is aria-hidden so a screen
+    // reader hears the label once, not a stray letter before it.
+    expect(el).toHaveTextContent(PREVIEWLESS.label);
+    const ph = el.querySelector('[aria-hidden="true"]');
+    expect(ph, `${PREVIEWLESS.id} rendered no placeholder`).not.toBeNull();
+    expect(ph!.textContent).toBe('Z');
+    // 🔴 'Z' as a LITERAL, and the fixture label starts with a letter no built-in
+    // label starts with. Derived as `label.slice(0,1).toUpperCase()` this assertion
+    // would restate the implementation and pass for whatever it produced.
+  });
+
+  it('🔴 the preview box reserves 16/9 whether or not there is art — no layout jump', async () => {
+    storageGet.mockResolvedValue([PREVIEWLESS]);
+    render(<App />);
+    await screen.findByTestId(`yt-format-${PREVIEWLESS.id}`);
+
+    // The aspect-ratio lives on the WRAPPER, not the image, which is what makes a
+    // previewless card the same height as one with art. If it moved onto the <img>,
+    // every previewless card would collapse and the grid would reflow — which is now
+    // a CUSTOM-format problem rather than a built-in one, since all twelve built-ins
+    // have art. The branch is the same branch.
+    const boxOf = (id: string) => {
+      const el = chip(id).querySelector('span') as HTMLElement;
+      return el.style.aspectRatio;
+    };
+    const art = BUILTIN_FORMATS.find((f) => hasPreviewArt(f))!;
+    expect(boxOf(art.id)).toBe('16 / 9');
+    expect(boxOf(PREVIEWLESS.id)).toBe('16 / 9');
+  });
+});
+
 describe('the format selection invariant', () => {
   it('🔴 will not let the viewer deselect the last format', async () => {
     const user = userEvent.setup();
@@ -518,6 +645,45 @@ describe('🔴 publishing puts the suffix in the MODERATED field', () => {
     expect(JSON.stringify(value.data)).not.toContain('vhs');
     expect(JSON.stringify(value.data)).not.toContain('camcorder');
     expect(JSON.stringify(value.data)).not.toContain('Retro');
+  });
+
+  it('🔴 REFUSES to publish a suffix carrying the wildcard `#` — it would spend OTHER people’s Buzz', async () => {
+    // 🔴 THIS IS THE PUBLISHED HALF OF THE `#` RULE, and it is a sharper case than
+    // the save half: a published suffix is injected into the paid generations of
+    // viewers who never typed it, and `#` is eaten server-side — the generation
+    // succeeds and silently is not the prompt anyone asked for.
+    //
+    // 🔴 WHY THIS TEST EXISTS AT THE HOOK BOUNDARY. The format below comes from
+    // STORAGE, carrying a `#` that `parseCustomFormats` deliberately still loads
+    // (it may predate the rule — see formats.test.ts "checked on SAVE and NOT on
+    // LOAD"). So this viewer genuinely has a `#` format in their picker with a live
+    // Publish button, and the ONLY thing that can see whether it reaches the board
+    // is the argument to `shared.append`. The mock host would accept it happily.
+    storageGet.mockResolvedValue([
+      { id: 'custom:hash', label: 'Neon Hex', suffix: 'neon glow #FF49BD rim light' },
+      // The control for the `not.toHaveBeenCalled()` below — see the note there.
+      { id: 'custom:clean', label: 'Plain', suffix: 'plain rim light' },
+    ]);
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByTestId('yt-format-publish-custom:hash'));
+
+    // Nothing reached the board.
+    expect(sharedAppend).not.toHaveBeenCalled();
+    // And the viewer is TOLD, naming the character and what happens to it — a
+    // silent no-op here would read as a broken Publish button.
+    const note = await screen.findByTestId('yt-storage-note');
+    expect(note).toHaveTextContent('#');
+    expect(note).toHaveTextContent(/wildcard/i);
+
+    // 🔴 POSITIVE CONTROL, SAME TEST. `expect(sharedAppend).not.toHaveBeenCalled()`
+    // is exactly what a broken Publish button, a wrong testid, or a mock wired to
+    // nothing also produces. Publishing a CLEAN format must still work, through the
+    // same click path, so the zero above is a fact about the `#` and not about the
+    // instrument.
+    await user.click(screen.getByTestId('yt-format-publish-custom:clean'));
+    await waitFor(() => expect(sharedAppend).toHaveBeenCalledTimes(1));
+    expect((sharedAppend.mock.calls[0][0] as { body: string }).body).toBe('plain rim light');
   });
 });
 

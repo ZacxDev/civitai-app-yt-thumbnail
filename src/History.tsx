@@ -1,8 +1,10 @@
 import { Alert, Badge, Button, Group, Stack } from '@civitai/blocks-react/ui';
+import { useCallback, useState } from 'react';
 
 import { accountLabel, formatCost } from './generation.js';
 import { showHistory, skeletonCount, type HistoryEntry } from './history.js';
 import { AddTextIcon, BuzzBolt, DownloadIcon } from './icons.js';
+import { ImageLightbox } from './Lightbox.js';
 import type { Palette } from './palette.js';
 import { absoluteTime, relativeTime } from './relative-time.js';
 import {
@@ -358,6 +360,35 @@ function HistoryRow({
   onEdit: (url: string) => void;
   pal: Palette;
 }) {
+  /**
+   * WHICH OF **THIS ROW'S** IMAGES THE LIGHTBOX IS SHOWING, BY URL; `null` for
+   * closed.
+   *
+   * 🔴 A URL AND NOT AN INDEX, AND THE INDEX VERSION WAS A MEASURED DEFECT.
+   * `entry.imageUrls` is ordered by `record.workflowIds`, and this app submits ONE
+   * WORKFLOW PER FORMAT, so a two-format batch whose SECOND format finishes first
+   * renders a single tile. Open it and the dialog reads "1 of 1"; when format one
+   * lands, the join inserts ITS image at index 0 — and an index of 0 now resolves to
+   * a DIFFERENT PICTURE, under a heading that renames itself to the other format,
+   * with no viewer input at all. A url survives an insertion in front of it; an index
+   * cannot, because it has no identity to carry. See `lightbox.ts`.
+   *
+   * 🔴 THE STATE LIVES PER ROW ON PURPOSE, AND THAT IS WHAT KEEPS BATCHES APART.
+   * Prev/next are scoped to "the images in the same batch", and the cheapest way to
+   * guarantee that is for the only array in scope to be `entry.imageUrls` — a row
+   * cannot leak a sibling's picture because it never holds one. The alternative, one
+   * lightbox state in the panel holding `{ rowKey, url }`, would put a lookup
+   * between the click and the picture, and a wrong lookup is exactly the defect
+   * ("opened row B, got row A's image") that this shape makes unrepresentable.
+   *
+   * Only one can ever be open, because opening one requires clicking a tile in it.
+   */
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  // Stable, so the lightbox's arrow-key listener re-binds only when the POSITION it
+  // closes over actually moves. `setLightboxUrl` is already stable by React's
+  // contract, which is why `onUrlChange` gets it directly.
+  const closeLightbox = useCallback(() => setLightboxUrl(null), []);
+
   const pending = entry.status === 'running' ? skeletonCount(entry.record, entry.imageUrls.length) : 0;
   const when = relativeTime(entry.record.createdAt, nowMs);
   const whenAbsolute = absoluteTime(entry.record.createdAt);
@@ -424,16 +455,41 @@ function HistoryRow({
         <div style={imageGridStyle()} data-testid="yt-history-images">
           {entry.imageUrls.map((url, i) => (
             <div key={url} style={galleryItemStyle}>
-              <img
-                src={url}
-                alt={
-                  entry.imageLabels[i]
-                    ? `${entry.imageLabels[i]} — generated result ${i + 1}`
-                    : `Generated result ${i + 1}`
-                }
-                style={imageStyle}
-                data-testid="yt-history-img"
-              />
+              {/* 🔴 THE TILE IS A REAL `<button>`, AND THAT IS NOT DECORATION — IT IS
+                  WHAT MAKES CLOSING THE LIGHTBOX RETURN FOCUS HERE. `Modal` restores
+                  focus to `document.activeElement` as it was at open time; an `<img>`
+                  is not focusable, so clicking a bare image leaves `activeElement` on
+                  `<body>` and the restore has nothing to go back to. A button also
+                  makes the tile reachable by Tab and operable by Enter/Space for free,
+                  which an `onClick` on a `<div>` or an `<img>` does not.
+                  🔴 IT MUST STAY VISUALLY INERT. `imageGridStyle` owns this grid's
+                  sizing contract and a parallel change is reworking it, so the wrapper
+                  contributes NO box of its own: no padding, no border, no background,
+                  `display: block` and `width: 100%`, so the tile measures exactly what
+                  the bare `<img>` measured. */}
+              <button
+                type="button"
+                onClick={() => setLightboxUrl(url)}
+                style={imageButtonStyle}
+                // Both attributes, for the same reason the Save/Edit buttons below
+                // carry both: `title` is the only hover affordance this UI pack
+                // offers. The name says what the control DOES — the `<img>`'s own
+                // `alt` describes the picture, which is not the same sentence.
+                aria-label={`View ${entry.imageLabels[i] ?? `result ${i + 1}`} full size`}
+                title="View full size"
+                data-testid="yt-history-zoom"
+              >
+                <img
+                  src={url}
+                  alt={
+                    entry.imageLabels[i]
+                      ? `${entry.imageLabels[i]} — generated result ${i + 1}`
+                      : `Generated result ${i + 1}`
+                  }
+                  style={imageStyle}
+                  data-testid="yt-history-img"
+                />
+              </button>
               {/* 🔴 TWO BUTTONS THAT DO GENUINELY DIFFERENT THINGS, AND THE
                   DISTINCTION IS NOW CARRIED BY THE ICON PLUS `aria-label`/`title`
                   RATHER THAN BY VISIBLE TEXT. The previous version of this comment
@@ -550,9 +606,67 @@ function HistoryRow({
           </Button>
         )}
       </Group>
+
+      {/* 🔴 ONE PER ROW, AND HANDED **THIS** ROW'S ARRAYS. A VIEWER ONLY — no Save,
+          no Edit; see `Lightbox.tsx` for why that is a money rule and not a scope
+          note.
+
+          🔴 THE ELEMENT IS WRITTEN UNCONDITIONALLY HERE AND THERE IS NO REASON FOR
+          THAT BEYOND IT BEING SHORTER THAN A `&&`. `ImageLightbox` returns `null`
+          whenever there is nothing to show, so this renders nothing while closed
+          either way — wrapping it in `lightboxUrl !== null && …` would be exactly
+          equivalent and is not worth the extra condition. Stated as "no reason"
+          deliberately: THIS IS THE THIRD WRITING OF THIS SENTENCE, and the previous
+          two both claimed a mechanism that does not exist. They said the component
+          had to stay mounted because `Modal` restores focus to the tile from the
+          CLEANUP of its own `opened` effect, "which never runs if the component
+          unmounts instead" — false twice over. React runs an effect's cleanup on
+          unmount as well as on a dep change (which commit cc860e3 established when it
+          replaced the `<Modal opened={false}/>` branch with plain `null`, leaving
+          `focus returns to the TILE THAT OPENED IT` green), and since that commit
+          nothing is rendered while closed anyway, so the sentence described a
+          construct that had already gone. Do not supply this line with a fresh
+          justification; if one is ever needed, it will be a behaviour a test can
+          state. */}
+      <ImageLightbox
+        url={lightboxUrl}
+        urls={entry.imageUrls}
+        labels={entry.imageLabels}
+        onUrlChange={setLightboxUrl}
+        onClose={closeLightbox}
+        pal={pal}
+      />
     </div>
   );
 }
+
+/**
+ * The tile's click target: a button that is not allowed to look like one.
+ *
+ * Every property here is a NEUTRALISER. The tile's size is owned by
+ * `imageGridStyle` + `imageStyle`, so this wrapper must contribute no box of its
+ * own — otherwise a button's default padding and border would shrink the picture
+ * inside a grid cell whose width was computed for the bare image.
+ *
+ * `cursor: zoom-in` is the affordance, which is the honest one: this control
+ * magnifies, it does not save or edit.
+ *
+ * 🔴 NO COLOUR TOKEN IS NEEDED AND NONE IS NAMED. `background: 'none'` and
+ * `border: 'none'` remove the UA's, rather than painting over them, so this style
+ * cannot drift from the palette — there is nothing in it to drift.
+ */
+const imageButtonStyle: React.CSSProperties = {
+  display: 'block',
+  width: '100%',
+  padding: 0,
+  margin: 0,
+  border: 'none',
+  background: 'none',
+  cursor: 'zoom-in',
+  font: 'inherit',
+  color: 'inherit',
+  textAlign: 'inherit',
+};
 
 /**
  * The realized cost: a number, a BOLT, and the pool that funded it.

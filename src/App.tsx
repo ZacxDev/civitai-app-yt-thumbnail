@@ -1653,9 +1653,22 @@ export function App() {
    * 🔴 The value comes from `sharedValueForFormat`, which is the ONE place that
    * decides the suffix travels in the MODERATED `body` field. Do not inline a
    * literal object here — that decision must stay in one tested function.
+   *
+   * 🔴 AND IT IS VALIDATED FIRST, with the SAME predicate the save path uses.
+   * Publishing is a write, and the suffix it writes is injected into OTHER
+   * viewers' PAID generations — so a suffix carrying the wildcard `#` must not get
+   * onto the board even though it is already sitting in this viewer's own store
+   * (it may predate the rule; `parseCustomFormats` deliberately still loads it).
+   * This is the second of the two call sites of `validateCustomFormat`, and there
+   * are no others.
    */
   const onPublishFormat = useCallback(
     async (fmt: Format) => {
+      const why = validateCustomFormat(fmt);
+      if (why) {
+        setStorageNote(`Couldn't publish “${fmt.label}”: ${why}`);
+        return;
+      }
       setFormatBusyId(fmt.id);
       setStorageNote(null);
       try {
