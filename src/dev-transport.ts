@@ -10,7 +10,13 @@
 // BEFORE any hook (or the mock host) runs. That's what this does.
 
 import { getTransport } from '@civitai/blocks-react';
-import { createLiveHost, resetTransport } from '@civitai/blocks-react/testing';
+// `createLiveHost` moved off `./testing` onto `./live` in @civitai/blocks-react
+// 0.55.0. It is NOT a mock: it forwards the App-Block protocol to the real
+// Civitai backend and a successful generation debits the token holder's own
+// Buzz, so the subpath it is reachable through now says so. `resetTransport`
+// stays on `./testing`, which is mocks only.
+import { createLiveHost } from '@civitai/blocks-react/live';
+import { resetTransport } from '@civitai/blocks-react/testing';
 
 /**
  * Dev harness modes. Selected by `VITE_HARNESS_MODE` (the `dev:harness` and
