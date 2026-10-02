@@ -361,23 +361,33 @@ function HistoryRow({
   pal: Palette;
 }) {
   /**
-   * WHICH OF **THIS ROW'S** IMAGES THE LIGHTBOX IS SHOWING; `null` for closed.
+   * WHICH OF **THIS ROW'S** IMAGES THE LIGHTBOX IS SHOWING, BY URL; `null` for
+   * closed.
+   *
+   * 🔴 A URL AND NOT AN INDEX, AND THE INDEX VERSION WAS A MEASURED DEFECT.
+   * `entry.imageUrls` is ordered by `record.workflowIds`, and this app submits ONE
+   * WORKFLOW PER FORMAT, so a two-format batch whose SECOND format finishes first
+   * renders a single tile. Open it and the dialog reads "1 of 1"; when format one
+   * lands, the join inserts ITS image at index 0 — and an index of 0 now resolves to
+   * a DIFFERENT PICTURE, under a heading that renames itself to the other format,
+   * with no viewer input at all. A url survives an insertion in front of it; an index
+   * cannot, because it has no identity to carry. See `lightbox.ts`.
    *
    * 🔴 THE STATE LIVES PER ROW ON PURPOSE, AND THAT IS WHAT KEEPS BATCHES APART.
    * Prev/next are scoped to "the images in the same batch", and the cheapest way to
    * guarantee that is for the only array in scope to be `entry.imageUrls` — a row
    * cannot leak a sibling's picture because it never holds one. The alternative, one
-   * lightbox state in the panel holding `{ rowKey, index }`, would put a lookup
+   * lightbox state in the panel holding `{ rowKey, url }`, would put a lookup
    * between the click and the picture, and a wrong lookup is exactly the defect
    * ("opened row B, got row A's image") that this shape makes unrepresentable.
    *
    * Only one can ever be open, because opening one requires clicking a tile in it.
    */
-  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   // Stable, so the lightbox's arrow-key listener re-binds only when the POSITION it
-  // closes over actually moves. `setLightboxIndex` is already stable by React's
-  // contract, which is why `onIndexChange` gets it directly.
-  const closeLightbox = useCallback(() => setLightboxIndex(null), []);
+  // closes over actually moves. `setLightboxUrl` is already stable by React's
+  // contract, which is why `onUrlChange` gets it directly.
+  const closeLightbox = useCallback(() => setLightboxUrl(null), []);
 
   const pending = entry.status === 'running' ? skeletonCount(entry.record, entry.imageUrls.length) : 0;
   const when = relativeTime(entry.record.createdAt, nowMs);
@@ -459,7 +469,7 @@ function HistoryRow({
                   the bare `<img>` measured. */}
               <button
                 type="button"
-                onClick={() => setLightboxIndex(i)}
+                onClick={() => setLightboxUrl(url)}
                 style={imageButtonStyle}
                 // Both attributes, for the same reason the Save/Edit buttons below
                 // carry both: `title` is the only hover affordance this UI pack
@@ -599,14 +609,30 @@ function HistoryRow({
 
       {/* 🔴 ONE PER ROW, AND HANDED **THIS** ROW'S ARRAYS. A VIEWER ONLY — no Save,
           no Edit; see `Lightbox.tsx` for why that is a money rule and not a scope
-          note. It is rendered unconditionally (closed when `lightboxIndex` is null)
-          because `Modal` restores focus to the tile from the cleanup of its own
-          `opened` effect, which never runs if the component unmounts instead. */}
+          note.
+
+          🔴 THE ELEMENT IS WRITTEN UNCONDITIONALLY HERE AND THERE IS NO REASON FOR
+          THAT BEYOND IT BEING SHORTER THAN A `&&`. `ImageLightbox` returns `null`
+          whenever there is nothing to show, so this renders nothing while closed
+          either way — wrapping it in `lightboxUrl !== null && …` would be exactly
+          equivalent and is not worth the extra condition. Stated as "no reason"
+          deliberately: THIS IS THE THIRD WRITING OF THIS SENTENCE, and the previous
+          two both claimed a mechanism that does not exist. They said the component
+          had to stay mounted because `Modal` restores focus to the tile from the
+          CLEANUP of its own `opened` effect, "which never runs if the component
+          unmounts instead" — false twice over. React runs an effect's cleanup on
+          unmount as well as on a dep change (which commit cc860e3 established when it
+          replaced the `<Modal opened={false}/>` branch with plain `null`, leaving
+          `focus returns to the TILE THAT OPENED IT` green), and since that commit
+          nothing is rendered while closed anyway, so the sentence described a
+          construct that had already gone. Do not supply this line with a fresh
+          justification; if one is ever needed, it will be a behaviour a test can
+          state. */}
       <ImageLightbox
-        index={lightboxIndex}
+        url={lightboxUrl}
         urls={entry.imageUrls}
         labels={entry.imageLabels}
-        onIndexChange={setLightboxIndex}
+        onUrlChange={setLightboxUrl}
         onClose={closeLightbox}
         pal={pal}
       />

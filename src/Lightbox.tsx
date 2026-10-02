@@ -1,7 +1,7 @@
 import { Button, Group, Modal } from '@civitai/blocks-react/ui';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 
-import { lightboxView, stepIndex } from './lightbox.js';
+import { lightboxView } from './lightbox.js';
 import type { Palette } from './palette.js';
 import { fieldDescStyle } from './ui-styles.js';
 
@@ -35,57 +35,99 @@ import { fieldDescStyle } from './ui-styles.js';
  * 🔴 `Modal` DOES NOT TRAP FOCUS — its own doc comment says so ("v0 limitation …
  * Tab can still reach content behind the overlay"). That is a first-party gap, not
  * something this file papers over: hand-rolling a trap here would fork the
- * component's focus model and fight its restore-on-close effect. Left as-is and
- * recorded.
+ * component's focus model and fight its restore-on-close effect. Left as-is — but
+ * NOT ignored, because it is what made the arrow-key listener below a real bug: see
+ * `keysBelongToThisDialog`.
+ *
+ * 🔴 THERE IS NO SCROLL LOCK, AND THAT IS AN ACCEPTED GAP RATHER THAN AN OVERSIGHT.
+ * `Modal` does not set `overflow: hidden` on anything outside itself, so the history
+ * panel behind the overlay still scrolls under a wheel or a trackpad swipe. This is
+ * the app's FIRST use of `Modal`, so the gap is newly exposed here rather than new.
+ * Not papered over for the same reason as the focus trap: a body-level `overflow`
+ * write from a leaf component is a global side effect the component that owns the
+ * overlay is the right place for, and two of them (this file and a later first-party
+ * fix) would fight over restoring it. The arrows, which ARE this component's keys,
+ * no longer scroll anything — they are `preventDefault`ed below. Carried as a
+ * `deferred[]` item in `taste.json` for the browser check, because jsdom scrolls
+ * nothing and cannot tell anyone how bad it looks.
  */
 export function ImageLightbox({
-  index,
+  url,
   urls,
   labels,
-  onIndexChange,
+  onUrlChange,
   onClose,
   pal,
 }: {
-  /** The image to show, or `null` for closed. Indexes `urls` and nothing else. */
-  index: number | null;
+  /**
+   * THE PICTURE BEING SHOWN, BY URL, or `null` for closed.
+   *
+   * 🔴 A URL AND NOT AN INDEX, and `lightbox.ts` carries the measured defect that
+   * made it one: an index is silently re-pointed at a DIFFERENT picture when the
+   * row's list grows underneath it, which a two-format batch does every time its
+   * second format resolves first.
+   */
+  url: string | null;
   /** THIS ROW's images. See `lightboxView` — rows stay apart because of this prop. */
   urls: readonly string[];
   /** Format labels, index-aligned with `urls` by the history join. */
   labels: readonly (string | null)[];
-  onIndexChange: (next: number) => void;
+  onUrlChange: (next: string) => void;
   onClose: () => void;
   pal: Palette;
 }) {
-  const view = lightboxView(index, urls, labels);
-  const count = urls.length;
-  // `-1` stands for "nothing shown", so the effect below has primitive deps only and
-  // re-binds exactly when the position it closes over changes.
-  const at = view === null ? -1 : view.index;
+  const view = lightboxView(url, urls, labels);
+  const bodyRef = useRef<HTMLDivElement>(null);
+
+  // Primitives, so the effects below have primitive deps only and re-bind exactly
+  // when the position they close over actually moves.
+  const shown = view !== null;
+  const prevUrl = view?.prevUrl ?? null;
+  const nextUrl = view?.nextUrl ?? null;
+  // "The caller thinks this is open, and there is nothing left to show it." Either
+  // the row's images went away entirely, or the one being looked at did.
+  const orphaned = url !== null && view === null;
+
+  // 🔴 AN EMPTIED VIEW CLOSES THE DIALOG INSTEAD OF RENDERING NOTHING WHILE STILL
+  // CONSIDERING ITSELF OPEN. Without this the caller keeps its `url` state, so the
+  // next render where that picture is back REMOUNTS `Modal` with no user input — the
+  // dialog reopens by itself and `Modal`'s open effect re-steals focus to the panel.
+  // MEASURED as a defect before this existed; `an emptied row CLOSES the dialog …`
+  // in `History.lightbox.test.tsx` is the regression case.
+  //
+  // In an effect rather than during render because `onClose` is the PARENT's setter.
+  useEffect(() => {
+    if (orphaned) onClose();
+  }, [orphaned, onClose]);
 
   // 🔴 ARROW KEYS ARE A STATED FEATURE, SO THEY GET A REAL LISTENER — not an
   // `onKeyDown` on the panel, which would stop working the moment focus moved to one
   // of the buttons inside it. Attached to `document` for the same reason `Modal`
   // attaches its own Escape handler there, and only while something is shown.
   //
-  // The guard is the VIEW being absent, not `index` being null: a batch whose images
+  // The guard is the VIEW being absent, not `url` being null: a batch whose picture
   // went away under an open dialog shows nothing, and arrow keys over nothing must
-  // not call `onIndexChange` with an index into an empty list.
+  // not move anything.
   useEffect(() => {
-    if (at < 0) return;
+    if (!shown) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      const delta = e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1 : 0;
-      if (delta === 0) return;
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      if (!keysBelongToThisDialog(e.target, bodyRef.current)) return;
       // The arrows scroll the overlay otherwise — it is `overflow-y: auto`.
       e.preventDefault();
-      // 🔴 THE SAME `stepIndex` THE BUTTONS USE. Two movers would be two boundary
-      // rules, and the clamp is the thing this feature had to decide.
-      onIndexChange(stepIndex(at, count, delta));
+      // 🔴 THE SAME NEIGHBOURS THE BUTTONS USE, read off the one view that computed
+      // them. There is no index arithmetic here to disagree with theirs.
+      const next = e.key === 'ArrowLeft' ? prevUrl : nextUrl;
+      if (next !== null) onUrlChange(next);
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [at, count, onIndexChange]);
+    // `shown` is the gate; the rest is what the handler reads. All primitives, so the
+    // listener re-binds exactly when the position it closes over moves.
+  }, [shown, prevUrl, nextUrl, onUrlChange]);
 
-  // Nothing to show: closed, or the batch's pictures went away under an open dialog.
+  // Nothing to show: closed, or the picture went away under an open dialog. The
+  // effect above has already asked the caller to close in the second case.
   //
   // 🔴 PLAIN `null`, AND THE OBVIOUS-LOOKING ALTERNATIVE IS RECORDED BECAUSE IT WAS
   // WRONG. This was `<Modal opened={false} …/>` on the reasoning that `Modal` restores
@@ -126,16 +168,13 @@ export function ImageLightbox({
       // `Modal` sets itself.
       style={{ maxWidth: 'min(1536px, calc(100vw - 32px))' }}
     >
-      <div style={{ display: 'grid', gap: 10 }}>
+      {/* `bodyRef` is how the key handler finds its own panel — see
+          `keysBelongToThisDialog`. `Modal` takes no ref of its own, so the panel is
+          reached by walking UP from a child that does. */}
+      <div style={{ display: 'grid', gap: 10 }} ref={bodyRef}>
         <img
           src={view.url}
           alt={alt}
-          // 🔴 NO `crossOrigin` HERE, MATCHING THE TILE. `editor.ts`'s
-          // `loadImageElement` sets it because it reads the image back off a canvas,
-          // which is tainted without it. This one is only DISPLAYED, so the attribute
-          // would buy nothing and would add a second CORS contract to a path that
-          // does not need one.
-          //
           // 🔴 `objectFit: contain`, NOT `cover` — the opposite of the tile, on
           // purpose. A tile crops to keep the grid even; the whole point of this
           // surface is to show the WHOLE candidate, and cropping it here would hide
@@ -143,6 +182,14 @@ export function ImageLightbox({
           // picture inside the viewport instead of pushing the controls below the
           // fold; the `max(…)` floor stops a short viewport computing a negative
           // height, and the overlay scrolls (`overflow-y: auto`) in that case.
+          //
+          // No `crossOrigin`, matching the tile. `editor.ts`'s `loadImageElement`
+          // sets it because it reads the image back off a canvas, which is tainted
+          // without it. This one is only DISPLAYED, so the attribute would buy
+          // nothing and would add a second CORS contract to a path that does not
+          // need one. Not guarded by a test: no shipped change has ever added the
+          // attribute here and nothing would, so a test asserting its absence would
+          // be a guard over a non-hazard.
           style={{
             width: '100%',
             maxHeight: 'max(200px, calc(100vh - 220px))',
@@ -155,15 +202,18 @@ export function ImageLightbox({
 
         <Group justify="space-between" align="center" gap={8}>
           {/* 🔴 DISABLED AT THE ENDS RATHER THAN WRAPPING — see `lightbox.ts` for the
-              fork. `disabled` is what makes the clamp VISIBLE: the viewer can see
-              there is nothing further before they click. */}
+              fork. A `null` neighbour IS the end, and `disabled` is what makes it
+              VISIBLE: the viewer can see there is nothing further before they
+              click. */}
           <Button
             size="sm"
             variant="light"
-            disabled={!view.hasPrev}
+            disabled={view.prevUrl === null}
             aria-label="Previous image"
             title="Previous image"
-            onClick={() => onIndexChange(stepIndex(view.index, urls.length, -1))}
+            onClick={() => {
+              if (view.prevUrl !== null) onUrlChange(view.prevUrl);
+            }}
             data-testid="yt-lightbox-prev"
           >
             ‹ Prev
@@ -182,10 +232,12 @@ export function ImageLightbox({
           <Button
             size="sm"
             variant="light"
-            disabled={!view.hasNext}
+            disabled={view.nextUrl === null}
             aria-label="Next image"
             title="Next image"
-            onClick={() => onIndexChange(stepIndex(view.index, urls.length, 1))}
+            onClick={() => {
+              if (view.nextUrl !== null) onUrlChange(view.nextUrl);
+            }}
             data-testid="yt-lightbox-next"
           >
             Next ›
@@ -194,4 +246,50 @@ export function ImageLightbox({
       </div>
     </Modal>
   );
+}
+
+/** Elements that own their own caret keys, whatever else is on screen. */
+const CARET_OWNING_TAGS: ReadonlySet<string> = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
+
+/**
+ * Is this keydown the DIALOG's to take?
+ *
+ * 🔴 THIS EXISTS BECAUSE THE UNCONDITIONAL VERSION WAS A MEASURED BUG, AND THE
+ * MECHANISM IS `Modal`'s DOCUMENTED LACK OF A FOCUS TRAP. The handler listens on
+ * `document`, so it sees every keydown on the page; Tab out of the panel reaches the
+ * app's own prompt textarea, which is still behind the overlay. Pressing ArrowLeft
+ * there used to `preventDefault()` — CANCELLING THE CARET MOVE — and advance the
+ * lightbox instead, with focus still in the textarea. Measured: `defaultPrevented`
+ * true, the dialog's `src` moved, the caret did not.
+ *
+ * The rule, in the order it is applied:
+ *
+ *  1. An editable target ALWAYS keeps its keys, wherever it sits. Checked first and
+ *     not as part of the containment test, so an editable control added inside the
+ *     panel later still owns its caret rather than inheriting the dialog's answer.
+ *  2. Otherwise the dialog takes the key if the target is INSIDE its own panel —
+ *     which is the normal case, since `Modal` focuses the panel on open and the
+ *     Prev/Next buttons are in it.
+ *  3. …or if nothing on the page holds focus at all (`<body>` / the root element is
+ *     the target). The open dialog is then the only thing the arrows could mean.
+ *
+ * Anything else — a button, a link, a scroller, a slider behind the overlay — keeps
+ * its own arrow keys. The dialog is not entitled to them: it is not trapping focus,
+ * so it does not get to act as though it had.
+ *
+ * `inside` is any element within the panel; the panel itself is found by walking up
+ * to `role="dialog"`, which `Modal` sets. Reaching for the panel through
+ * `document.querySelector` instead would bind this to "the only dialog on the page",
+ * which is true today and is exactly the kind of claim that stops being true.
+ */
+function keysBelongToThisDialog(target: EventTarget | null, inside: Element | null): boolean {
+  if (
+    target instanceof HTMLElement &&
+    (target.isContentEditable || CARET_OWNING_TAGS.has(target.tagName))
+  ) {
+    return false;
+  }
+  const panel = inside?.closest('[role="dialog"]') ?? null;
+  if (panel !== null && target instanceof Node && panel.contains(target)) return true;
+  return target === null || target === document.body || target === document.documentElement;
 }

@@ -18,12 +18,28 @@ import { palette } from './palette.js';
  * polling behaviour could fail the test for reasons that have nothing to do with the
  * lightbox.
  *
- * 🔴 RED/GREEN MATRIX. Every case here is VACUOUSLY RED at the base commit (445558b):
- * there is no lightbox there, so `yt-history-zoom` does not exist and each case dies
- * on the click rather than on an assertion. They are therefore NEW-FEATURE coverage,
- * not regression guards — with one exception, `an image list that shrinks …`, whose
- * underlying path (a poll rebuilding `imageUrls` under an open dialog) is reachable
- * today. The per-assertion mutation results are in the PR body.
+ * 🔴 RED/GREEN MATRIX, AND IT HAS TWO GROUPS WITH DIFFERENT ANSWERS. Read the group
+ * headings, not this paragraph alone:
+ *
+ *  - Every case ABOVE `the row's own image list changes under an open dialog` is
+ *    VACUOUSLY RED at the feature's base commit (445558b): there is no lightbox
+ *    there, so `yt-history-zoom` does not exist and each case dies on the click
+ *    rather than on an assertion. They are NEW-FEATURE coverage, not regression
+ *    guards, and this file must not be read as claiming otherwise.
+ *  - The cases in `the row's own image list changes under an open dialog` and
+ *    `the arrow keys are the DIALOG's, not the page's` ARE regression guards for
+ *    three defects measured on this feature's own second commit, cc860e3: a growing
+ *    list swapping the open picture, an emptied list reopening the dialog by itself,
+ *    and the document-level key handler hijacking the arrows from a textarea behind
+ *    the overlay. Each is RED at cc860e3 and green here; the per-case notes say which
+ *    assertion dies there.
+ *
+ * 🔴 AN EARLIER VERSION OF THIS HEADER NAMED A GUARD THAT DID NOT EXIST — "an image
+ * list that shrinks …", offered as the one production-reachable exception to the
+ * vacuous-red paragraph. No test of that name was ever in this file; the nearest was
+ * a pure-function case in `lightbox.test.ts`, which renders nothing. The hole the
+ * sentence covered is exactly where the three defects above were living. The render
+ * coverage now exists and is named above, per group.
  *
  * 🔴 WHAT jsdom CANNOT ANSWER, STATED HERE SO NOTHING IN THIS FILE IS READ AS MORE
  * THAN IT IS. jsdom lays nothing out and computes no cascade:
@@ -98,8 +114,8 @@ function entry(key: string, imageUrls: string[], imageLabels: Array<string | nul
 const ROW_A = entry('a', [A1, A2], ['Clickbait', 'Cinematic']);
 const ROW_B = entry('b', [B1, B2, B3], ['Vlog', 'Minimal', 'Documentary']);
 
-function renderSurface(entries: readonly HistoryEntry[]) {
-  return render(
+function surface(entries: readonly HistoryEntry[]) {
+  return (
     <HistorySurface
       entries={entries}
       state="ready"
@@ -117,8 +133,19 @@ function renderSurface(entries: readonly HistoryEntry[]) {
       onSignIn={vi.fn()}
       onRefresh={vi.fn()}
       pal={palette.dark}
-    />,
+    />
   );
+}
+
+/**
+ * `update(nextEntries)` re-renders the SAME tree with a new entry list, which is what
+ * a poll snapshot or a storage reload does in production. The row keeps its React key
+ * (`entry.key`), so `HistoryRow`'s lightbox state survives — without that these
+ * re-render cases would pass vacuously by remounting the row.
+ */
+function renderSurface(entries: readonly HistoryEntry[]) {
+  const r = render(surface(entries));
+  return { ...r, update: (next: readonly HistoryEntry[]) => r.rerender(surface(next)) };
 }
 
 /** The tiles of the row at `rowIndex`, in render order. */
@@ -521,17 +548,15 @@ describe('the panel is sized for a picture, not for a confirm dialog', () => {
     expect(img.style.maxHeight).toBe('max(200px, calc(100vh - 220px))');
   });
 
-  it('🔴 carries no crossOrigin, matching the tile it magnifies', async () => {
-    const user = userEvent.setup();
-    renderSurface([ROW_A]);
-    await user.click(tiles()[0]!);
-
-    // `editor.ts`'s `loadImageElement` sets it because it reads pixels back off a
-    // canvas. This image is only displayed, so a second CORS contract here would be a
-    // defensive workaround for a problem this path does not have.
-    expect(screen.getByTestId('yt-lightbox-img')).not.toHaveAttribute('crossorigin');
-    expect(screen.getAllByTestId('yt-history-img')[0]!).not.toHaveAttribute('crossorigin');
-  });
+  /**
+   * 🔴 THE `crossOrigin` CASE THAT USED TO SIT HERE WAS DELETED, DELIBERATELY. It
+   * asserted that neither image carries the attribute — an invariant no shipped change
+   * has ever violated and none plausibly would, so it had never fired and was never
+   * going to. Reading as coverage while providing none is worse than nothing, because
+   * it stops anyone looking. The REASON the attribute is absent is a claim about
+   * intent rather than behaviour, so it lives where a reader will meet it: the comment
+   * on the `<img>` in `Lightbox.tsx`.
+   */
 });
 
 describe('the position indicator', () => {
@@ -544,5 +569,266 @@ describe('the position indicator', () => {
     // reader: an `<img>` that was already in the tree is not re-announced when its
     // `src` and `alt` change.
     expect(screen.getByTestId('yt-lightbox-position')).toHaveAttribute('aria-live', 'polite');
+  });
+});
+
+/**
+ * 🔴 REGRESSION GROUP. Every case below is RED at cc860e3 — this feature's own second
+ * commit, where the open picture was a BARE INDEX into a list the join rebuilds — and
+ * green here. The per-case notes name the assertion that dies there.
+ *
+ * 🔴 WHY THIS IS A PRODUCTION PATH AND NOT A CONTRIVED ONE. `joinHistory` orders
+ * `imageUrls` by `record.workflowIds` and rebuilds the whole list from the live
+ * workflow page on every poll snapshot and every storage reload. This app submits ONE
+ * WORKFLOW PER FORMAT by design, so for a multi-format batch the list GROWS in front
+ * of an open dialog whenever an earlier format resolves after a later one, SHRINKS
+ * when a reload drops a workflow, and EMPTIES whenever the batch's workflows are
+ * missing from the snapshot altogether (`found` empty, which is also what sets
+ * `unavailable`). `update()` below is exactly that: the same row key and the same
+ * record, a new live half.
+ */
+describe("🔴 the row's own image list changes under an open dialog", () => {
+  /** The same row re-joined from a later snapshot: only the live half moved. */
+  function resnapshot(
+    e: HistoryEntry,
+    imageUrls: string[],
+    imageLabels: Array<string | null>,
+  ): HistoryEntry {
+    return { ...e, imageUrls, imageLabels, unavailable: imageUrls.length === 0 };
+  }
+
+  const heading = () => screen.getByRole('heading', { level: 2 });
+
+  it('🔴 a later format arriving at index 0 does NOT swap the open picture', async () => {
+    const user = userEvent.setup();
+    // Format two ('Cinematic') replied first, so the row holds only its image — the
+    // ordinary case for a 2-format batch, not an edge one.
+    const partial = entry('two-formats', [A2], ['Cinematic']);
+    const { update } = renderSurface([partial]);
+
+    await user.click(tiles()[0]!);
+    expect(shownSrc()).toBe(A2);
+    expect(position()).toBe('1 of 1');
+    expect(heading()).toHaveTextContent('Cinematic');
+
+    // Format one lands. Ordered by `workflowIds`, its image goes to index 0.
+    update([resnapshot(partial, [A1, A2], ['Clickbait', 'Cinematic'])]);
+
+    // 🔴 THE THREE ASSERTIONS THAT DIE AT cc860e3, where index 0 now means A1: the
+    // picture CHANGED under the viewer and the dialog's own heading renamed itself to
+    // the other format. Both rejected values are named so the index version cannot
+    // pass on a technicality.
+    expect(shownSrc()).toBe(A2);
+    expect(shownSrc()).not.toBe(A1);
+    expect(heading()).toHaveTextContent('Cinematic');
+    expect(heading()).not.toHaveTextContent('Clickbait');
+
+    // What MAY change is the indicator: the row really does hold two pictures now, and
+    // this one really is the second. The new neighbour is reachable in the right
+    // direction, which is how we know the move did not merely freeze.
+    expect(position()).toBe('2 of 2');
+    expect(screen.getByTestId('yt-lightbox-prev')).not.toBeDisabled();
+    expect(screen.getByTestId('yt-lightbox-next')).toBeDisabled();
+    await user.click(screen.getByTestId('yt-lightbox-prev'));
+    expect(shownSrc()).toBe(A1);
+    expect(position()).toBe('1 of 2');
+  });
+
+  it('🔴 the open picture LEAVING the row closes the dialog, with no survivor put in its place', async () => {
+    const user = userEvent.setup();
+    const row = entry('shrink', [B1, B2, B3], ['Vlog', 'Minimal', 'Documentary']);
+    const { update } = renderSurface([row]);
+
+    await user.click(tiles()[2]!);
+    expect(shownSrc()).toBe(B3);
+    expect(position()).toBe('3 of 3');
+
+    // A reload drops the workflow that produced B3 and keeps the other two.
+    update([resnapshot(row, [B1, B2], ['Vlog', 'Minimal'])]);
+
+    // 🔴 DIES AT cc860e3, which clamped to the last survivor and showed B2 under the
+    // heading 'Minimal'. That is the same defect as the insertion case above: a
+    // different picture, a different format's name, no viewer input. Asserting that
+    // NO picture is on screen rather than naming the survivors, so a clamp to any of
+    // them fails.
+    expect(dialog()).not.toBeInTheDocument();
+    expect(screen.queryByTestId('yt-lightbox-img')).not.toBeInTheDocument();
+
+    // The row is closed, not wedged: the surviving tiles still open.
+    await user.click(tiles()[1]!);
+    expect(shownSrc()).toBe(B2);
+    expect(position()).toBe('2 of 2');
+  });
+
+  it('🔴 an emptied row CLOSES the dialog, and a REFILL does not reopen it', async () => {
+    const user = userEvent.setup();
+    const row = entry('poll', [B1, B2, B3], ['Vlog', 'Minimal', 'Documentary']);
+    const { update } = renderSurface([row]);
+
+    await user.click(tiles()[1]!);
+    expect(shownSrc()).toBe(B2);
+    const panelOnOpen = screen.getByRole('dialog');
+    expect(panelOnOpen.contains(document.activeElement)).toBe(true);
+
+    // A snapshot in which none of this batch's workflows are in the live page.
+    update([resnapshot(row, [], [])]);
+    expect(dialog()).not.toBeInTheDocument();
+
+    // 🔴 THE REFILL IS THE ASSERTION, AND IT IS WHAT DIES AT cc860e3. There the row
+    // kept its index while `ImageLightbox` rendered nothing, so the next non-empty
+    // snapshot REMOUNTED `Modal` with no user input: the dialog reopened by itself and
+    // `Modal`'s open effect re-stole focus to the panel, mid-typing.
+    update([row]);
+    expect(dialog()).not.toBeInTheDocument();
+    expect(screen.queryByTestId('yt-lightbox-img')).not.toBeInTheDocument();
+
+    // And the state really was reset rather than merely hidden — a fresh click lands
+    // on the tile that was clicked, not on the one that was open before.
+    await user.click(tiles()[0]!);
+    expect(shownSrc()).toBe(B1);
+    expect(position()).toBe('1 of 3');
+  });
+});
+
+/**
+ * 🔴 REGRESSION GROUP, RED AT cc860e3. The `document` keydown listener there had no
+ * `e.target` check and called `e.preventDefault()` unconditionally. `Modal` does not
+ * trap focus — its own doc comment says so — so a Tab out of the panel reaches the
+ * app's prompt textarea, and ArrowLeft/ArrowRight there CANCELLED THE CARET MOVE and
+ * moved the lightbox instead, with focus still in the textarea.
+ */
+describe("🔴 the arrow keys are the DIALOG's, not the page's", () => {
+  /**
+   * Every keydown reaching `document` after the dialog's own listener, so
+   * `defaultPrevented` on each already reflects whether the dialog took it. Order
+   * matters: this is registered AFTER the dialog opened, which is why it sees the
+   * outcome rather than racing it.
+   */
+  function watchKeys() {
+    const seen: KeyboardEvent[] = [];
+    const spy = (e: Event) => seen.push(e as KeyboardEvent);
+    document.addEventListener('keydown', spy);
+    return {
+      keys: () => seen.map((e) => e.key),
+      prevented: () => seen.map((e) => e.defaultPrevented),
+      stop: () => document.removeEventListener('keydown', spy),
+    };
+  }
+
+  it('POSITIVE CONTROL — with focus in the panel the dialog DOES take the keys', async () => {
+    const user = userEvent.setup();
+    renderSurface([ROW_B]);
+    await user.click(tiles()[0]!);
+    const w = watchKeys();
+    try {
+      await user.keyboard('{ArrowRight}');
+      // 🔴 WITHOUT THIS, THE `false` ASSERTED BELOW IS INDISTINGUISHABLE FROM A SPY
+      // WIRED TO NOTHING. The spy is shown able to observe BOTH a key arriving and
+      // that key having been prevented.
+      expect(w.keys()).toEqual(['ArrowRight']);
+      expect(w.prevented()).toEqual([true]);
+      expect(shownSrc()).toBe(B2);
+    } finally {
+      w.stop();
+    }
+  });
+
+  it('🔴 a textarea behind the overlay keeps its caret keys, and the lightbox does not move', async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        {/* The app's own prompt field is the element this was measured against; what
+            matters here is only that it is editable and OUTSIDE the panel. `Modal`
+            does not portal, so the overlay renders inside the history row and this
+            sits beside it — the same relationship Tab traverses in the real app. */}
+        <textarea data-testid="prompt-behind" defaultValue="a red bicycle" />
+        {surface([ROW_B])}
+      </>,
+    );
+
+    // 🔴 THE MIDDLE PICTURE, AND ONE KEY AT A TIME. Both details are load-bearing and
+    // the first version of this case had neither. Opening at an END means an arrow
+    // that is clamped anyway, and pressing `{ArrowRight}{ArrowLeft}` means a pair
+    // whose moves CANCEL — MEASURED: with that shape the "it did not move" half passed
+    // against the pre-fix code, which had moved the dialog twice and back.
+    await user.click(tiles()[1]!);
+    expect(shownSrc()).toBe(B2);
+
+    const textarea = screen.getByTestId('prompt-behind');
+    textarea.focus();
+    expect(document.activeElement).toBe(textarea);
+
+    const w = watchKeys();
+    try {
+      await user.keyboard('{ArrowRight}');
+      // 🔴 THE CARET MOVE IS NOT CANCELLED. At cc860e3 this read `true`, which is the
+      // browser being told not to move the caret at all.
+      expect(w.keys()).toEqual(['ArrowRight']);
+      expect(w.prevented()).toEqual([false]);
+      // 🔴 AND THE DIALOG DID NOT MOVE. At cc860e3 it advanced to B3. Asserted after
+      // EACH key, and with the value the pre-fix code would have shown named.
+      expect(shownSrc()).toBe(B2);
+      expect(shownSrc()).not.toBe(B3);
+
+      await user.keyboard('{ArrowLeft}');
+      expect(w.prevented()).toEqual([false, false]);
+      expect(shownSrc()).toBe(B2);
+      expect(shownSrc()).not.toBe(B1);
+      expect(position()).toBe('2 of 3');
+
+      // Focus never left the textarea, so nothing on screen told the viewer why their
+      // caret had stopped working. That is what made this worth fixing rather than
+      // noting.
+      expect(document.activeElement).toBe(textarea);
+    } finally {
+      w.stop();
+    }
+  });
+
+  it('🔴 a plain button behind the overlay also keeps them — the rule is not about editability alone', async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <button type="button" data-testid="button-behind">
+          Generate
+        </button>
+        {surface([ROW_B])}
+      </>,
+    );
+
+    // The middle picture again, so the arrow has somewhere to go if the fix fails.
+    await user.click(tiles()[1]!);
+    expect(shownSrc()).toBe(B2);
+    const outside = screen.getByTestId('button-behind');
+    outside.focus();
+
+    const w = watchKeys();
+    try {
+      await user.keyboard('{ArrowRight}');
+      // Not an editable element, so an "ignore inputs" fix narrower than the one
+      // shipped would pass the textarea case and fail here. The dialog is not trapping
+      // focus, so it is not entitled to a key pressed on something else.
+      expect(w.prevented()).toEqual([false]);
+      expect(shownSrc()).toBe(B2);
+      expect(shownSrc()).not.toBe(B3);
+      expect(document.activeElement).toBe(outside);
+    } finally {
+      w.stop();
+    }
+  });
+
+  it('the keys still work when NOTHING on the page holds focus', async () => {
+    const user = userEvent.setup();
+    renderSurface([ROW_B]);
+    await user.click(tiles()[0]!);
+
+    // A focused control that becomes disabled drops focus to `<body>`, which is how
+    // this state is reached by clicking Next to the end. Asserted directly so the
+    // containment rule cannot be tightened into "the panel or nothing".
+    (document.activeElement as HTMLElement | null)?.blur();
+    expect(document.activeElement).toBe(document.body);
+
+    await user.keyboard('{ArrowRight}');
+    expect(shownSrc()).toBe(B2);
   });
 });
