@@ -148,11 +148,17 @@ export const mutants = [
     edits: [
       {
         file: JSON_FILE,
+        // 🔴 THIS FIND-STRING QUOTES `gaming`'s PROVENANCE, so it goes stale every
+        // time that art is regenerated — and it did, on 2026-10-02, when all six of
+        // the original previews moved from SD XL (`…-siqc`, costBuzz 3) to ChatGPT
+        // Images. The driver catches that loudly (`occurs 0×, expected 1×` →
+        // NOT-APPLIED) instead of scoring SURVIVED, which is the only reason this is
+        // a chore rather than a silent hole. Re-quote it whenever the art moves.
         find:
           'energy, stylized digital art",\n' +
           '    "preview": "/formats/gaming.webp",\n' +
-          '    "sourceWorkflowId": "8753561-20260930162203162-siqc",\n' +
-          '    "costBuzz": 3\n',
+          '    "sourceWorkflowId": "8753561-20261002060045425-9p8h",\n' +
+          '    "costBuzz": 209\n',
         replace: 'energy, stylized digital art"\n',
       },
       { file: FORMATS, find: "    preview: '/formats/gaming.webp',\n", replace: '' },

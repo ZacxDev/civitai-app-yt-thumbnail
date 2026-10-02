@@ -3,43 +3,43 @@
     "label": "Clickbait",
     "suffix": "youtube thumbnail, shocked expression, vibrant saturated colors, high contrast, dramatic rim lighting, centered subject, bold and punchy",
     "preview": "/formats/clickbait.webp",
-    "sourceWorkflowId": "8753561-20260930161257252-7o4y",
-    "costBuzz": 3
+    "sourceWorkflowId": "8753561-20261002054934746-1qkg",
+    "costBuzz": 209
   },
   "cinematic": {
     "label": "Cinematic",
     "suffix": "cinematic film still, dramatic moody lighting, shallow depth of field, teal and orange color grade, ultra detailed, anamorphic",
     "preview": "/formats/cinematic.webp",
-    "sourceWorkflowId": "8753561-20260930161446324-1a1i",
-    "costBuzz": 3
+    "sourceWorkflowId": "8753561-20261002055520845-z42s",
+    "costBuzz": 209
   },
   "bold-simple": {
     "label": "Bold & Simple",
     "suffix": "bold flat colors, minimal composition, strong single focal point, clean uncluttered background, graphic poster style",
     "preview": "/formats/bold-simple.webp",
-    "sourceWorkflowId": "8753561-20260930161634619-nm85",
-    "costBuzz": 3
+    "sourceWorkflowId": "8753561-20261002055707344-6gjt",
+    "costBuzz": 209
   },
   "tech-review": {
     "label": "Tech Review",
     "suffix": "clean product photography, crisp studio lighting, modern minimal desk setup, soft gradient background, sharp focus",
     "preview": "/formats/tech-review.webp",
-    "sourceWorkflowId": "8753561-20260930161822946-63xp",
-    "costBuzz": 3
+    "sourceWorkflowId": "8753561-20261002055750302-g93k",
+    "costBuzz": 209
   },
   "tutorial": {
     "label": "Tutorial",
     "suffix": "bright even lighting, friendly approachable tone, clean organized workspace, soft natural colors, clear and legible",
     "preview": "/formats/tutorial.webp",
-    "sourceWorkflowId": "8753561-20260930162011258-khzq",
-    "costBuzz": 3
+    "sourceWorkflowId": "8753561-20261002055858829-by21",
+    "costBuzz": 209
   },
   "gaming": {
     "label": "Gaming",
     "suffix": "dynamic action, neon rim lighting, energetic composition, vivid magenta and cyan, high energy, stylized digital art",
     "preview": "/formats/gaming.webp",
-    "sourceWorkflowId": "8753561-20260930162203162-siqc",
-    "costBuzz": 3
+    "sourceWorkflowId": "8753561-20261002060045425-9p8h",
+    "costBuzz": 209
   },
   "minimalist": {
     "label": "Minimalist",

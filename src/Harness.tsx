@@ -6,7 +6,7 @@ import {
   type MockHostOptions,
 } from '@civitai/blocks-react/testing';
 
-import { mockBuzzBalance } from './mock-buzz.js';
+import { DECLARED_SCOPES, mockBuzzBalance } from './mock-buzz.js';
 
 /**
  * Local dev mock host for the YT Thumbnail PAGE app.
@@ -63,8 +63,20 @@ export function Harness({ children }: { children: ReactNode }) {
     <div style={rootStyle}>
       <MockBanner />
       <ScenarioPanel onApply={apply} />
-      {/* applyUrlToggles=false: the panel is authoritative once mounted. */}
-      <SdkHarness key={scenarioKey} applyUrlToggles={false} {...scenario} buzzBalance={buzzBalance}>
+      {/* applyUrlToggles=false: the panel is authoritative once mounted.
+          declaredScopes: from 0.62.0 `<SdkHarness>` forwards this to
+          `createMockHost`, which gates storage on it and defaults to EMPTY — so
+          without it `dev:harness` refuses every format save while production
+          allows it, i.e. the harness would be HARSHER than the real host. It is
+          placed after `{...scenario}` because no URL toggle or panel control
+          sets it; the manifest is the only source. */}
+      <SdkHarness
+        key={scenarioKey}
+        applyUrlToggles={false}
+        {...scenario}
+        buzzBalance={buzzBalance}
+        declaredScopes={DECLARED_SCOPES as string[]}
+      >
         {children}
       </SdkHarness>
     </div>

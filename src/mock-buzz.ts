@@ -30,10 +30,34 @@
 // reads it, so it MUST be registered BEFORE the transport's listener — hence
 // `installMockMoneyHost` registers it first, then re-creates the transport.
 
-import { createMockHost, mockParentMessage, type MockHostOptions } from '@civitai/blocks-react/testing';
+import { createMockHost, type MockHostOptions } from '@civitai/blocks-react/testing';
 import type { BuzzBalance } from '@civitai/blocks-react';
 
+import manifest from '../block.manifest.json' with { type: 'json' };
 import { resetHarnessTransport } from './dev-transport.js';
+
+/**
+ * The scopes `block.manifest.json` DECLARES, which is what the mock host gates
+ * storage on from @civitai/blocks-react 0.62.0 onward (`declaredScopes`, default
+ * EMPTY — every `useAppStorage()` / `useSharedStorage()` call is refused without
+ * it, exactly as the real host refuses an undeclared scope with a 403).
+ *
+ * 🔴 READ FROM THE MANIFEST, never re-spelled as a literal here. The manifest is
+ * the list the real host is handed at approve time, so sourcing both from one
+ * file is what makes a local green mean something: a scope dropped from the
+ * manifest must break these suites, which a second hand-maintained copy would
+ * silently absorb.
+ */
+export const DECLARED_SCOPES: readonly string[] = manifest.scopes;
+
+/**
+ * `mockParentMessage` was one of the 24 exports `@civitai/blocks-react/testing`
+ * dropped in 0.55.0. It was always a two-line `MessageEvent` constructor and the
+ * release notes' own remediation is to inline it, which is what this is.
+ */
+function mockParentMessage(data: unknown, origin: string): MessageEvent {
+  return new MessageEvent('message', { data, origin, source: null });
+}
 
 /** The server's domain-clamp rejection text (mirrors generation.ts). */
 export const DISALLOWED_ACCOUNT_ERROR =
@@ -107,6 +131,10 @@ export function installMockMoneyHost(options: MockMoneyHostOptions = {}): () => 
   resetHarnessTransport();
 
   const host = createMockHost({
+    // Default to what the manifest declares, so storage behaves here the way it
+    // behaves in production. Spread FIRST so a test that wants to prove the
+    // refusal arm can still pass a narrower (or empty) `declaredScopes`.
+    declaredScopes: DECLARED_SCOPES as string[],
     ...hostOptions,
     onOutbound: (msg) => {
       onOutbound?.(msg);
