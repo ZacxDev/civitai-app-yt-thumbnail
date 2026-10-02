@@ -33,6 +33,12 @@ export const mutants = [
     desc: "THE AUDITOR'S EXACT PROBE: `magic` keeps its real art, gets a fabricated sourceWorkflowId AND costBuzz 0",
     // This is the acceptance criterion for the 🟡1 fix. Before the fix this exact
     // tree passed all 63 tests with rc 0.
+    //
+    // It is ALSO this batch's positive control. The header has always said one
+    // mutant plays that role; now the DRIVER grades it, so an all-survived batch
+    // can be told from a batch whose runner never observed the tree.
+    positiveControl: true,
+    expect: 'provenance triple travels TOGETHER',
     edits: [
       {
         file: JSON_FILE,

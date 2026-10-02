@@ -16,8 +16,13 @@
 //   node scripts/mutation-sweep.mjs --spec scripts/mutants-other.mjs
 //   node scripts/mutation-sweep.mjs --keep-going           # don't stop on a survivor
 //
-// 🔴 THE FIVE THINGS THIS SCRIPT REFUSES TO GET WRONG, each of which has produced
-// a confidently false sweep result somewhere before:
+// 🔴 THE EIGHT THINGS THIS SCRIPT REFUSES TO GET WRONG, each of which has produced
+// a confidently false sweep result somewhere before. 6–8 arrived with the lightbox
+// set, which used to ship its OWN driver in a second language
+// (`scripts/lightbox-mutants.py`, now deleted). Those three were the controls that
+// driver had and this one did not — merging the two without them would have LOST
+// coverage rather than tidied anything, which is the only interesting part of the
+// consolidation.
 //
 //  1. IT NEVER READS AN EXIT CODE. A wrapper's trailing command swallows the
 //     status, and a runner that never started exits 0. Red and green are counted
@@ -37,6 +42,19 @@
 //     copied back; `git checkout --` is never run, because it would also discard
 //     uncommitted work this script did not touch. Restoration is verified by
 //     hashing every file at the end against the hash taken at the start.
+//  6. A KILL MUST BE BY THE INTENDED ASSERTION. A mutant may carry `expect`, a
+//     substring of the test title that MUST be among the failures. Any other red
+//     scores WRONG-REASON, never KILLED: a different guard's error killing your
+//     mutant is green for the wrong reason and stays green with your guard
+//     deleted. A mutant with no `expect` is graded on red alone, as before.
+//  7. A SHRUNKEN RUN IS INVALID, NOT A KILL. If fewer tests RAN than the control
+//     ran, the mutated tree probably did not compile and took the suite red —
+//     which scores as a kill for a reason that has nothing to do with the guard.
+//  8. A POSITIVE CONTROL CAN VOID THE WHOLE BATCH. A mutant marked
+//     `positiveControl: true` is one known to be caught. If it is not KILLED, a
+//     stale transform cache (or a runner wired to nothing) has voided every other
+//     verdict in the run and NONE of them may be quoted — the report says so and
+//     the exit code is non-zero.
 //
 // Mutants must be ISOLATED: edit the narrowest expression that can be wrong,
 // never a guard together with its enclosing condition. Where a mutation would
@@ -197,6 +215,11 @@ if (control.lines.green === 0) {
   process.exit(3);
 }
 const EXPECTED_GREEN = control.lines.green;
+// 🔴 The control's TOTAL, which is what a later run is measured against. A mutated
+// run with fewer tests than this did not merely fail — fewer tests EXECUTED, which
+// is what a file that no longer compiles looks like, and it would otherwise score
+// as a kill. Red is 0 here (asserted above), so the total is the green count.
+const EXPECTED_TOTAL = control.summary.green + control.summary.red;
 console.log(`  control OK — ${EXPECTED_GREEN} tests, 0 red. The harness can be read.\n`);
 
 // --- the sweep --------------------------------------------------------------
@@ -234,14 +257,23 @@ for (const mut of mutants) {
   const r = runSuite();
   restoreAll();
 
+  const titles = redTitles(r.out);
+  const ran = r.summary ? r.summary.green + r.summary.red : 0;
+  // The failing title that the mutant SAID would catch it, if any did.
+  const hit = mut.expect ? (titles.find((t) => t.includes(mut.expect)) ?? null) : null;
+
   const verdict =
     !readable(r) ? 'UNREADABLE'
     : r.noise.length > 0 ? `NOISE(${r.noise.join(',')})`
-    : r.lines.red > 0 ? 'KILLED'
-    : 'SURVIVED';
+    : ran < EXPECTED_TOTAL ? `INVALID(${ran}/${EXPECTED_TOTAL})`
+    : r.lines.red === 0 ? 'SURVIVED'
+    : mut.expect && hit === null ? 'WRONG-REASON'
+    : 'KILLED';
 
-  const titles = redTitles(r.out);
-  console.log(`  red=${r.lines.red} green=${r.lines.green}  →  ${verdict}`);
+  console.log(`  red=${r.lines.red} green=${r.lines.green} ran=${ran}  →  ${verdict}`);
+  if (mut.expect) {
+    console.log(`    expected killer: "${mut.expect}"  →  ${hit ? `matched: ${hit}` : 'NOT among the failures'}`);
+  }
   for (const t of titles.slice(0, 6)) console.log(`    × ${t}`);
   if (titles.length > 6) console.log(`    … and ${titles.length - 6} more`);
   if (verdict === 'NOISE' || r.noise.length > 0) {
@@ -249,7 +281,7 @@ for (const mut of mutants) {
   }
   console.log();
 
-  results.push({ ...mut, verdict, red: r.lines.red, titles });
+  results.push({ ...mut, verdict, red: r.lines.red, titles, hit });
   if (verdict === 'SURVIVED' && !KEEP_GOING) {
     console.error('🔴 a mutant SURVIVED — stopping. Pass --keep-going to sweep the rest anyway.');
     break;
@@ -272,14 +304,59 @@ rmSync(stash, { recursive: true, force: true });
 
 const killed = results.filter((r) => r.verdict === 'KILLED').length;
 const survived = results.filter((r) => r.verdict === 'SURVIVED');
+const wrongReason = results.filter((r) => r.verdict === 'WRONG-REASON');
+const invalid = results.filter((r) => r.verdict.startsWith('INVALID'));
 console.log(`\n=== ${results.length} mutants: ${killed} killed, ${survived.length} survived ===`);
 for (const r of results) {
-  console.log(`  ${r.id.padEnd(5)} ${r.verdict.padEnd(12)} red=${r.red ?? '-'}  ${r.desc}`);
+  const by = r.hit ? `  ← ${r.hit}` : '';
+  console.log(`  ${r.id.padEnd(5)} ${r.verdict.padEnd(14)} red=${r.red ?? '-'}  ${r.desc}${by}`);
 }
 if (survived.length > 0) {
   console.log('\n🔴 SURVIVORS — these guards do not bite:');
   for (const r of survived) console.log(`  ${r.id}: ${r.desc}`);
 }
+if (wrongReason.length > 0) {
+  console.log(
+    '\n🔴 WRONG REASON — something went red, but NOT the assertion that claims this\n' +
+      '   behaviour. That is green for the wrong reason: it would stay red with the\n' +
+      '   intended guard deleted, so it is not evidence the guard bites.',
+  );
+  for (const r of wrongReason) console.log(`  ${r.id}: expected "${r.expect}" — ${r.desc}`);
+}
+if (invalid.length > 0) {
+  console.log(
+    '\n🔴 INVALID — fewer tests RAN than the control ran, so the mutated tree likely\n' +
+      '   did not compile. A suite taken red by a build error is not a kill.',
+  );
+  for (const r of invalid) console.log(`  ${r.id}: ${r.verdict} — ${r.desc}`);
+}
+
+// 🔴 THE POSITIVE CONTROL IS GRADED LAST AND CAN VOID EVERYTHING ABOVE. It is a
+// mutant known to be caught; if it was not, the runner was not observing the tree
+// this run claims to have swept — a stale transform cache does exactly that — and
+// every verdict here is unquotable rather than merely suspect.
+const controls = results.filter((r) => r.positiveControl);
+const brokenControls = controls.filter((r) => r.verdict !== 'KILLED');
+if (controls.length === 0) {
+  console.log(
+    '\n⚠ this spec declares NO positive control. A batch reporting all-survived is\n' +
+      '  then indistinguishable from a batch whose runner never executed. Mark one\n' +
+      '  known-caught mutant `positiveControl: true`.',
+  );
+} else if (brokenControls.length > 0) {
+  console.log(
+    `\n🔴 THE POSITIVE CONTROL DID NOT DIE (${brokenControls.map((r) => `${r.id}=${r.verdict}`).join(', ')}).\n` +
+      '   NONE of the verdicts above may be quoted — not the kills and not the\n' +
+      '   survivors. Re-run with a cold cache before reading anything from this run.',
+  );
+} else {
+  console.log(`\n✅ positive control(s) died as expected: ${controls.map((r) => r.id).join(', ')}`);
+}
+
 if (drift > 0) console.error(`\n🔴 ${drift} file(s) NOT restored. Fix before committing.`);
 
-process.exitCode = survived.length > 0 || drift > 0 ? 1 : 0;
+process.exitCode =
+  survived.length > 0 || wrongReason.length > 0 || invalid.length > 0 ||
+  brokenControls.length > 0 || drift > 0
+    ? 1
+    : 0;

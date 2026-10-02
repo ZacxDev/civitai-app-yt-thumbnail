@@ -278,8 +278,8 @@ export function ImageLightbox({
  * not trapping focus, so it does not get to act as though it had.
  *
  * 🔴 AN EXPLICIT "AN EDITABLE TARGET ALWAYS KEEPS ITS KEYS" ARM WAS WRITTEN HERE AND
- * THEN DELETED, BECAUSE IT WAS MEASURED UNREACHABLE. `scripts/lightbox-mutants.py`'s
- * M-F removes it and the whole suite stays green — 884/884 — and that is not a
+ * THEN DELETED, BECAUSE IT WAS MEASURED UNREACHABLE. `scripts/mutants-lightbox.mjs`'s
+ * M-F removes it and the whole suite stays green — 884/884 at the time — and that is not a
  * coverage gap to fill but the arm having no caller: every editable element in this
  * app is OUTSIDE the panel, where rule 1 already rejects it, and there is no editable
  * control inside the panel for the arm to protect. A guard that cannot execute reads
