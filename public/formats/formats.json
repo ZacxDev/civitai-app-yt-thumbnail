@@ -43,26 +43,44 @@
   },
   "minimalist": {
     "label": "Minimalist",
-    "suffix": "generous negative space, one small off-center subject, muted desaturated palette, soft diffuse daylight, understated and quiet, delicate fine detail"
+    "suffix": "generous negative space, one small off-center subject, muted desaturated palette, soft diffuse daylight, understated and quiet, delicate fine detail",
+    "preview": "/formats/minimalist.webp",
+    "sourceWorkflowId": "8753561-20261002022355308-shv0",
+    "costBuzz": 209
   },
   "educational": {
     "label": "Educational",
-    "suffix": "infographic layout, labeled diagram with callout arrows, whiteboard sketch annotations, charts and flow lines, explanatory schematic, flat vector illustration"
+    "suffix": "infographic layout, labeled diagram with callout arrows, whiteboard sketch annotations, charts and flow lines, explanatory schematic, flat vector illustration",
+    "preview": "/formats/educational.webp",
+    "sourceWorkflowId": "8753561-20261002022542859-9ttw",
+    "costBuzz": 209
   },
   "professional": {
     "label": "Professional",
-    "suffix": "corporate business portrait, confident presenter on a conference stage, tailored suit, glass office tower boardroom, authoritative composure, polished editorial lighting"
+    "suffix": "corporate business portrait, confident presenter on a conference stage, tailored suit, glass office tower boardroom, authoritative composure, polished editorial lighting",
+    "preview": "/formats/professional.webp",
+    "sourceWorkflowId": "8753561-20261002022730779-hwuy",
+    "costBuzz": 209
   },
   "abstract": {
     "label": "Abstract",
-    "suffix": "non representational abstract shapes, overlapping geometric planes, gradient mesh and flowing curves, risograph grain texture, no recognizable objects, generative art"
+    "suffix": "non representational abstract shapes, overlapping geometric planes, gradient mesh and flowing curves, risograph grain texture, no recognizable objects, generative art",
+    "preview": "/formats/abstract.webp",
+    "sourceWorkflowId": "8753561-20261002022918481-stya",
+    "costBuzz": 209
   },
   "chaos": {
     "label": "Chaos",
-    "suffix": "maximalist visual overload, cluttered collage of overlapping elements, clashing patterns, motion blur and glitch artifacts, frenetic asymmetric composition, controlled mess"
+    "suffix": "maximalist visual overload, cluttered collage of overlapping elements, clashing patterns, motion blur and glitch artifacts, frenetic asymmetric composition, controlled mess",
+    "preview": "/formats/chaos.webp",
+    "sourceWorkflowId": "8753561-20261002023028233-ydt4",
+    "costBuzz": 209
   },
   "magic": {
     "label": "Magic",
-    "suffix": "arcane fantasy sorcery, swirling glowing runes and sparkling particles, enchanted mist, iridescent violet and gold aura, ethereal otherworldly atmosphere, painterly fantasy illustration"
+    "suffix": "arcane fantasy sorcery, swirling glowing runes and sparkling particles, enchanted mist, iridescent violet and gold aura, ethereal otherworldly atmosphere, painterly fantasy illustration",
+    "preview": "/formats/magic.webp",
+    "sourceWorkflowId": "8753561-20261002023313073-mpt8",
+    "costBuzz": 209
   }
 }
