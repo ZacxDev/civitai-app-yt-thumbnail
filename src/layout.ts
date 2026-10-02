@@ -174,6 +174,57 @@ export interface BlockLayout {
 export const ULTRAWIDE_MIN = 1800;
 
 /**
+ * px width of the FORMATS rail — the third column at the `rail` tier, holding the
+ * format picker beside the thumbnail grid instead of stacked under it.
+ *
+ * 🔴 IT IS A FIXED px TRACK AND IT MAY NEVER BECOME A FRACTION. This is the whole
+ * reason the number is named here rather than written into `railGridStyle`, and the
+ * argument is the thumbnail grid's own arithmetic, not a preference.
+ *
+ * `imageGridStyle()` in `ui-styles.ts` is `repeat(auto-fill, minmax(min(300px, 100%),
+ * 1fr))` at `gap: 10`, so the number of thumbnails on a row is a STEP FUNCTION of the
+ * container: n tiles need `n * 300 + (n - 1) * 10` px. Worked at `xl` (a 1440px
+ * block), where the available content width is 1440 − 2×`SHELL_PADDING` = 1392 and the
+ * images grid sits inside one `panelRowStyle` inset (10 a side, so −20 more):
+ *
+ *  - FIXED, as shipped: 1392 − 340 (inputs rail) − 320 (this) − 2×20 (grid gaps) = 692
+ *    of main, 672 inside the inset → 2 tiles (610 fits, 920 does not).
+ *  - FRACTIONAL (`minmax(0, 1fr) minmax(0, 1fr)`, a 50/50 split of main): main is
+ *    1392 − 340 − 20 = 1032, halved across a 20px gap = 506 each, 486 inside the
+ *    inset → ONE tile. The thumbnail grid loses half its row to a surface that cannot
+ *    use the width.
+ *  - For the record, because this change is not free: stacking the picker UNDER the
+ *    grid (what shipped before) left 1012 inside the inset → 3 tiles. So the fixed
+ *    rail costs the grid one tile at 1440 and a fractional one would cost two.
+ *
+ * 🔴 AND THE ASYMMETRY IS THE POINT: the formats column's appetite is BOUNDED, the
+ * thumbnail grid's is not. The picker is itself an `auto-fill` grid with a 200px card
+ * floor (`formatMinCardPx` at this tier) and `gap: 8`, so a SECOND card column needs
+ * 2×200 + 8 + 34 of rail chrome (16+16 padding, 1+1 border) = 442px — outside any
+ * width this constant is allowed to take. Every px past one card column buys the
+ * picker nothing, while the grid converts px into tiles forever. A fraction hands half
+ * of every pixel the block gains to the surface that cannot spend it; a fixed track
+ * hands all of it to the one that can. The thumbnail grid is this app's primary
+ * object, and `ui-styles.ts` records what happens when its width arithmetic is got
+ * wrong — a per-tier column count applied at two nested levels multiplied into ~85px
+ * tiles on a 1920px screen.
+ *
+ * 🔴 WHY 320 AND NOT THE TOP OF THE 320–360 BAND THE OPERATOR SET. The low end, for
+ * the reason above: 234px (200 + 34 of chrome) already fits one card at its floor, so
+ * 320 renders it at 286px — 43% over the floor — and every px above 320 is taken from
+ * the thumbnail grid for no gain. It is also deliberately DISTINCT from `RAIL_W` (340)
+ * and `RAIL_W_ULTRAWIDE` (400): a mutant that swaps the two rails' widths has to be
+ * visible, and `layout.test.ts` pins that no fixture width equals it either.
+ *
+ * ONE value at every `rail` tier, unlike `railWidth`, which widens at ultrawide. The
+ * inputs rail widens because the prompt textarea genuinely reads better wider; this
+ * one would just be a wider single card column, so it stays put and the extra width
+ * goes to the grid. jsdom lays nothing out, so every number above is arithmetic over
+ * the emitted CSS — nothing in this repo has measured a rendered tile.
+ */
+export const FORMATS_RAIL_WIDTH = 320;
+
+/**
  * The two-column content cap — the `lg` boundary, so it cannot bind inside `sm` or
  * `md`. Named rather than inlined because the `maxWidth` docblock's whole argument
  * is that this value IS the next breakpoint; a bare literal makes that a

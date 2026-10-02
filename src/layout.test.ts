@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { resolveBlockTier, type BlockSizeTier } from '@civitai/blocks-react';
 
-import { ULTRAWIDE_MIN, layoutForTier, type BlockLayout } from './layout.js';
+import { FORMATS_RAIL_WIDTH, ULTRAWIDE_MIN, layoutForTier, type BlockLayout } from './layout.js';
 
 // The width→shape decision, at literal values.
 //
@@ -19,7 +19,7 @@ import { ULTRAWIDE_MIN, layoutForTier, type BlockLayout } from './layout.js';
  * breakpoint constant (480 / 768 / 1024 / 1184 / 1440), from the tier-top widths
  * the gutter case names (1023 / 1183), from the ultrawide threshold (1800), and
  * from every value `layoutForTier` can RETURN (640 / 1184 / 124 / 160 / 200 / 220 /
- * 340 / 400) — a fixture that happens to equal a constant the assertion also names
+ * 340 / 400), and from `FORMATS_RAIL_WIDTH` (320) — a fixture that happens to equal a constant the assertion also names
  * cannot see a mutant that hardcodes that constant. None of them sits on a boundary
  * either: a width that lands exactly ON the comparison it is meant to exercise
  * passes whether the comparison is `>=` or `>`.
@@ -199,6 +199,10 @@ describe('layoutForTier', () => {
     // the assertions name cannot observe a mutant that hardcodes that constant.
     const forbidden = new Set([
       480, 768, 1024, 1184, 1440, 1800, 1023, 1183, 640, 124, 160, 200, 220, 340, 400, 0,
+      // The formats rail's width is a layout output too, and `responsive.test.tsx`
+      // names it in a `gridTemplateColumns` literal — so a fixture equal to it could
+      // not see a mutant that hardcoded it.
+      FORMATS_RAIL_WIDTH,
     ]);
     for (const width of [...Object.values(INSIDE), INSIDE_ULTRAWIDE]) {
       expect(forbidden.has(width)).toBe(false);
@@ -336,6 +340,79 @@ describe('layoutForTier', () => {
       for (const tier of ['sm', 'md', 'lg', 'xl'] as const) {
         expect(layoutForTier(tier).maxWidth).not.toBe(640);
       }
+    });
+  });
+
+  // =========================================================================
+  // THE FORMATS RAIL'S WIDTH — a FIXED length, and the numbers it may not be.
+  //
+  // 🔴 WHAT THIS FILE CAN AND CANNOT CLAIM ABOUT IT. This module is pure, so what is
+  // assertable here is the VALUE: that it is a fixed length, inside the band the
+  // operator set, and distinct from the two widths the OTHER rail can be. That it
+  // reaches the DOM as a px track rather than a fraction of the main column — the
+  // actual defect — is a claim about `railGridStyle`, and it lives in
+  // `responsive.test.tsx` next to the emitted `gridTemplateColumns`.
+  // =========================================================================
+  describe('FORMATS_RAIL_WIDTH', () => {
+    /** Every width `layoutForTier` can hand the INPUTS rail, over the whole ladder. */
+    const railWidths = new Set(
+      [
+        ...(['base', 'xs', 'sm', 'md', 'lg', 'xl'] as const).map((t) => layoutForTier(t, false)),
+        layoutForTier('xl', true),
+      ].map((l) => l.railWidth),
+    );
+
+    it('is a fixed, positive, whole number of px', () => {
+      // A fixed LENGTH is the whole design decision — see the constant's docblock for
+      // the tile arithmetic. A string ('30%', '1fr') or a fraction would be the defect
+      // wearing the constant's name, and `railGridStyle` interpolates it followed by
+      // 'px', so a non-integer would emit a subpixel track.
+      expect(typeof FORMATS_RAIL_WIDTH).toBe('number');
+      expect(Number.isInteger(FORMATS_RAIL_WIDTH)).toBe(true);
+      expect(FORMATS_RAIL_WIDTH).toBeGreaterThan(0);
+    });
+
+    it('sits inside the 320–360px band the operator set', () => {
+      // Pinned in BOTH directions. Too narrow and the 200px format card at this tier
+      // cannot fit beside 34px of rail chrome (16+16 padding, 1+1 border); too wide and
+      // it is taking px from the thumbnail grid for a column it cannot use.
+      expect(FORMATS_RAIL_WIDTH).toBeGreaterThanOrEqual(320);
+      expect(FORMATS_RAIL_WIDTH).toBeLessThanOrEqual(360);
+    });
+
+    it('clears one format card at its floor, plus the rail’s own chrome', () => {
+      // The lower bound as a DERIVATION rather than a second literal: the card floor at
+      // the rail tiers comes off the layout, and `railStyle`'s padding + border is 34px.
+      // Without this the band above is two numbers somebody chose.
+      const RAIL_CHROME = 16 * 2 + 1 * 2;
+      const floor = Math.max(layoutForTier('lg').formatMinCardPx, layoutForTier('xl', true).formatMinCardPx);
+      expect(FORMATS_RAIL_WIDTH).toBeGreaterThan(floor + RAIL_CHROME);
+      // ...and it does NOT clear a SECOND card column (2 × floor + the picker's 8px
+      // gap + chrome), which is the argument for why extra width buys the picker
+      // nothing and therefore belongs to the thumbnail grid.
+      expect(FORMATS_RAIL_WIDTH).toBeLessThan(floor * 2 + 8 + RAIL_CHROME);
+    });
+
+    it('is DISTINCT from every width the inputs rail can be', () => {
+      // 🔴 THE MUTANT THIS EXISTS FOR: the two rails' widths swapped in
+      // `railGridStyle`. `responsive.test.tsx` asserts the whole track list as one
+      // string, so a swap is only visible there while the two numbers differ — if they
+      // were ever made equal, that assertion would silently stop discriminating.
+      expect(railWidths.has(FORMATS_RAIL_WIDTH)).toBe(false);
+      // The control: the set really is the inputs rail's widths and is not empty.
+      expect(railWidths.has(0)).toBe(true);
+      expect(railWidths.size).toBeGreaterThan(1);
+    });
+
+    it('is NOT a per-tier field — one value at every rail tier', () => {
+      // `railWidth` widens at ultrawide because a prompt textarea genuinely reads
+      // better wider; this one would just be a wider single card column. Stated as a
+      // test because the obvious "improvement" is to add it to `BlockLayout` and give
+      // it a ladder, and that is the change this asserts somebody has to justify.
+      for (const tier of ['lg', 'xl'] as const) {
+        expect(layoutForTier(tier, false)).not.toHaveProperty('formatsRailWidth');
+      }
+      expect(layoutForTier('xl', true)).not.toHaveProperty('formatsRailWidth');
     });
   });
 

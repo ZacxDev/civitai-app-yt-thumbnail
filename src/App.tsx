@@ -138,7 +138,7 @@ import {
 } from './history.js';
 import { HistorySurface } from './History.js';
 import { BuzzBolt, Chevron } from './icons.js';
-import { layoutForTier, type BlockLayout } from './layout.js';
+import { FORMATS_RAIL_WIDTH, layoutForTier, type BlockLayout } from './layout.js';
 import { paletteFor, parseHex, type Palette } from './palette.js';
 import { fieldDescStyle, fieldLabelStyle, fieldStyle, panelRowStyle } from './ui-styles.js';
 import { useUltrawide } from './useUltrawide.js';
@@ -154,6 +154,19 @@ import { useUltrawide } from './useUltrawide.js';
  * checkpoint/LoRA picks, and the Buzz account picker; only the body differs.
  */
 type GenMode = 'generate' | 'remix';
+
+/**
+ * Which of the two co-equal output/picker surfaces is on screen below `lg`.
+ *
+ * At `lg`+ Thumbnails and Formats are two separate COLUMNS and this type is not
+ * consulted; below it there is only one column, so they become tabs rather than a
+ * stack — a stacked picker put the thumbnail grid and the format cards on two
+ * different scroll positions on exactly the devices with the least scrollport.
+ *
+ * The values are the panel names a viewer reads on the tabs, so the state and the
+ * label can never disagree about which panel is which.
+ */
+type NarrowPanel = 'thumbnails' | 'formats';
 
 /**
  * One Generate click's identity, as an object whose REFERENCE is the identity.
@@ -478,6 +491,21 @@ export function App() {
   const [historyOpen, setHistoryOpen] = useState<boolean | null>(null);
   const [historyBusyKey, setHistoryBusyKey] = useState<string | null>(null);
   const [saveNote, setSaveNote] = useState<string | null>(null);
+
+  /**
+   * Which of the two panels is on screen BELOW `lg`, where Thumbnails and Formats
+   * share one column and become tabs. Ignored at `lg`+, where both are visible at
+   * once in their own columns and no tab control is rendered at all.
+   *
+   * 🔴 DELIBERATELY NOT PERSISTED. Every other preference this app remembers is a
+   * property of the WORK (the prompt, the formats, the model); this is a property of
+   * the WINDOW, and `useAppStorage` is a postMessage round-trip to the host. Restoring
+   * "you were last looking at Formats" on a cold load would hide the thumbnails a
+   * returning viewer already paid for behind a tap, for a fact that stops being true
+   * the moment they widen the block past `lg`. The operator settled this as local
+   * state only.
+   */
+  const [narrowPanel, setNarrowPanel] = useState<NarrowPanel>('thumbnails');
 
   // --- The published board ---
   const [boardOpen, setBoardOpen] = useState(false);
@@ -3090,20 +3118,27 @@ export function App() {
     />
   );
 
-  // The inputs, in two halves. 🔴 SPLIT RATHER THAN ONE `controls` CONSTANT
-  // BECAUSE THE FORMAT PICKER SITS BETWEEN THEM below `lg` — it is an input that
-  // decides the bill, so it belongs next to the prompt, not after the Generate
-  // button. At `lg`+ it moves to the main column instead, which is why the two
-  // halves are joined there. Both layouts render the SAME block constants; only
-  // the order and the containers differ.
-  const inputsBeforeFormats = (
+  // The inputs, as ONE binding both layouts render.
+  //
+  // 🔴 THIS USED TO BE TWO HALVES — `inputsBeforeFormats` / `inputsAfterFormats` — AND
+  // THE ONLY REASON FOR THE SPLIT IS GONE. The format picker sat BETWEEN them below
+  // `lg`, because it is an input that decides the bill and belonged next to the prompt
+  // rather than after the Generate button; at `lg`+ it moved to the main column, so the
+  // two halves were joined there. The picker is now a TAB below `lg` and its own COLUMN
+  // at `lg`+, which means it sits between them in neither layout, and a split with no
+  // remaining reason is two names a reader has to reconcile. Both layouts render the
+  // same block constants; only the containers differ.
+  //
+  // 🔴 A CONSEQUENCE WORTH NAMING: below `lg` the picker is now ABOVE the prompt rather
+  // than below it. That follows from the tabs, not from a preference — the thumbnails
+  // panel has to stay above the controls (the app's primary object is the first thing on
+  // screen, pinned by `responsive.test.tsx`), the two panels share one tab control, and
+  // a tab control cannot be in two places. Called out because it reverses the
+  // prompt-then-formats reading order the old split deliberately produced.
+  const inputs = (
     <>
       {modeBlock}
       {promptBlock}
-    </>
-  );
-  const inputsAfterFormats = (
-    <>
       {modelBlock}
       {/* 🔴 THE WHOLE FIELD IS GONE FOR A FAMILY WITH NO LoRAs. It used to render a
           permanently-disabled Add button plus a sentence explaining why — a control
@@ -3165,6 +3200,24 @@ export function App() {
     </>
   );
 
+  // THUMBNAILS — the output surface, as ONE binding, rendered by both layouts.
+  //
+  // 🔴 IT IS A BINDING RATHER THAN TWO COPIES BECAUSE THE PANELS MUST NOT FORK. At
+  // `lg`+ this is the middle column; below `lg` it is one of two tab panels, and the
+  // ONLY difference between the two is the container. Two JSX copies of
+  // `{resultsBlock}{historyBlock}` would be a predicate open-coded twice — the shape
+  // `layout.ts`'s module docblock says is wrong at N−1 sites — and the failure would
+  // be silent: a block that stopped rendering the partial-failure alert on phones
+  // only. A FRAGMENT, not a wrapped div, so at `lg`+ its two children are still
+  // direct flex items of the same `Stack` and the gaps are unchanged (`Stack` is a
+  // plain flex container with a CSS `gap`).
+  const thumbnailsPanel = (
+    <>
+      {resultsBlock}
+      {historyBlock}
+    </>
+  );
+
   // ---- The two layouts ----
 
   // 🔴 AT `lg`+ THE CONTROLS BECOME A PERSISTENT RAIL. The whole point of a
@@ -3185,23 +3238,27 @@ export function App() {
                 data-testid="yt-rail"
                 aria-label="Generation controls"
               >
-                <Stack gap={16}>
-                  {inputsBeforeFormats}
-                  {inputsAfterFormats}
-                </Stack>
+                <Stack gap={16}>{inputs}</Stack>
               </aside>
+              {/* 🔴 THUMBNAILS TAKE WHAT IS LEFT — the only `fr` track in the grid.
+                  The format picker used to sit UNDER this column; it is now the third
+                  column, and it is a FIXED px track so that every px the block gains
+                  goes to the thumbnail grid rather than being split with a surface
+                  that cannot spend it. The arithmetic is in `FORMATS_RAIL_WIDTH`. */}
               <main style={mainColumnStyle} data-testid="yt-main">
-                {/* 🔴 THE HISTORY SURFACE MOVED ABOVE THE FORMAT PICKER, because it
-                    is now where the results are. It used to sit last, below the
-                    picker, which was right while a separate candidate grid held the
-                    images and is wrong now that this IS the grid: the app's primary
-                    object has to be the first thing in the column. */}
-                <Stack gap={16}>
-                  {resultsBlock}
-                  {historyBlock}
-                  {formatsBlock}
-                </Stack>
+                <Stack gap={16}>{thumbnailsPanel}</Stack>
               </main>
+              {/* 🔴 FORMATS GET THEIR OWN RAIL, WITH `railStyle` — the SAME function the
+                  inputs rail uses, not a copy of its chrome. Both are bounded, sticky,
+                  self-scrolling columns flanking the grid, and the height bound is the
+                  load-bearing half here too: the picker is about to grow from 6 formats
+                  to 12, so an unbounded sticky column would strand its tail (the
+                  composed-prompt boxes, the format editor, the published board) below
+                  the fold for the whole sticky range. One function means the two rails
+                  cannot drift into disagreeing about that. */}
+              <aside style={railStyle(pal)} data-testid="yt-formats-rail" aria-label="Formats">
+                <Stack gap={16}>{formatsBlock}</Stack>
+              </aside>
             </div>
           </Stack>
         </div>
@@ -3215,17 +3272,67 @@ export function App() {
   // results" now, so it sits with them and NOT at the bottom: a viewer on a phone
   // must not have to scroll past every input to reach the images they just bought.
   // It renders nothing at all until there is something in it — see `showHistory`.
+  //
+  // 🔴 AND THE TWO OUTPUT SURFACES ARE TABS HERE, NOT A STACK. At `lg`+ Thumbnails and
+  // Formats are two columns; below it there is one column, and stacking them put the
+  // grid and the picker at two different scroll positions on the devices with the least
+  // scrollport — the same "two scroll positions" problem the rail exists to solve at
+  // the wide end. `SegmentedControl` is the pack's `role="tablist"` primitive and is
+  // already this app's switcher idiom (the Generate / Remix toggle), so a viewer meets
+  // one control shape, not two.
   return (
     <div {...rootProps}>
       <div style={contentStyle(layout)} {...contentProps(layout)}>
         <Card padding="lg" style={fillStyle}>
           <Stack gap={16}>
             {hero}
-            {resultsBlock}
-            {historyBlock}
-            {inputsBeforeFormats}
-            {formatsBlock}
-            {inputsAfterFormats}
+            <SegmentedControl
+              fullWidth
+              aria-label="Output panel"
+              value={narrowPanel}
+              onChange={(v) => setNarrowPanel(v as NarrowPanel)}
+              data-testid="yt-panel-tabs"
+              data={[
+                { value: 'thumbnails', label: 'Thumbnails' },
+                { value: 'formats', label: 'Formats' },
+              ]}
+            />
+            {/* 🔴 BOTH PANELS ARE MOUNTED; ONLY `display` SWITCHES — and that is the
+                decision, not an oversight. Three reasons, in order of weight:
+                  1. the inactive panel's STATE survives a tab switch. The formats panel
+                     holds a half-written custom format (`formatDraft`) and the fetched
+                     published board; unmounting it would discard a draft every time a
+                     viewer looked at their thumbnails. The thumbnails panel holds the
+                     in-flight batch's skeletons.
+                  2. `display: none` takes the panel out of the ACCESSIBILITY TREE as
+                     well as off the page, so a screen reader still hears exactly one
+                     panel — the behaviour conditional rendering would buy.
+                  3. the two panels' content is then identical to what the stacked
+                     layout rendered BY CONSTRUCTION, which is the requirement.
+                The cost is that both subtrees render on every pass below `lg`. They
+                already did, in the stacked layout this replaces.
+                🔴 WHAT IS MISSING AND WHY: `aria-controls` / `aria-labelledby` between
+                each tab and its panel. The pack's `SegmentedControl` takes its segments
+                as `{value, label, disabled}` and puts no caller-supplied id or
+                `aria-controls` on the buttons it renders, so the association cannot be
+                expressed from here. Each panel carries its own `aria-label` instead. */}
+            <div
+              role="tabpanel"
+              aria-label="Thumbnails"
+              data-testid="yt-panel-thumbnails"
+              style={panelStyle(narrowPanel === 'thumbnails')}
+            >
+              {thumbnailsPanel}
+            </div>
+            <div
+              role="tabpanel"
+              aria-label="Formats"
+              data-testid="yt-panel-formats"
+              style={panelStyle(narrowPanel === 'formats')}
+            >
+              {formatsBlock}
+            </div>
+            {inputs}
           </Stack>
         </Card>
       </div>
@@ -3936,17 +4043,65 @@ function contentProps(layout: BlockLayout) {
 /** A child that should simply fill the content column. */
 const fillStyle: React.CSSProperties = { width: '100%' };
 
-/** Rail + main, side by side. The rail is a fixed px column; main takes the rest. */
+/**
+ * THREE columns at the `rail` tier: inputs rail | thumbnails | formats rail.
+ *
+ * 🔴 EXACTLY ONE TRACK IS FLEXIBLE, AND THAT IS THE WHOLE RULE. Both rails are fixed
+ * px; `minmax(0, 1fr)` in the middle means the thumbnail grid gets the block's width
+ * MINUS the two rails and the two gaps, and absorbs every pixel the block gains. A
+ * second `1fr` — the obvious way to add a formats column — splits the main area 50/50
+ * and drops the grid from 2 tiles to 1 at a 1440px block; `FORMATS_RAIL_WIDTH` in
+ * `layout.ts` carries the arithmetic and the reason the formats column's appetite is
+ * bounded while the grid's is not.
+ *
+ * The `minmax(0, …)` rather than a bare `1fr` is the usual grid-overflow guard: a
+ * `1fr` track's implicit minimum is `auto`, so a wide child (a long prompt, an image
+ * row) would push the track past its share and squeeze the rails.
+ *
+ * Only `railWidth` varies by tier (it widens at ultrawide); the formats rail is one
+ * value everywhere, for the reason its own docblock gives.
+ */
 function railGridStyle(layout: BlockLayout): React.CSSProperties {
   return {
     display: 'grid',
-    gridTemplateColumns: `${layout.railWidth}px minmax(0, 1fr)`,
+    gridTemplateColumns: `${layout.railWidth}px minmax(0, 1fr) ${FORMATS_RAIL_WIDTH}px`,
     gap: 20,
     alignItems: 'start',
   };
 }
 
 /**
+ * One of the two tab panels below `lg`: a grid when it is the selected tab, gone when
+ * it is not.
+ *
+ * `display: grid` with the same `gap: 16` the enclosing `Stack` uses, so wrapping the
+ * thumbnails panel's two children in a container does not change the spacing the
+ * stacked layout had — the panels are a different CONTAINER for the same content, and
+ * that has to include the gaps.
+ *
+ * `display: 'none'` rather than the `hidden` attribute or a `visibility`/clip recipe:
+ * it is the one spelling that removes the panel from BOTH the page and the
+ * accessibility tree, and it is assertable in jsdom (`toBeVisible()` reads it), which
+ * `hidden` plus a UA stylesheet rule is not.
+ */
+function panelStyle(active: boolean): React.CSSProperties {
+  return { display: active ? 'grid' : 'none', gap: 16 };
+}
+
+/**
+ * A persistent rail. BOTH of them: the inputs rail on the left and the formats rail on
+ * the right are painted by this one function.
+ *
+ * 🔴 ONE FUNCTION, NOT A SECOND COPY OF THE CHROME. The two rails want the identical
+ * contract — sticky, inset from the frame's top by one `SHELL_PADDING`, height-bounded
+ * to the frame, scrolling their OWN overflow, and sitting on `railBg` inside a
+ * `borderStrong` border. A copy would be free to drift, and the thing it would drift on
+ * is the height bound, which is the half that keeps each rail's tail reachable. The
+ * paragraphs below are written about the inputs rail because that is the rail whose
+ * tail is the **Generate** button; they apply unchanged to the formats rail, whose tail
+ * is the composed-prompt boxes, the format editor and the published board, and which is
+ * about to get twice as many format cards above them.
+ *
  * The persistent controls rail.
  *
  * 🔴 `position: sticky` IS LIVE ON BOTH HOST SURFACES — AND THE VERSION OF THIS
