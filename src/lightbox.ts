@@ -9,7 +9,11 @@
 
 /** Everything the dialog paints, derived once from the row's own arrays. */
 export interface LightboxView {
-  /** Where the anchored picture currently sits in the row. Only for the indicator. */
+  /**
+   * Where the anchored picture currently sits in the row — DISPLAY ONLY. It feeds the
+   * position indicator and the image's `alt`, and nothing navigates by it: that is the
+   * whole point of anchoring on the url, so do not reintroduce a caller that steps it.
+   */
   readonly index: number;
   readonly url: string;
   /** The format label for this image, or `null` where the record cannot name one. */

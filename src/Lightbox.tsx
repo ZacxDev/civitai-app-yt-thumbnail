@@ -46,10 +46,15 @@ import { fieldDescStyle } from './ui-styles.js';
  * Not papered over for the same reason as the focus trap: a body-level `overflow`
  * write from a leaf component is a global side effect the component that owns the
  * overlay is the right place for, and two of them (this file and a later first-party
- * fix) would fight over restoring it. The arrows, which ARE this component's keys,
- * no longer scroll anything — they are `preventDefault`ed below. Carried as a
- * `deferred[]` item in `taste.json` for the browser check, because jsdom scrolls
- * nothing and cannot tell anyone how bad it looks.
+ * fix) would fight over restoring it. Carried as a `deferred[]` item in `taste.json`
+ * for the browser check, because jsdom scrolls nothing and cannot tell anyone how bad
+ * it looks.
+ *
+ * Narrow claim, stated narrowly: an arrow key THE DIALOG TAKES is `preventDefault`ed,
+ * so it does not also scroll. An arrow key the dialog declines — one pressed on
+ * something behind the overlay — is deliberately left alone and WILL scroll whatever
+ * owns it. That is correct, and it is not a scroll lock. See
+ * `keysBelongToThisDialog`.
  */
 export function ImageLightbox({
   url,
