@@ -10,33 +10,30 @@ Ordinary for a brand-new repo — register the scope or ignore until content exi
 
 ## Goal
 Ship **YT Thumbnail** — a Civitai page-money app generating YouTube thumbnails: txt2img + img2img remix + multi-format + a canvas text-overlay editor with a YouTube-capped export.
-- ✅ **ARC 7 (opened 2026-10-01) is MET and CLOSED, 2026-10-02.** Its judgement half was answered by the operator, who looked at the live 0.1.10 app and said the UI is right. **Do not re-open it, re-measure its layout, or re-propose its items.**
-- ✅ **ARC 6 CLOSED 2026-10-01.** Arcs 1–5 MET. All FROZEN, kept as history.
-- **closing-condition: check** — **ARC 8**, opened 2026-10-02, FROZEN. MET when **0.1.11 is serving the regenerated art**: `civitai app status | grep b022e3b` shows `approved live`, AND the served bundle filename has moved off `index-rGpkvQLX.js`, AND a byte-compare of `https://yt-thumbnail.civit.ai/formats/gaming.webp` against this repo's `public/formats/gaming.webp` matches. The art is a static asset, so the bundle grep that proved earlier releases cannot prove this one — **compare the asset itself.**
+- ✅ **ARC 8 (opened 2026-10-02) is MET and CLOSED, 2026-10-02 16:32Z.** **closing-condition: check** — frozen as *"0.1.11 is serving the regenerated art"* — and all three legs passed with a negative control. Evidence in the RESOLVED investigation block. **Do not re-run it.**
+- ✅ **ARC 7 MET and CLOSED 2026-10-02** by operator judgement: he looked at the live 0.1.10 app and said the UI is right. ✅ **ARC 6 CLOSED 2026-10-01.** Arcs 1–5 MET. All FROZEN, kept as history.
+- 🔴 **NO ARC IS OPEN.** Everything the operator asked for has shipped and been verified live. The ranked list below is **unforced work only** — do not treat it as an arc, and do not mint one without him. The next arc starts when he names an objective.
 
 ## State now
-- **No clawgate task.** `clawgate_handoff.sh resolve` exited **5** — nothing resolved. An unknown session id also answers 200/empty, so that is **not** a clean bill of health; no field written.
-- **`main` = `b022e3b`**, clean. 0.1.10 still live and serving `index-rGpkvQLX.js`.
-- ✅ **ARC 7's judgement half was ANSWERED.** The operator looked at the live app and judged the twelve-format picker, the lightbox, the three-column rail, the narrow tabs and the new icon/banner **right**. That is the whole arc; nothing mechanical remained.
-- ✅ **THE TWELVE PREVIEWS ARE NOW ONE MODEL (#37, `764e61f`).** The original six — `clickbait`, `cinematic`, `bold-simple`, `tech-review`, `tutorial`, `gaming` — were re-drawn on ChatGPT Images. **1254 Buzz, reconciled exactly: balance 4,061,060 → 4,059,806.** Price verified by a control pair BEFORE spending (`--ecosystem OpenAI` → 209; no ecosystem → **8**). All six delivered **1536×864**, so none was cropped; resized to the repo's 480×270 WebP. Suffixes untouched. Provenance ids in `public/formats/formats.json` and `claudedocs/format-previews.md`.
-- ⏳ **0.1.11 IS IN REVIEW — `pubreq_01M3YN2Y3AJNVBVDTWN38Q8ZSA`, source `b022e3b`, `pending`, submitted 2026-10-02 15:52Z.** No twin at submit time. A watcher is logging every `(version, status, deploy, req, source)` change to the scratchpad; moderation has a 1 min … 2h34m spread, so **budget hours and never quote one as an ETA**.
-- 🔴 **ANOTHER SESSION SHARES THIS CHECKOUT, and it merged #36 UNDERNEATH #37.** `@civitai/blocks-react` ^0.49→^0.62 and `@civitai/app-sdk` ^0.39→^0.49 landed as `92629a3` between my branch being tested and the release bump. **The suite was therefore re-run on the MERGED tree**, not inherited from either branch: `tsc` rc 0, **933 passed / 34 files**, build rc 0, `validate ✓`. Bundle **127 files / 7.28 MB**, zero `.claude` paths.
-- ✅ **Mutation drivers consolidated — PR #39, OPEN.** `scripts/lightbox-mutants.py` deleted; its set is `scripts/mutants-lightbox.mjs` and the three controls it alone had were ported INTO `mutation-sweep.mjs`. Lightbox 8/8 and formats 11/11 KILLED, each by its NAMED assertion.
-- ✅ **Cairn scope registered — devrc PR #1981, OPEN.** `civitai-app-yt-thumbnail` → `personal`, the operator's call. **Takes effect on a `home-manager switch`, not on merge** (it is a `home.file` store copy).
-- ✅ **Rank 3(a) was ALREADY DONE and is retired.** "Fix `audit-dispatch.py`'s operator-asks block, wrong in BOTH directions" was fixed by devrc **#1901** — the `cat -n` optional-line-number matcher (`round0-attribution-rate.py:384-433`) and `IN_POPULATION_ROLES` derived from `BRANCHES` (`:596`) are both in the current code. It also named the wrong file; the matcher lives in `round0-attribution-rate.py`.
+- **No clawgate task.** `clawgate_handoff.sh resolve` exited **5**; an unknown session id also answers 200/empty, so that is **not** a clean bill of health. No field written.
+- **`main` = `0df80a1`**, clean. Base clone re-installed (`npm ci`) and green: `tsc` rc 0, **933/933**, both read UNPIPED.
+- ✅ 🔴 **0.1.11 IS LIVE ON OUR OWN SOURCE COMMIT `b022e3b`**, serving **`assets/index-YPsZxCZP.js`**. Submitted 15:52Z → `building` 16:31Z → **`live` 16:32Z**. The twelve-format picker is now one model.
+- ✅ **VERIFIED BY ASSET COMPARE, WHICH IS THE ONLY INSTRUMENT THAT COULD SEE IT.** All six regenerated previews are **byte-identical** served-vs-repo (`gaming` 34,330 B · `clickbait` 25,156 · `cinematic` 10,432 · `bold-simple` 7,790 · `tech-review` 11,664 · `tutorial` 20,490), with a negative control: the served bytes do **not** match the pre-change art at `4a86bb9`.
+- 🔴 **A SOURCELESS TWIN DID SPAWN FOR 0.1.11 — and the 0.1.9 INVERSION DID NOT RECUR.** Our sourced row went `approved` + `live`; a second `0.1.11` row with **no source commit** sits `withdrawn`. So the twin is back after skipping 0.1.10, and this time it was the harmless kind.
+- ✅ **Twelve previews from one model (#37 `764e61f`), 1254 Buzz, reconciled exactly** (4,061,060 → 4,059,806). Price control pair before spending: `--ecosystem OpenAI` → 209, no ecosystem → **8**. All six delivered 1536×864, uncropped, resized to 480×270 WebP.
+- ✅ **Mutation drivers consolidated — PR #39, OPEN.** ✅ **Cairn scope registered — devrc PR #1981, OPEN** (needs a `home-manager switch` after merge).
 - ✅ **ARC 6 REMAINS CLOSED (2026-10-01 16:15 CDT) — carried forward AGAIN because `State now` is REPLACED each round and criteria 1+2 live ONLY here.** (1) Three `DONE` generations 2026-09-30 CDT: **17:51:22 / 209 Buzz** (1 fmt, 1 img) · **17:56:30 / 418** (2, 2) · **23:06:03 / 836** (4, 4), ChatGPT Images, 1536×864; 23:06:03 is **nine minutes after 0.1.7 went live (22:57)**, proving the money path on 0.1.7 itself. (2) `yt-history-resume` moved three values at once — prompt `""` → the stored 61-char prompt, formats `clickbait` → `+cinematic+tutorial+gaming`, button `209` → **`836 Buzz`**, app printing *"Form restored. Nothing was submitted."* (3) the `useSaveImage` save, evidence in its RESOLVED investigation block.
-- **Buzz spent this session: 1254**, all of it the six previews. `pm-generate` never clicked.
-- ⚠ The 7 Buzz reconciliation gap from arc 3 is still unexplained. ⚠ `.claude/` is still not gitignored (and a `.gitignore` entry would not stop the packager anyway).
+- **Buzz spent this session: 1254.** `pm-generate` never clicked.
+- ⚠ The 7 Buzz reconciliation gap from arc 3 is still unexplained. ⚠ `.claude/` is still not gitignored.
 
 ## Version history (server-confirmed, never from a CLI exit code)
 | ver | pubreq | source | state |
 |---|---|---|---|
-| 0.1.7 | `pubreq_01M3TNJNCS2CNJ7ZT2P7SW8X31` | `b293455` | approved live, superseded |
-| 0.1.8 | — | *(none)* | a sourceless twin that DEPLOYED — see the inversion block |
-| 0.1.8 | `pubreq_01M3…` | `e994fed` | approved, **deploy failed** (platform base-image CVEs) |
+| 0.1.8 | — | *(none)* | a sourceless twin that DEPLOYED — the inversion |
 | 0.1.9 | `pubreq_01M3WQ2PZJ993SMVA4H7977HDY` | `445558b` | **withdrawn** — not by us |
-| 0.1.10 | `pubreq_01M3XCVP11RXMNXDVBWJW845SQ` | `09764f4` | **approved + LIVE** — `index-rGpkvQLX.js`, no twin |
-| 0.1.11 | `pubreq_01M3YN2Y3AJNVBVDTWN38Q8ZSA` | `b022e3b` | **pending** — the regenerated art |
+| 0.1.10 | `pubreq_01M3XCVP11RXMNXDVBWJW845SQ` | `09764f4` | approved, superseded — `index-rGpkvQLX.js`, **no twin** |
+| 0.1.11 | `pubreq_01M3YN2Y3AJNVBVDTWN38Q8ZSA` | `b022e3b` | **approved + LIVE** — `index-YPsZxCZP.js`, regenerated art |
+| 0.1.11 | *(a sourceless twin)* | *(none)* | withdrawn — harmless |
 
 ## 0.1.3 — what is in review
 SUPERSEDED and ARCHIVED → `claudedocs/handoff-yt-thumbnail-ARCHIVE.md`. 0.1.3 went live 2026-09-28; six versions have shipped since.
@@ -191,12 +188,19 @@ ARCHIVED → `claudedocs/handoff-yt-thumbnail-ARCHIVE.md`. Short version: `orche
 - **Leading hypothesis:** none worth recording — three mechanisms fit the 0.1.9 inversion equally and an empty result cannot distinguish them.
 - **Next probe:** read the watcher log. If our row reaches `live`, the arc's check closes and the twin hypothesis gains a second non-spawning release. If a sourceless row appears and ours goes `withdrawn`, that is the **second** reproduction and is worth raising with the App Blocks owners with both pubreq ids.
 
+### ✅ RESOLVED 2026-10-02 — 0.1.11 deployed on OUR request, the twin returned, and the inversion did NOT
+- as-of: 2026-10-02
+- 🔴 **THIS ANSWERS THE BLOCK ABOVE TITLED "Does 0.1.11 deploy on OUR request, or does the twin inversion recur?" — ITS QUESTION IS SPENT.** Both halves are settled; do not re-run its next probe.
+- **Observed (with values):** submitted **15:52Z**, `pending` → **`approved`/`building` 16:31Z** → **`live` 16:32Z**, row reading `0.1.11 approved live b022e3b`. A SECOND `0.1.11` row carrying **no source commit** appeared and sits **`withdrawn`**. Served bundle moved `index-rGpkvQLX.js` → **`index-YPsZxCZP.js`**. `via: measurement`
+- 🔴 **Ruled out — the 0.1.9 inversion recurring.** That failure was *our sourced request withdrawn while a sourceless one deployed*. Here the sourced request is the one that went live and the twin is the withdrawn one. `via: measurement`
+- 🔴 **Ruled out — "the deploy landed" resting on the bundle hash.** The previews are static files in `public/`, so they never enter the JS bundle and a bundle grep is structurally blind to them. The instrument was a **byte compare of the served asset against the repo copy**: all six MATCH, and the pre-change art at `4a86bb9` does **not** match the served bytes — the negative control that makes the six matches mean something. `via: measurement`
+- **What this does to the twin hypothesis:** 0.1.5/0.1.6/0.1.7/0.1.9 each produced exactly one, **0.1.10 produced none**, 0.1.11 produced one. So "every approval spawns a twin" is still **refuted by 0.1.10** and nothing explains the exception. The disposition remains variable and, 0.1.8 aside, harmless.
+- **Next probe:** none worth running on its own. Record `(version, status, deploy, req, source)` for BOTH rows on the next release and see whether a second no-twin case ever appears.
+
 ## Next steps (ranked)
-1. **Watch 0.1.11 to a terminal deploy state, then close ARC 8 by its own check.** The terminal set is `live|failed|error|cancelled` — **`deploying` is NOT terminal.** Then verify by ASSET, not by bundle grep: `curl -sS https://yt-thumbnail.civit.ai/formats/gaming.webp | cmp - public/formats/gaming.webp`. Repo: `civitai-app-yt-thumbnail` (no code change expected).
-   forcing: gate — ARC 8's closing condition is a runnable check and this is it
-2. **Two art judgements the regeneration raised, both the operator's.** ChatGPT Images renders legible text where SD XL could not: **`clickbait`** came back with a baked-in *"$10,000 A DAY?!"* headline **and a YouTube play-button mark**, and **`gaming`** carries garbled text fragments. Both are honest output of their own suffix — `clickbait`'s begins *"youtube thumbnail"* — but a third-party mark in shipped app art is a judgement, not a fact. Either is one 209-Buzz re-draw away. Repo: `civitai-app-yt-thumbnail` (`public/formats/`, `public/formats/formats.json`).
-   forcing: user — it is a trademark/representation call, not a technical one
-3. **Review and land the two open cleanup PRs.** `civitai-app-yt-thumbnail#39` (one mutation driver, three controls ported in) and `innovation-upstream/devrc#1981` (the cairn route). #1981 needs a `home-manager switch` after merge or the route stays inert.
+1. **Two art judgements, both the operator's, now visible on the LIVE app.** ChatGPT Images renders legible text where SD XL could not: **`clickbait`** shipped with a baked-in *"$10,000 A DAY?!"* headline **and a YouTube play-button mark**, and **`gaming`** with garbled text fragments. Honest output of their own suffixes — `clickbait`'s begins *"youtube thumbnail"* — but a third-party mark in shipped store art is a judgement, not a fact. Either is one 209-Buzz re-draw plus a release. Repo: `civitai-app-yt-thumbnail` (`public/formats/`, `public/formats/formats.json`).
+   forcing: user — a trademark/representation call, not a technical one
+2. **Review and land the two open cleanup PRs.** `civitai-app-yt-thumbnail#39` (one mutation driver, three controls ported in) and `innovation-upstream/devrc#1981` (the cairn route). 🔴 #1981 needs a **`home-manager switch`** after merge or the route stays inert — it is a `home.file` store copy.
    forcing: none
 
 ## Defects (batched)
@@ -356,20 +360,22 @@ ARCHIVED → `claudedocs/handoff-yt-thumbnail-ARCHIVE.md`. Short version: `orche
 ## How to verify
 ```bash
 cd /home/zach/workspace/civit/civitai-app-yt-thumbnail
-npx tsc -p tsconfig.json --noEmit && npx vitest run   # at b022e3b: 933/933 across 34 files
+npx tsc -p tsconfig.json --noEmit > /tmp/tsc.log 2>&1; echo "rc=$?"   # 🔴 UNPIPED — a pipe reports tail's status
+npx vitest run                                         # at 0df80a1: 933/933 across 34 files
 node scripts/mutation-sweep.mjs                        # formats: 11/11 killed, M25 (positive control) died
 node scripts/mutation-sweep.mjs --spec scripts/mutants-lightbox.mjs   # lightbox: 8/8 killed, PC died
-# 🔴 Read status with the NO-SLUG form and grep YOUR sha — a sourceless twin becomes the
-# newest row and `civitai app status <slug>` reports only the newest.
-civitai app status | grep b022e3b      # 0.1.11: expect `approved live`
-# 🔴 ARC 8's check is an ASSET compare, not a bundle grep — the previews are static files
-# in public/, so they never appear in the JS bundle at all.
-curl -sS https://yt-thumbnail.civit.ai/formats/gaming.webp | cmp - public/formats/gaming.webp && echo "served art == repo art"
-curl -sS https://yt-thumbnail.civit.ai/ | grep -oE 'assets/index-[A-Za-z0-9_-]+\.js' | head -1   # must not be index-rGpkvQLX.js
+# 🔴 NO-SLUG form, grep YOUR sha — a sourceless twin is the newest row and the
+# single-app view reports only the newest. 0.1.11 HAS one.
+civitai app status | grep b022e3b      # expect `approved live`
+# 🔴 THE PREVIEWS ARE STATIC FILES — a bundle grep CANNOT see them. Compare the asset.
+for f in gaming clickbait cinematic bold-simple tech-review tutorial; do
+  curl -sS "https://yt-thumbnail.civit.ai/formats/$f.webp" | cmp - "public/formats/$f.webp" && echo "$f MATCH"
+done
+curl -sS https://yt-thumbnail.civit.ai/ | grep -oE 'assets/index-[A-Za-z0-9_-]+\.js' | head -1   # index-YPsZxCZP.js
 # 🔴 BEFORE ANY SUBMIT: inspect the bundle. Expect ~127 files / 7.28 MB.
 civitai app submit --package-only && unzip -l yt-thumbnail-*.zip | tail -1 && rm -f yt-thumbnail-*.zip
 ```
-🔴 **ARC 6 AND ARC 7 ARE BOTH CLOSED — do NOT re-run the `yt-history-save` check and do NOT re-measure the layout.** The save works on live 0.1.7+ (evidence in its RESOLVED investigation block) and the operator has judged the UI. Re-running either costs time and proves nothing.
+🔴 **ARCS 6, 7 AND 8 ARE ALL CLOSED.** Do NOT re-run the `yt-history-save` check, do NOT re-measure the layout, and do NOT re-verify the 0.1.11 deploy. Each is evidenced in its own block.
 **Browser pass, reusable — ONE ssh session, because `emulate` needs tab ownership:**
 `ssh zach@10.42.0.100` → in one script: `browser --instance work open <run-url>` → `emulate --width W --height 1000` → `wake --wait 4000` → `frames` → `--frame <id> js '<read getComputedStyle(q("[data-testid=yt-history-images]")).gridTemplateColumns>'` → `emulate --reset` → `close`. Measure CAPACITY from `gridTemplateColumns`, never by counting rendered tiles. 🔴 Never click `pm-generate`; clicking a thumbnail (lightbox) is free.
 ## The four open PRs — read this before touching anything
