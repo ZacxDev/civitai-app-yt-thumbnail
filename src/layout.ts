@@ -175,8 +175,11 @@ export interface BlockLayout {
 export const ULTRAWIDE_MIN = 1800;
 
 /**
- * px width of the FORMATS rail — the third column at the `rail` tier, holding the
- * format picker beside the thumbnail grid instead of stacked under it.
+ * px width of the FORMATS rail — the SECOND column at the `rail` tier, between the
+ * inputs rail and the thumbnail grid, holding the format picker beside the grid instead
+ * of stacked under it. (It was the third column, to the RIGHT of the thumbnails, until
+ * the operator reordered the tracks; track ORDER does not affect track SIZING, so every
+ * number below is the same before and after that move.)
  *
  * 🔴 IT IS A FIXED px TRACK AND IT MAY NEVER BECOME A FRACTION. This is the whole
  * reason the number is named here rather than written into `railGridStyle`, and the
@@ -215,7 +218,11 @@ export const ULTRAWIDE_MIN = 1800;
  * 320 renders it at 286px — 43% over the floor — and every px above 320 is taken from
  * the thumbnail grid for no gain. It is also deliberately DISTINCT from `RAIL_W` (340)
  * and `RAIL_W_ULTRAWIDE` (400): a mutant that swaps the two rails' widths has to be
- * visible, and `layout.test.ts` pins that no fixture width equals it either.
+ * visible, and `layout.test.ts` pins that no fixture width equals it either. That
+ * distinctness carries MORE weight since the reorder, not less: the two fixed tracks are
+ * now adjacent (`340px 320px minmax(0, 1fr)`), so swapping them is a well-formed track
+ * list that only the numbers can give away — which is why `responsive.test.tsx` pins this
+ * width as the SECOND track rather than merely asserting two fixed tracks exist.
  *
  * ONE value at every `rail` tier, unlike `railWidth`, which widens at ultrawide. The
  * inputs rail widens because the prompt textarea genuinely reads better wider; this

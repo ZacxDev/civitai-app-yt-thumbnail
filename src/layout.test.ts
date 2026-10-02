@@ -475,8 +475,15 @@ describe('layoutForTier', () => {
     it('is DISTINCT from every width the inputs rail can be', () => {
       // 🔴 THE MUTANT THIS EXISTS FOR: the two rails' widths swapped in
       // `railGridStyle`. `responsive.test.tsx` asserts the whole track list as one
-      // string, so a swap is only visible there while the two numbers differ — if they
-      // were ever made equal, that assertion would silently stop discriminating.
+      // string, and pins `FORMATS_RAIL_WIDTH` as the SECOND track besides — but BOTH of
+      // those are only visible while the two numbers differ; if they were ever made
+      // equal, both would silently stop discriminating.
+      //
+      // 🔴 AND THE SWAP GOT CHEAPER TO WRITE WHEN THE COLUMNS WERE REORDERED. The two
+      // fixed tracks are now ADJACENT (`railWidth`px `FORMATS_RAIL_WIDTH`px then the one
+      // `fr`), so transposing them is a well-formed three-track list that no structural
+      // check can see — only the inequality this case pins stands between that mutant and
+      // a green suite.
       expect(railWidths.has(FORMATS_RAIL_WIDTH)).toBe(false);
       // The control: the set really is the inputs rail's widths and is not empty.
       expect(railWidths.has(0)).toBe(true);
