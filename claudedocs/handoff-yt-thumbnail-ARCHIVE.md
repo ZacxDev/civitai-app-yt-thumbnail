@@ -250,3 +250,13 @@ From `Gotchas / decisions / dead-ends`:
 - 🔴 **`audit-dispatch.py` run from a FOREIGN repo cannot measure the payload it gates on.** For a cross-repo PR it still assembles correctly, but `git log` runs in the invoking repo, which does not hold those commits — so it prints `🔴 PAYLOAD NOT VERIFIED … the gate is reading the count as POSTED`. Say so on the PR rather than letting a posted number read as measured. (Round 3 later confirmed `payload=437` mechanically from a checkout that *did* hold them.)
 - **`npx civitai` fails ("could not determine executable")** — the PATH binary validates. Not a defect to chase.
 - 🔴 **The handoff tool commits PATH-LIMITED to the handoff doc.** A delta that adds pointers to a NEW companion file ships the pointers without their target — measured this session: `bb2698f` landed five references to an ARCHIVE file that existed only in a working tree. **Commit the companion file separately (PR #21 here) and verify with `git cat-file -e origin/main:<path>` before believing the cross-references resolve.**
+
+## Evicted from `claudedocs/handoff-yt-thumbnail.md` — 2026-10-02
+
+Evicted 2026-10-02 at session close: the two-commit eviction recipe (this session measured --archive-write carrying BOTH paths in ONE commit), a listing-verify bullet duplicated by the pixel-content one, and a browser-screenshot note whose arc has closed.
+
+From `Gotchas / decisions / dead-ends`:
+
+- **If you DO have a prunable set, eviction is a MOVE taking TWO commits in a fixed order.** `--archive FILE` is **read, never written**, and the handoff tool commits **path-limited to the handoff doc** — so: append to the ARCHIVE → commit/PR that **first and separately** → verify by content (`git cat-file -e origin/main:<path>` plus a grep) → only then `--update … --prune … --prune-count … --archive …`. ⚠ `--archive` is checked over **every** removed line, whitespace-collapsed but otherwise verbatim; verify coverage mechanically before the run (32/32 here) rather than reading its refusal.
+- **Verify a listing attach by PALETTE, not status** — listing status cannot tell an approved revision from a rejected one. `env -i curl -sS https://civitai.com/api/v1/apps/<slug>` → `iconUrl`, fetch with `curl -sSL` (it 301s), read the histogram.
+- **A screenshot is worth taking even when the DOM read already passed** — the DOM proved `yt-history-bolt` EXISTS (count 3); only the image showed it renders as a readable `836 ⚡` beside a relative `17h ago` on a real tile. For a *visual* claim the DOM count is necessary and not sufficient. ⚠ Driven over raw `ssh`, `browser screenshot` writes the PNG on the REMOTE host (not locally as a `bw://` reference would) — `scp` it back, then delete the remote copy.
