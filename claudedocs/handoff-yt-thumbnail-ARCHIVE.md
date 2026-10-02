@@ -240,3 +240,13 @@ From `Open investigations — live diagnosis state`:
 - 🔴 **Ruled out — "the deploy landed" resting on the bundle hash.** The previews are static files in `public/`, so they never enter the JS bundle and a bundle grep is structurally blind to them. The instrument was a **byte compare of the served asset against the repo copy**: all six MATCH, and the pre-change art at `4a86bb9` does **not** match the served bytes — the negative control that makes the six matches mean something. `via: measurement`
 - **What this does to the twin hypothesis:** 0.1.5/0.1.6/0.1.7/0.1.9 each produced exactly one, **0.1.10 produced none**, 0.1.11 produced one. So "every approval spawns a twin" is still **refuted by 0.1.10** and nothing explains the exception. The disposition remains variable and, 0.1.8 aside, harmless.
 - **Next probe:** none worth running on its own. Record `(version, status, deploy, req, source)` for BOTH rows on the next release and see whether a second no-twin case ever appears.
+
+## Evicted from `claudedocs/handoff-yt-thumbnail.md` — 2026-10-02
+
+Evicted 2026-10-02: two audit-dispatch/CLI notes that are audit-pr SKILL knowledge rather than yt-thumbnail knowledge, and the path-limited-commit note, which this day showed is incomplete — with --archive-write the tool carries BOTH paths in one commit.
+
+From `Gotchas / decisions / dead-ends`:
+
+- 🔴 **`audit-dispatch.py` run from a FOREIGN repo cannot measure the payload it gates on.** For a cross-repo PR it still assembles correctly, but `git log` runs in the invoking repo, which does not hold those commits — so it prints `🔴 PAYLOAD NOT VERIFIED … the gate is reading the count as POSTED`. Say so on the PR rather than letting a posted number read as measured. (Round 3 later confirmed `payload=437` mechanically from a checkout that *did* hold them.)
+- **`npx civitai` fails ("could not determine executable")** — the PATH binary validates. Not a defect to chase.
+- 🔴 **The handoff tool commits PATH-LIMITED to the handoff doc.** A delta that adds pointers to a NEW companion file ships the pointers without their target — measured this session: `bb2698f` landed five references to an ARCHIVE file that existed only in a working tree. **Commit the companion file separately (PR #21 here) and verify with `git cat-file -e origin/main:<path>` before believing the cross-references resolve.**
