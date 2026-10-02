@@ -15,25 +15,22 @@ Ship **YT Thumbnail** — a Civitai page-money app generating YouTube thumbnails
 - 🔴 **NO ARC IS OPEN.** Everything the operator asked for has shipped and been verified live. The ranked list below is **unforced work only** — do not treat it as an arc, and do not mint one without him. The next arc starts when he names an objective.
 
 ## State now
-- **No clawgate task.** `clawgate_handoff.sh resolve` exited **5**; an unknown session id also answers 200/empty, so that is **not** a clean bill of health. No field written.
-- **`main` = `0df80a1`**, clean. Base clone re-installed (`npm ci`) and green: `tsc` rc 0, **933/933**, both read UNPIPED.
-- ✅ 🔴 **0.1.11 IS LIVE ON OUR OWN SOURCE COMMIT `b022e3b`**, serving **`assets/index-YPsZxCZP.js`**. Submitted 15:52Z → `building` 16:31Z → **`live` 16:32Z**. The twelve-format picker is now one model.
-- ✅ **VERIFIED BY ASSET COMPARE, WHICH IS THE ONLY INSTRUMENT THAT COULD SEE IT.** All six regenerated previews are **byte-identical** served-vs-repo (`gaming` 34,330 B · `clickbait` 25,156 · `cinematic` 10,432 · `bold-simple` 7,790 · `tech-review` 11,664 · `tutorial` 20,490), with a negative control: the served bytes do **not** match the pre-change art at `4a86bb9`.
-- 🔴 **A SOURCELESS TWIN DID SPAWN FOR 0.1.11 — and the 0.1.9 INVERSION DID NOT RECUR.** Our sourced row went `approved` + `live`; a second `0.1.11` row with **no source commit** sits `withdrawn`. So the twin is back after skipping 0.1.10, and this time it was the harmless kind.
-- ✅ **Twelve previews from one model (#37 `764e61f`), 1254 Buzz, reconciled exactly** (4,061,060 → 4,059,806). Price control pair before spending: `--ecosystem OpenAI` → 209, no ecosystem → **8**. All six delivered 1536×864, uncropped, resized to 480×270 WebP.
-- ✅ **Mutation drivers consolidated — PR #39, OPEN.** ✅ **Cairn scope registered — devrc PR #1981, OPEN** (needs a `home-manager switch` after merge).
-- ✅ **ARC 6 REMAINS CLOSED (2026-10-01 16:15 CDT) — carried forward AGAIN because `State now` is REPLACED each round and criteria 1+2 live ONLY here.** (1) Three `DONE` generations 2026-09-30 CDT: **17:51:22 / 209 Buzz** (1 fmt, 1 img) · **17:56:30 / 418** (2, 2) · **23:06:03 / 836** (4, 4), ChatGPT Images, 1536×864; 23:06:03 is **nine minutes after 0.1.7 went live (22:57)**, proving the money path on 0.1.7 itself. (2) `yt-history-resume` moved three values at once — prompt `""` → the stored 61-char prompt, formats `clickbait` → `+cinematic+tutorial+gaming`, button `209` → **`836 Buzz`**, app printing *"Form restored. Nothing was submitted."* (3) the `useSaveImage` save, evidence in its RESOLVED investigation block.
-- **Buzz spent this session: 1254.** `pm-generate` never clicked.
-- ⚠ The 7 Buzz reconciliation gap from arc 3 is still unexplained. ⚠ `.claude/` is still not gitignored.
+- **No clawgate task** — `resolve` exited **5**; an unknown id also answers 200/empty, so not a clean bill of health.
+- **`main` = `ba867c0`**, clean. **No open PRs in this repo.**
+- ✅ **0.1.11 IS LIVE on our own commit `b022e3b`**, serving `assets/index-YPsZxCZP.js`. ARC 8 closed by asset compare with a negative control. A sourceless twin spawned `withdrawn`; the 0.1.9 inversion did NOT recur.
+- ✅ **ONE MUTATION DRIVER — #39 merged as `ba867c0`,** after a round-0 audit found **two controls it had LOST while claiming to add three**. Both closed; a false provenance claim the PR introduced at `src/Lightbox.tsx:282` was corrected to name its real source.
+- ✅ **VERIFIED ON THE MERGED TREE at `ba867c0`, not inherited from the branch** — the base had moved. `tsc` rc 0 · **933/933 / 34 files** · build rc 0 · lightbox sweep **control 933 / 0 red, 8/8 KILLED** each by its named assertion · formats **71 / 0 red, 11/11 KILLED** · restoration hash-verified. Every rc read **UNPIPED**.
+- ⏳ **devrc `#1981` OPEN and GREEN** — 4/4 Tekton statuses incl. `devrc-cairn-client-runs`; check-runs empty there (statuses, not Actions).
+- 🔴 **ONE RED IN 933, SEEN ONCE, NOT IDENTIFIED** — see its block. Not fixed, not claimed fixed.
+- ✅ **ARC 6 REMAINS CLOSED (2026-10-01 16:15 CDT) — carried forward AGAIN because `State now` is REPLACED each round and criteria 1+2 live ONLY here.** (1) Three `DONE` generations 2026-09-30 CDT: **17:51:22 / 209 Buzz** (1 fmt, 1 img) · **17:56:30 / 418** (2, 2) · **23:06:03 / 836** (4, 4), ChatGPT Images, 1536×864; 23:06:03 is **nine minutes after 0.1.7 went live (22:57)**, proving the money path on 0.1.7 itself. (2) `yt-history-resume` moved three values at once — prompt `""` → the stored 61-char prompt, formats `clickbait` → `+cinematic+tutorial+gaming`, button `209` → **`836 Buzz`**, app printing *"Form restored. Nothing was submitted."* (3) the `useSaveImage` save, evidence in its RESOLVED block.
+- **Buzz spent this session: 1254.** `pm-generate` never clicked. ⚠ The 7 Buzz gap from arc 3 is still unexplained. ⚠ `.claude/` is still not gitignored.
 
 ## Version history (server-confirmed, never from a CLI exit code)
-| ver | pubreq | source | state |
-|---|---|---|---|
-| 0.1.8 | — | *(none)* | a sourceless twin that DEPLOYED — the inversion |
-| 0.1.9 | `pubreq_01M3WQ2PZJ993SMVA4H7977HDY` | `445558b` | **withdrawn** — not by us |
-| 0.1.10 | `pubreq_01M3XCVP11RXMNXDVBWJW845SQ` | `09764f4` | approved, superseded — `index-rGpkvQLX.js`, **no twin** |
-| 0.1.11 | `pubreq_01M3YN2Y3AJNVBVDTWN38Q8ZSA` | `b022e3b` | **approved + LIVE** — `index-YPsZxCZP.js`, regenerated art |
-| 0.1.11 | *(a sourceless twin)* | *(none)* | withdrawn — harmless |
+| ver | source | state |
+|---|---|---|
+| 0.1.9 | `445558b` | withdrawn — not by us; the inversion |
+| 0.1.10 | `09764f4` | superseded — `index-rGpkvQLX.js`, **no twin** |
+| 0.1.11 | `b022e3b` | **approved + LIVE** — `index-YPsZxCZP.js`, regenerated art, twin spawned `withdrawn` |
 
 ## 0.1.3 — what is in review
 SUPERSEDED and ARCHIVED → `claudedocs/handoff-yt-thumbnail-ARCHIVE.md`. 0.1.3 went live 2026-09-28; six versions have shipped since.
@@ -190,17 +187,20 @@ ARCHIVED → `claudedocs/handoff-yt-thumbnail-ARCHIVE.md`. Short version: `orche
 
 ### ✅ RESOLVED 2026-10-02 — 0.1.11 deployed on OUR request, the twin returned, and the inversion did NOT
 - as-of: 2026-10-02
-- 🔴 **THIS ANSWERS THE BLOCK ABOVE TITLED "Does 0.1.11 deploy on OUR request, or does the twin inversion recur?" — ITS QUESTION IS SPENT.** Both halves are settled; do not re-run its next probe.
-- **Observed (with values):** submitted **15:52Z**, `pending` → **`approved`/`building` 16:31Z** → **`live` 16:32Z**, row reading `0.1.11 approved live b022e3b`. A SECOND `0.1.11` row carrying **no source commit** appeared and sits **`withdrawn`**. Served bundle moved `index-rGpkvQLX.js` → **`index-YPsZxCZP.js`**. `via: measurement`
-- 🔴 **Ruled out — the 0.1.9 inversion recurring.** That failure was *our sourced request withdrawn while a sourceless one deployed*. Here the sourced request is the one that went live and the twin is the withdrawn one. `via: measurement`
-- 🔴 **Ruled out — "the deploy landed" resting on the bundle hash.** The previews are static files in `public/`, so they never enter the JS bundle and a bundle grep is structurally blind to them. The instrument was a **byte compare of the served asset against the repo copy**: all six MATCH, and the pre-change art at `4a86bb9` does **not** match the served bytes — the negative control that makes the six matches mean something. `via: measurement`
-- **What this does to the twin hypothesis:** 0.1.5/0.1.6/0.1.7/0.1.9 each produced exactly one, **0.1.10 produced none**, 0.1.11 produced one. So "every approval spawns a twin" is still **refuted by 0.1.10** and nothing explains the exception. The disposition remains variable and, 0.1.8 aside, harmless.
-- **Next probe:** none worth running on its own. Record `(version, status, deploy, req, source)` for BOTH rows on the next release and see whether a second no-twin case ever appears.
+
+### 🔴 ONE RED IN 933 ON AN UNMUTATED TREE, SEEN ONCE AND NOT IDENTIFIED
+- as-of: 2026-10-02
+- **Symptom + exact repro:** `node scripts/mutation-sweep.mjs --spec scripts/mutants-lightbox.mjs`, first run after the window widened. `green=932 red=1` on both parses, `noise: none`, then `🔴 ABORT: the UNMUTATED tree is red.` **No repro since.** `via: measurement`
+- 🔴 **The test's NAME was not captured — that is what got fixed.** The abort printed the COUNT only, so this occurrence is unlookupable. It now prints the red titles, watched to fire by breaking a test on purpose (`rc=3`, `1 of 933`, the title named, restored by `cp -a` with sha256 identical). **The next occurrence is diagnosable; this one is not.** `via: measurement`
+- **Ruled out — `--no-cache` and the sweep's own env** (both new in that change): plain `npx vitest run --no-cache`, and `CI=1 FORCE_COLOR=0` + `--no-cache`, each read **933/933**. A flake there voids a WHOLE sweep, not one test. `via: measurement`
+- **Ruled out — the widening being broken:** three later whole-suite controls each **933 / 0 red**, one on merged `ba867c0`. `via: measurement`
+- **Leading hypothesis:** none. Five greens against one red names no mechanism — **do not pick one**.
+- **Next probe:** none on its own. When the abort fires again, read the title it now prints, then timestamp that test's mock calls.
 
 ## Next steps (ranked)
-1. **Two art judgements, both the operator's, now visible on the LIVE app.** ChatGPT Images renders legible text where SD XL could not: **`clickbait`** shipped with a baked-in *"$10,000 A DAY?!"* headline **and a YouTube play-button mark**, and **`gaming`** with garbled text fragments. Honest output of their own suffixes — `clickbait`'s begins *"youtube thumbnail"* — but a third-party mark in shipped store art is a judgement, not a fact. Either is one 209-Buzz re-draw plus a release. Repo: `civitai-app-yt-thumbnail` (`public/formats/`, `public/formats/formats.json`).
+1. **Two art judgements, live on the store app now.** ChatGPT Images renders legible text where SD XL could not: **`clickbait`** shipped a baked-in *"$10,000 A DAY?!"* headline **and a YouTube play-button mark**, **`gaming`** garbled fragments. Honest output of their suffixes (`clickbait`'s begins *"youtube thumbnail"*), but a third-party mark in store art is a judgement. Either is one 209-Buzz re-draw plus a release. `public/formats/`.
    forcing: user — a trademark/representation call, not a technical one
-2. **Review and land the two open cleanup PRs.** `civitai-app-yt-thumbnail#39` (one mutation driver, three controls ported in) and `innovation-upstream/devrc#1981` (the cairn route). 🔴 #1981 needs a **`home-manager switch`** after merge or the route stays inert — it is a `home.file` store copy.
+2. **Land devrc `#1981` (the cairn route) and run a `home-manager switch`.** 🔴 The switch is the half that matters: it is a `home.file` **store copy**, so merging alone leaves the route inert and `cairn recall` keeps refusing here.
    forcing: none
 
 ## Defects (batched)
@@ -355,6 +355,9 @@ ARCHIVED → `claudedocs/handoff-yt-thumbnail-ARCHIVE.md`. Short version: `orche
 - 🔴 **A MERGED DEPENDENCY BUMP LEAVES EVERY OTHER CHECKOUT'S `node_modules` STALE, AND IT READS EXACTLY LIKE "`main` IS RED".** Measured 2026-10-02, minutes after #36 landed: the BASE CLONE at `b022e3b` reported **`tsc` rc 2**, four errors — `'declaredScopes' does not exist on type 'HarnessProps'`, `… in type 'MockHostOptions'`, `Cannot find module '@civitai/blocks-react/live'` — while a worktree at the SAME COMMIT that had run a fresh `npm ci` was **rc 0 with 933/933**. The discriminator is one command: `node -p "require('./node_modules/@civitai/blocks-react/package.json').version"` read **0.49.0** against a `package.json` asking for **^0.62.0**. `npm ci` fixed it; `tsc` rc 0, 933/933. 🔴 **Extend the base-clone re-sync rule past `git`: after any merge that touches `package.json`/`package-lock.json`, re-install in every checkout, and compare the INSTALLED version against the REQUIRED one before believing a type error.** The errors name YOUR source files, which is what makes this read as a code defect.
 - ⚠ **`rc=$?` after a pipe bit twice in one session, on `tsc` and on a sweep.** `npx tsc … | tail -3` then `echo rc=$?` printed **rc=0 for a tsc that exited 2** — the four errors were visible in the same output and were nearly dismissed because the status said clean. Redirect to a file and read `$?` unpiped, or branch on the tool's own output. The rule is in `RULES.md`; this is a second instance in this repo.
 
+- 🔴 **A CONSOLIDATION THAT "LOSES NOTHING" IS A CLAIM ABOUT WHAT THE CODE STOPS DOING, AND THE NINE CORRECTNESS AXES CANNOT SEE IT.** Merging two mutation drivers dropped **two** controls while the PR title said it added three: `vitest --no-cache` (half of `RULES.md`'s positive-control bullet — the port kept the detector and dropped the preventer) and the observation window, which fell from **884 whole-suite tests to 41**, undisclosed. **Diff two tools' INVOCATIONS flag by flag, not just their logic.** And a mutant set's `testFiles` is part of its CLAIM, not a performance setting — this set has two mutants whose point is a whole-suite SURVIVED claim (M-F's survival is the written reason a production arm was DELETED), so a set that cannot reproduce its own founding measurements is not the same set. Widening it back immediately exposed a flake the narrow window could never have seen.
+- 🔴 **CORRECTION — `--autoevict` DOES NOT SUPERSEDE THIS DOC'S "a block cannot be pruned" BULLET; an entry earlier today said it did.** Measured hours later on this doc: it clears rule (p) only when enough CLOSED investigation content exists — here **1,727 B of closed blocks against a 2,846 B delta** → `status=size-ratchet`, nothing written. The older bullet's routes (prune named lines, shrink a REPLACE section) are still the ones that work, and **`--autoevict` and `--prune` cannot be combined** (rc 2) — land the prune first. Try autoevict first; expect it to be insufficient on a doc this far over.
+
 ## How to verify
 ```bash
 cd /home/zach/workspace/civit/civitai-app-yt-thumbnail
@@ -379,4 +382,4 @@ civitai app submit --package-only && unzip -l yt-thumbnail-*.zip | tail -1 && rm
 ## The four open PRs — read this before touching anything
 🔴 **STALE HEADING, RETIRED — there are NO open PRs and there have been none since 2026-10-01.** Ignore the title; read `State now`. It survives only because `--prune` refuses a section heading.
 ## Open PRs — read this before touching anything
-🔴 **HEADING CORRECTED 2026-10-02 — it previously read "The four open PRs" and then "STALE, RETIRED — there are NO open PRs", and BOTH are now wrong.** Two cleanup PRs are open and neither blocks anything: **`civitai-app-yt-thumbnail#39`** (one mutation driver) and **`innovation-upstream/devrc#1981`** (the cairn route). ⚠ **And a second session works in this checkout** — #36 appeared and merged inside one hour on 2026-10-02 without ever being claimed. Read `State now`, and run `gh pr list --state open` rather than trusting any sentence in this doc about how many PRs exist.
+🔴 **Run `gh pr list --state open`; do not trust any sentence here.** 2026-10-02: this repo **none**, devrc `#1981` open. ⚠ A second session works in this checkout — #36 appeared and merged inside an hour, unclaimed.

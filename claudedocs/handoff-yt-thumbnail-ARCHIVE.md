@@ -227,3 +227,16 @@ From `Gotchas / decisions / dead-ends`:
 
 - **The sourceless twin did NOT recur on 0.1.10.** 0.1.5/0.1.6/0.1.7/0.1.9 each produced exactly one; 0.1.10 produced none and deployed on our own commit. The "every approval spawns a twin" hypothesis is weakened, not confirmed.
 - 📁 **EVICTED verbatim to `claudedocs/handoff-yt-thumbnail-ARCHIVE.md`, two sections:** §"…2026-09-30 (arc 6)" (12 bullets, PR #23) and §"…2026-10-01 (arc 6 close)" (16, PR #25). The second is half **relocated** — the browser-driving facts now live in devrc's `flows/yt-thumbnail.civit.ai.md`, `flows/civit.ai.md`, `reference/errors.md` (PR #1951), where a browser session loads them — and half **closed with arcs 3–5**: the listing-media/CLI mechanics **rank 2 should read in the ARCHIVE**. 🔴 Commit a companion file FIRST and separately — the handoff tool commits path-limited, so a delta adding pointers ships them without their target.
+
+## Evicted from `claudedocs/handoff-yt-thumbnail.md` — 2026-10-02
+
+Closed investigation blocks evicted by rule (s) on 2026-10-02 when PR #39 merged.
+
+From `Open investigations — live diagnosis state`:
+
+- 🔴 **THIS ANSWERS THE BLOCK ABOVE TITLED "Does 0.1.11 deploy on OUR request, or does the twin inversion recur?" — ITS QUESTION IS SPENT.** Both halves are settled; do not re-run its next probe.
+- **Observed (with values):** submitted **15:52Z**, `pending` → **`approved`/`building` 16:31Z** → **`live` 16:32Z**, row reading `0.1.11 approved live b022e3b`. A SECOND `0.1.11` row carrying **no source commit** appeared and sits **`withdrawn`**. Served bundle moved `index-rGpkvQLX.js` → **`index-YPsZxCZP.js`**. `via: measurement`
+- 🔴 **Ruled out — the 0.1.9 inversion recurring.** That failure was *our sourced request withdrawn while a sourceless one deployed*. Here the sourced request is the one that went live and the twin is the withdrawn one. `via: measurement`
+- 🔴 **Ruled out — "the deploy landed" resting on the bundle hash.** The previews are static files in `public/`, so they never enter the JS bundle and a bundle grep is structurally blind to them. The instrument was a **byte compare of the served asset against the repo copy**: all six MATCH, and the pre-change art at `4a86bb9` does **not** match the served bytes — the negative control that makes the six matches mean something. `via: measurement`
+- **What this does to the twin hypothesis:** 0.1.5/0.1.6/0.1.7/0.1.9 each produced exactly one, **0.1.10 produced none**, 0.1.11 produced one. So "every approval spawns a twin" is still **refuted by 0.1.10** and nothing explains the exception. The disposition remains variable and, 0.1.8 aside, harmless.
+- **Next probe:** none worth running on its own. Record `(version, status, deploy, req, source)` for BOTH rows on the next release and see whether a second no-twin case ever appears.
