@@ -475,8 +475,14 @@ function groundsFor(el: HTMLElement): Rgb[] {
 
 const VIEWER = { viewer: { id: 2, username: 'dev', status: 'active' as const } };
 
-/** Width inside `lg`, so the rail and its own ground are part of the walk. */
-const LG_WIDTH = 1301;
+/**
+ * Width inside `xl`, so both rails and their own ground are part of the walk.
+ *
+ * 🔴 IT WAS 1301 (`lg`) AND THE RAIL MOVED. `lg` renders the one-column tabbed layout
+ * now, which paints no `railBg` at all — so at 1301 this walk would silently stop grading
+ * the rail's ground and still report every colour it DID find as passing.
+ */
+const RAIL_WIDTH = 1523;
 
 let blockWidth = 0;
 let restoreClientWidth: (() => void) | undefined;
@@ -538,7 +544,7 @@ describe.each(THEMES)('GUARD B — every text colour is legible where it sits (%
   });
 
   it('grades every app-painted text colour against its own resolved ground', async () => {
-    setBlockWidth(LG_WIDTH);
+    setBlockWidth(RAIL_WIDTH);
     uninstall = installMockMoneyHost({ ...VIEWER, theme });
     render(<App />);
     await screen.findByTestId('pm-generate');

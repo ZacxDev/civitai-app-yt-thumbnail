@@ -3,6 +3,7 @@ import { Badge, Button, Stack } from '@civitai/blocks-react/ui';
 import {
   LABEL_MAX,
   SUFFIX_MAX,
+  hasPreviewArt,
   isCustomId,
   type Format,
   type PublishedFormat,
@@ -82,7 +83,12 @@ export function FormatPicker({
               title={fmt.suffix}
             >
               <span style={previewWrapStyle(pal)}>
-                {fmt.preview ? (
+                {/* 🔴 `hasPreviewArt`, not `fmt.preview ?` and not
+                    `fmt.preview !== undefined`. The tests and this component used
+                    to use two different predicates, which split on `''`/`null` —
+                    the values that reach the DOM as <img src=""> and paint a
+                    broken-image icon. One predicate, in formats.ts. */}
+                {hasPreviewArt(fmt) ? (
                   <img src={fmt.preview} alt="" loading="lazy" style={previewImgStyle} />
                 ) : (
                   <span style={previewPlaceholderStyle(pal)} aria-hidden="true">

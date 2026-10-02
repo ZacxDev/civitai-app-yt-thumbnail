@@ -232,7 +232,16 @@ describe('the live estimate — when it fires', () => {
     estimateFn.mockClear();
 
     estimateFn.mockResolvedValue(priced(PRICE.first));
-    await user.click(screen.getByTestId(`yt-format-${CINEMATIC.id}`));
+    // 🔴 VISIBLE BEFORE CLICKED. This file stubs no block width, so jsdom reports
+    // `clientWidth: 0`, the tier is `base` and the app renders its TABBED layout — two
+    // `display: none` panels. For one revision the format picker was in the UNSELECTED one,
+    // and this click still succeeded (`userEvent` gates on `pointer-events`, not on
+    // visibility) against a control no viewer could press. The app now defaults to the
+    // Formats tab while Thumbnails is empty; this line is what checks that rather than
+    // assuming it, so a change that re-hides the picker fails here.
+    const card = screen.getByTestId(`yt-format-${CINEMATIC.id}`);
+    expect(card, 'the format checkbox is in a hidden tab panel').toBeVisible();
+    await user.click(card);
 
     // 2 formats x PRICE.first — the SUM, from the same `aggregateEstimate` the
     // in-flight run uses.

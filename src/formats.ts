@@ -42,17 +42,44 @@ export interface Format {
   source: 'builtin' | 'custom' | 'published';
 }
 
+/**
+ * Does this format have usable preview art? THE one predicate for that question.
+ *
+ * 🔴 ONE RULE, ONE PLACE — and the rule is TRUTHINESS, not `!== undefined`. The
+ * component and the tests used to disagree: `FormatPicker` branched on
+ * `fmt.preview ?` while `formats.test.ts` classified art as
+ * `f.preview !== undefined`. Those two split on `''` and on `null`, which are
+ * exactly the well-meant-placeholder values that would reach the DOM as
+ * `<img src="">` and paint a broken-image icon. The component's reading is the
+ * safe one, so it is the one that won; both sides now call this.
+ */
+export function hasPreviewArt(fmt: { preview?: string | null }): boolean {
+  return typeof fmt.preview === 'string' && fmt.preview.trim() !== '';
+}
+
 // ---------------------------------------------------------------------------
-// Built-ins. Six, spanning the thumbnail styles a creator actually picks
-// between rather than six variations of one look.
+// Built-ins. Twelve, spanning the thumbnail styles a creator actually picks
+// between rather than twelve variations of one look.
+//
+// 🔴 ALL TWELVE NOW CARRY ART, and `preview` is STILL OPTIONAL — it has to be,
+// because every CUSTOM and PUBLISHED format has none. So the placeholder branch
+// in `FormatPicker` is live code, not dead code; it is just no longer reachable
+// from a built-in. `hasPreviewArt` is the one predicate both the component and
+// the tests branch on — see its own note for why truthiness, not `!== undefined`.
+// Do NOT invent a `preview` path or a `sourceWorkflowId` for a format whose art
+// has not been generated: the JSON is a provenance ledger and a fabricated
+// workflow id is a false record, which `formats.test.ts` now rejects by SHAPE
+// and not merely by presence.
 //
 // 🔴 THESE ARE A MIRROR, NOT THE ORIGINAL. The canonical definition — label,
 // suffix and preview path — lives in `public/formats/formats.json`, which also
 // records the `sourceWorkflowId` of the REAL generation each preview came from
-// (see claudedocs/format-previews.md for provenance). That file additionally
-// feeds nothing at runtime: it is the provenance record. The array below is the
-// bundled, typed copy the app actually reads, so there is no runtime fetch and
-// no chance of the picker rendering before its own catalogue arrives.
+// (see claudedocs/format-previews.md for provenance). The provenance triple —
+// `preview`, `sourceWorkflowId`, `costBuzz` — travels together or not at all,
+// and `formats.test.ts` pins that. That file feeds nothing at runtime: it is the
+// provenance record. The array below is the bundled, typed copy the app actually
+// reads, so there is no runtime fetch and no chance of the picker rendering
+// before its own catalogue arrives.
 //
 // The two are pinned in lockstep by `formats.test.ts` ('mirrors
 // public/formats/formats.json exactly'), which reads the JSON off disk and
@@ -113,6 +140,76 @@ export const BUILTIN_FORMATS: readonly Format[] = [
     suffix:
       'dynamic action, neon rim lighting, energetic composition, vivid magenta and cyan, high energy, stylized digital art',
     preview: '/formats/gaming.webp',
+    source: 'builtin',
+  },
+
+  // --- Added in the second batch. Art landed separately (ChatGPT Images, 209
+  // Buzz each — provenance in claudedocs/format-previews.md). ---
+  //
+  // Three of these six sit next to an earlier built-in, so each one's suffix is
+  // deliberately written to occupy different vocabulary from its neighbour. The
+  // comment on each says which neighbour it is being held apart from and how,
+  // because "distinct" is the whole reason the format exists — two formats whose
+  // suffixes land on the same look are two bills for one image.
+  {
+    id: 'minimalist',
+    label: 'Minimalist',
+    // vs `bold-simple`: that one is LOUD-but-simple — saturated flat colour, a
+    // centred focal point, poster graphics. This one is QUIET — empty space, a
+    // small off-centre subject, drained colour, photographic rather than graphic.
+    // No word is shared between the two suffixes.
+    suffix:
+      'generous negative space, one small off-center subject, muted desaturated palette, soft diffuse daylight, understated and quiet, delicate fine detail',
+    preview: '/formats/minimalist.webp',
+    source: 'builtin',
+  },
+  {
+    id: 'educational',
+    label: 'Educational',
+    // vs `tutorial`: that one is a PHOTOGRAPH of a friendly workspace. This one
+    // is a DRAWING — diagram, callouts, whiteboard, chart. Different medium,
+    // different subject, no shared vocabulary.
+    suffix:
+      'infographic layout, labeled diagram with callout arrows, whiteboard sketch annotations, charts and flow lines, explanatory schematic, flat vector illustration',
+    preview: '/formats/educational.webp',
+    source: 'builtin',
+  },
+  {
+    id: 'professional',
+    label: 'Professional',
+    // vs `tech-review`: that one photographs an OBJECT on a desk. This one
+    // photographs a PERSON in a corporate setting — portrait, presenter,
+    // boardroom. Different subject class entirely.
+    suffix:
+      'corporate business portrait, confident presenter on a conference stage, tailored suit, glass office tower boardroom, authoritative composure, polished editorial lighting',
+    preview: '/formats/professional.webp',
+    source: 'builtin',
+  },
+  {
+    id: 'abstract',
+    label: 'Abstract',
+    suffix:
+      'non representational abstract shapes, overlapping geometric planes, gradient mesh and flowing curves, risograph grain texture, no recognizable objects, generative art',
+    preview: '/formats/abstract.webp',
+    source: 'builtin',
+  },
+  {
+    id: 'chaos',
+    label: 'Chaos',
+    // Not `gaming` with the dial turned up: gaming is ACTION (dynamic, neon,
+    // energetic). This is CLUTTER — collage, clashing pattern, glitch, too much
+    // of everything at once.
+    suffix:
+      'maximalist visual overload, cluttered collage of overlapping elements, clashing patterns, motion blur and glitch artifacts, frenetic asymmetric composition, controlled mess',
+    preview: '/formats/chaos.webp',
+    source: 'builtin',
+  },
+  {
+    id: 'magic',
+    label: 'Magic',
+    suffix:
+      'arcane fantasy sorcery, swirling glowing runes and sparkling particles, enchanted mist, iridescent violet and gold aura, ethereal otherworldly atmosphere, painterly fantasy illustration',
+    preview: '/formats/magic.webp',
     source: 'builtin',
   },
 ];
@@ -200,10 +297,48 @@ export interface CustomFormat {
 }
 
 /**
+ * The one character a format suffix may not contain.
+ *
+ * 🔴 `#` IS EATEN SERVER-SIDE BEFORE THE MODEL EVER SEES IT. The generator reads
+ * `#name` as a WILDCARD REFERENCE, not as literal prompt text: measured, a suffix
+ * containing `#FF49BD` came back with `targets.prompt[0].category = "FF49BD"` —
+ * the `#` and the word after it were lifted out of the prompt entirely. Nothing
+ * errors; the generation succeeds and silently is not the prompt that was paid
+ * for. A format's suffix is appended to EVERY prompt made with that format, so
+ * one `#` corrupts every generation it will ever produce — and a PUBLISHED format
+ * carries that corruption into OTHER viewers' paid generations.
+ */
+export const WILDCARD_CHAR = '#';
+
+/**
+ * Why this suffix cannot be used, or `null` when it is fine. THE single place the
+ * `#` rule lives.
+ *
+ * 🔴 ONE RULE, ONE PLACE. This predicate is called from `validateCustomFormat`
+ * (the viewer saving their own format) and from the publish path (pushing one to
+ * the app-wide board). It is deliberately NOT called from `parseCustomFormats` or
+ * `formatFromSharedItem` — see the note on `validateCustomFormat` for why loading
+ * must stay permissive. The built-in suffixes get the same check for free in
+ * `formats.test.ts`, which is the population that can least have the problem and
+ * was, before this, the only one that was checked at all.
+ */
+export function suffixWildcardReason(suffix: string): string | null {
+  if (!suffix.includes(WILDCARD_CHAR)) return null;
+  return `Remove the “${WILDCARD_CHAR}” — the generator reads it as a wildcard and deletes the word after it from your prompt.`;
+}
+
+/**
  * Validate a candidate custom format's user-entered fields. Returns a
  * human-readable reason, or `null` when it is acceptable. Checked BEFORE the
  * storage write so the viewer gets a specific message instead of the host's
  * generic rejection string.
+ *
+ * 🔴 THIS RUNS ON SAVE, NEVER ON LOAD. A viewer may ALREADY have a stored suffix
+ * containing `#` — it was accepted before this rule existed — and making that
+ * format unloadable would delete work they can see in the UI, to fix a problem
+ * they did not cause. So `parseCustomFormats` keeps such an entry verbatim and
+ * this function refuses the next SAVE of it, with copy that says why. Both
+ * directions are tested (`formats.test.ts`, "validated on SAVE, not on LOAD").
  */
 export function validateCustomFormat(draft: { label: string; suffix: string }): string | null {
   const label = draft.label.trim();
@@ -212,7 +347,7 @@ export function validateCustomFormat(draft: { label: string; suffix: string }): 
   if (label.length > LABEL_MAX) return `Name is too long (max ${LABEL_MAX} characters).`;
   if (suffix.length === 0) return 'Describe the look — this text is added to your prompt.';
   if (suffix.length > SUFFIX_MAX) return `Description is too long (max ${SUFFIX_MAX} characters).`;
-  return null;
+  return suffixWildcardReason(suffix);
 }
 
 /**
@@ -271,6 +406,13 @@ export function customFormatsFull(list: readonly CustomFormat[]): boolean {
  * an empty list and any individual malformed entry is dropped rather than
  * poisoning the rest. Entries are trimmed, length-clamped and de-duplicated by
  * id, and the result is capped at MAX_CUSTOM_FORMATS.
+ *
+ * 🔴 IT DOES NOT APPLY `suffixWildcardReason`, AND THAT IS DELIBERATE. The `#`
+ * rule is a SAVE-time rule. A viewer whose stored suffix contains `#` saved it
+ * before the rule existed; dropping the entry here would silently delete a format
+ * they can see in their picker. They keep it, it keeps working as it always did
+ * (badly — the `#` is still eaten), and the next time they SAVE or PUBLISH it they
+ * are told why and asked to fix it. Pinned in both directions in `formats.test.ts`.
  */
 export function parseCustomFormats(raw: unknown): CustomFormat[] {
   if (!Array.isArray(raw)) return [];
@@ -337,6 +479,11 @@ export interface PublishedFormat extends Format {
  * generations inside a contentRating:"g" app — it has to pass the content belt.
  * `data` carries only the non-text structure (a schema version), which is
  * exactly what an unmoderated channel is for.
+ *
+ * This function MAPS; it does not gate. The publish path calls
+ * {@link validateCustomFormat} first — publishing is a WRITE, so the `#` rule
+ * applies to it exactly as it applies to a save, and for a sharper reason: a
+ * published suffix is spent by people who never typed it.
  */
 export function sharedValueForFormat(fmt: { label: string; suffix: string }): {
   title: string;

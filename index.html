@@ -72,19 +72,25 @@
          IS THE POINT. These are VIEWPORT queries; the app switches tier on the
          CONTENT box of the padded shell, i.e. the viewport less 2 x 24px. So
          the viewport width at which the app reaches `sm` is 768 + 48 = 816,
-         and `lg` is 1184 + 48 = 1232. Using the raw breakpoints made the boot
+         and `xl` is 1440 + 48 = 1488. Using the raw breakpoints made the boot
          card 752px at an 800px viewport where the app settles at 640px.
          src/boot-skeleton.test.ts derives both numbers from `resolveBlockTier`
-         and sweeps the two ladders for equality. */
+         and sweeps the two ladders for equality.
+         🔴 THE SECOND RUNG MOVED FROM 1232 TO 1488 WITH THE RAIL. `lg` used to
+         be the first UNCAPPED tier; it is a two-column tier now and keeps the
+         1184 cap (see TWO_COLUMN_MAX_WIDTH), so the cap drops at `xl` instead.
+         A 1232 rung here would make the boot card 1184px wider than the settled
+         column at every viewport from 1232 to 1487 — the exact class of
+         mount-time width jump the sweep exists to catch. */
       @media (min-width: 816px) {
         [data-boot-skeleton] [data-boot-shape='card'] {
           max-width: 1184px;
         }
       }
-      /* Uncapped from here, because `layoutForTier('lg').maxWidth` is null. The
-         skeleton draws no rail: two columns of placeholders would promise a
+      /* Uncapped from here, because `layoutForTier('xl').maxWidth` is null. The
+         skeleton draws no rail: three columns of placeholders would promise a
          layout the app might not land on. */
-      @media (min-width: 1232px) {
+      @media (min-width: 1488px) {
         [data-boot-skeleton] [data-boot-shape='card'] {
           max-width: none;
         }
