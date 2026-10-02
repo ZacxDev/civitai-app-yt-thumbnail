@@ -1038,7 +1038,9 @@ describe('the formats rail is a FIXED third column, never a share of the thumbna
 // first-run viewer has no thumbnails at all — `showHistory` renders the surface as nothing
 // for a signed-in viewer with zero rows — so selecting Thumbnails by default put an EMPTY
 // panel on screen with the one actionable surface hidden behind a tap. The latch is
-// one-shot and one-way (the `useEffect` on `hasBatch` in App.tsx); the cases below assert the
+// one-way and runs on the empty → non-empty edge (the `useEffect` on `hasBatch` in
+// App.tsx — read its docblock for which of its guards are load-bearing and which are not,
+// which was measured rather than assumed); the cases below assert the
 // empty default, the swap, and that a manual pick is not overridden.
 // ===========================================================================
 
@@ -1283,12 +1285,21 @@ describe('below xl, Thumbnails and Formats are TABS', () => {
     expect(note.textContent).toContain('2 separate generations');
   });
 
-  it('🔴 the first batch moves the selection to Thumbnails — once, and only if untouched', async () => {
-    // 🔴 THE LATCH, FROM BOTH SIDES. The default is Formats because a first-run Thumbnails
-    // tab is empty; the moment a batch exists the primary object is back and the selection
-    // should follow it. A derivation from `historyEntries.length` would re-assert Thumbnails
-    // on every later batch and fight a viewer who had since chosen Formats, so App.tsx
-    // latches on the empty -> non-empty EDGE. That is the difference this case measures.
+  it('🔴 the first batch moves the selection to Thumbnails, and a later pick survives the next batch', async () => {
+    // 🔴 WHAT THIS CASE MEASURES, MUTATION-MEASURED RATHER THAN ASSUMED — and it is not
+    // what two earlier drafts of this comment said. Two claims:
+    //
+    //   1. THE LATCH FIRES. A first batch moves the selection to Thumbnails. Killed by
+    //      deleting the effect.
+    //   2. A TAB PICKED AFTER THAT BATCH SURVIVES THE NEXT BATCH. This one is killed only
+    //      by removing BOTH protections at once (keying the effect on the batch COUNT *and*
+    //      dropping `panelTouchedRef`) — measured: each mutant ALONE survives this case,
+    //      because either protection is sufficient on its own. So it is a BEHAVIOUR guard
+    //      on a property a viewer can feel, NOT regression coverage for either guard
+    //      individually. Labelled rather than counted.
+    //
+    // The case that DOES pin `panelTouchedRef` by itself is the next one — the pre-batch
+    // pick, which is the only sequence where the touched flag changes the outcome.
     await generateAt(INSIDE.md);
     const tabs = screen.getByTestId('yt-panel-tabs');
     expect(within(tabs).getByRole('tab', { name: 'Thumbnails' })).toHaveAttribute(
@@ -1309,7 +1320,64 @@ describe('below xl, Thumbnails and Formats are TABS', () => {
     await waitFor(() => expect(screen.getAllByTestId('yt-history-row').length).toBeGreaterThan(1));
     expect(
       screen.getByTestId('yt-panel-formats'),
-      'a second batch yanked the viewer off the Formats tab — the latch is not one-shot',
+      'a second batch yanked the viewer off a tab they had chosen — the touched guard is gone',
+    ).toBeVisible();
+    expect(within(tabs).getByRole('tab', { name: 'Formats' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+  });
+
+  it('🔴 a tab picked BEFORE the first batch is not overridden by it — the touched guard', async () => {
+    // 🔴 THE REACHABILITY CONTROL FOR `panelTouchedRef`, AND IT NEEDS THIS EXACT SEQUENCE.
+    // The latch is already one-shot, so the case above cannot see the touched guard at all:
+    // it switches AFTER the first batch, where the latch has fired and would not fire
+    // again. The guard is only observable while the latch is still ARMED — before the first
+    // batch — and only when the viewer's choice differs from what the latch would do.
+    //
+    // Clicking Thumbnails pre-batch is NOT that case: the latch would set Thumbnails too,
+    // so deleting the guard would change nothing and the mutant would survive. Clicking
+    // AWAY and BACK is: it leaves the viewer on Formats with `panelTouchedRef` set, so a
+    // latch that ignored the flag yanks them to Thumbnails on submit and one that honours it
+    // leaves them alone.
+    //
+    // 🔴 MEASURED, AND THIS IS THE ONLY CASE THAT KILLS THAT MUTANT. Deleting
+    // `panelTouchedRef` from the effect leaves the rest of the file green — including the
+    // "a later pick survives the next batch" case above, where the boolean dependency alone
+    // is enough. Without this sequence the guard is a line nothing executes against.
+    setBlockWidth(INSIDE.md);
+    uninstall = installMockMoneyHost({
+      ...VIEWER,
+      consentGranted: true,
+      cost: 8,
+      pollsUntilDone: 2,
+      buzzBalance: { blue: 100, green: 0, yellow: 0 },
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    const generateBtn = await screen.findByTestId('pm-generate');
+    const tabs = screen.getByTestId('yt-panel-tabs');
+
+    // Pre-batch: Formats is the default, so a bare "click Formats" would not be a CHANGE and
+    // would never reach `onChange`. Away and back is what sets the flag.
+    expect(screen.getByTestId('yt-panel-formats')).toBeVisible();
+    expect(screen.queryByTestId('yt-history')).not.toBeInTheDocument();
+    await user.click(within(tabs).getByRole('tab', { name: 'Thumbnails' }));
+    await user.click(within(tabs).getByRole('tab', { name: 'Formats' }));
+    expect(screen.getByTestId('yt-panel-formats')).toBeVisible();
+
+    // Now the first batch arrives. The latch is still armed — it has never fired — but the
+    // viewer has chosen, so it must not move the selection.
+    await user.type(screen.getByLabelText(/prompt/i), 'a serene mountain lake');
+    await user.click(generateBtn);
+    await screen.findByAltText(/generated result/i, {}, { timeout: 5000 });
+    // The precondition: there really IS a batch now, so the latch had something to fire on.
+    expect(screen.getByTestId('yt-panel-thumbnails')).toContainElement(
+      screen.getByTestId('yt-history'),
+    );
+    expect(
+      screen.getByTestId('yt-panel-formats'),
+      'the first batch overrode a tab the viewer had already picked',
     ).toBeVisible();
     expect(within(tabs).getByRole('tab', { name: 'Formats' })).toHaveAttribute(
       'aria-selected',

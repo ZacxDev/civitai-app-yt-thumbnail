@@ -506,8 +506,9 @@ export function App() {
    *
    * The swap back is the first-batch latch — the `useEffect` on `hasBatch`, next to
    * `historyEntries`: the moment there is a first batch, Thumbnails becomes the selected
-   * tab, because from then on it holds the app's primary object. ONE-WAY and ONE-SHOT, and
-   * it never overrides a manual choice.
+   * tab, because from then on it holds the app's primary object. ONE-WAY, and it never
+   * overrides a manual choice. Read that effect's docblock before touching it: it records
+   * which of its guards mutation testing showed to be load-bearing and which are not.
    *
    * 🔴 DELIBERATELY NOT PERSISTED. Every other preference this app remembers is a
    * property of the WORK (the prompt, the formats, the model); this is a property of
@@ -524,13 +525,6 @@ export function App() {
    * Buzz pool. A format checkbox is not a tab choice; only the tablist sets this.
    */
   const panelTouchedRef = useRef(false);
-  /**
-   * Has a batch ever existed in this session? The latch fires on the empty → non-empty
-   * EDGE, so a viewer who deletes their last row is not thrown back to Formats, and a
-   * viewer who switches to Formats after their first batch is not yanked back on the
-   * second.
-   */
-  const sawFirstBatchRef = useRef(false);
 
   // --- The published board ---
   const [boardOpen, setBoardOpen] = useState(false);
@@ -1977,17 +1971,29 @@ export function App() {
   /**
    * BELOW `xl`: hand the selected tab to Thumbnails the first time a batch exists.
    *
-   * 🔴 AN EDGE, NOT A CONDITION, AND THE DIFFERENCE IS THE WHOLE BEHAVIOUR. `narrowPanel`
-   * defaults to Formats because a first-run viewer's Thumbnails tab is EMPTY (see that
-   * state's docblock, and `showHistory`). The moment a batch exists the primary object is
-   * back, so the selection should follow it — ONCE. Written as a latch on the empty →
-   * non-empty transition rather than as a derivation from `historyEntries.length`, so:
+   * `narrowPanel` defaults to Formats because a first-run viewer's Thumbnails tab is EMPTY
+   * (see that state's docblock, and `showHistory`). The moment a batch exists the primary
+   * object is back, so the selection should follow it.
    *
-   *   - a viewer who switches to Formats AFTER their first batch stays there, through
-   *     every later batch (a derivation would re-assert Thumbnails on each one);
-   *   - a viewer who deletes their last row is not thrown back to Formats mid-task;
-   *   - a viewer who chose a tab BEFORE the first batch arrived is not overridden at all
-   *     — `panelTouchedRef`, the same discipline `accountTouchedRef` applies to the pool.
+   * 🔴 EXACTLY ONE GUARD HERE HAS AN OBSERVABLE EFFECT, AND IT IS `panelTouchedRef`. A
+   * viewer who picked a tab before the first batch arrived is not overridden — the same
+   * discipline `accountTouchedRef` applies to the Buzz pool. Mutation-measured: deleting it
+   * fails `a tab picked BEFORE the first batch is not overridden by it` in
+   * `responsive.test.tsx`, with that case's own message.
+   *
+   * 🔴 AND THE BOOLEAN DEPENDENCY IS *NOT* A SECOND GUARD, WHICH IS THE OPPOSITE OF WHAT
+   * TWO EARLIER DRAFTS OF THIS COMMENT CLAIMED. `hasBatch` is a boolean rather than
+   * `historyEntries.length`, so the effect runs once on the `false -> true` edge instead of
+   * once per batch — but keying it on the COUNT survives the whole suite (measured), because
+   * `panelTouchedRef` already suppresses every later firing: there is no route back to
+   * Formats after the first batch that does not set the touched flag. The boolean is kept
+   * because running an effect once is simpler than running it per batch, NOT because
+   * anything can see the difference. Said plainly so nobody reads it as protection.
+   *
+   * A third guard — a `sawFirstBatchRef` one-shot latch — was deleted after the same
+   * measurement: removing it, and keying on the count, both left every test green, and its
+   * only reachable case was non-empty -> empty -> non-empty (delete every row, then
+   * generate again), where moving the selection to Thumbnails is the right answer anyway.
    *
    * 🔴 IT FIRES AT SUBMIT, NOT AT COMPLETION, AND THAT IS RIGHT. `historyEntries` is the
    * join of stored rows with live workflows, so the row (and its skeletons) exists as
@@ -1995,14 +2001,13 @@ export function App() {
    * at it. It also fires for a RETURNING viewer whose stored rows arrive after mount,
    * which is the same claim: there is something in Thumbnails now.
    *
-   * No dependency on `narrowPanel`: this reads refs and `historyEntries.length` only, so
-   * it cannot re-run because of the state it sets.
+   * No dependency on `narrowPanel`: this reads one ref and one boolean, so it cannot
+   * re-run because of the state it sets.
    */
   const hasBatch = historyEntries.length > 0;
   useEffect(() => {
-    if (!hasBatch || sawFirstBatchRef.current) return;
-    sawFirstBatchRef.current = true;
-    if (!panelTouchedRef.current) setNarrowPanel('thumbnails');
+    if (!hasBatch || panelTouchedRef.current) return;
+    setNarrowPanel('thumbnails');
   }, [hasBatch]);
 
   /**
