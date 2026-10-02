@@ -428,7 +428,11 @@ describe('the popup cannot be clipped by the rail — the structural property', 
 
   /** Render at rail width with the menu open, and hand back the three nodes. */
   const openAtRailWidth = async () => {
-    setBlockWidth(1301); // inside `lg`, strictly between its boundaries
+    // 🔴 INSIDE `xl`, NOT `lg`. The rail moved to `xl` (see `shapeForTier`), so 1301 no
+    // longer renders a rail at all and this helper's `findByTestId('yt-rail')` would hang.
+    // 1523 is strictly between `xl`'s floor (1440) and the ultrawide threshold (1800), so
+    // it is the three-column rail WITHOUT the fourth column.
+    setBlockWidth(1523);
     uninstall = installMockMoneyHost({ ...VIEWER });
     const user = userEvent.setup();
     render(<App />);

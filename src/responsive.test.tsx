@@ -1,14 +1,14 @@
 import { readFileSync } from 'node:fs';
 
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { resolveBlockTier, type BlockSizeTier } from '@civitai/blocks-react';
 
 import { App, HERO_BANNER_SRC, SHELL_PADDING } from './App.js';
-import { layoutForTier } from './layout.js';
-import { IMAGE_MIN_PX } from './ui-styles.js';
+import { FORMATS_RAIL_WIDTH, ULTRAWIDE_MIN, layoutForTier } from './layout.js';
+import { IMAGE_MIN_PX, imageGridStyle, panelRowStyle } from './ui-styles.js';
 import { installMockMoneyHost } from './mock-buzz.js';
 import { DEFAULT_CHECKPOINT } from './models.js';
 import { palette, parseHex, type Palette } from './palette.js';
@@ -196,6 +196,71 @@ const INSIDE_ULTRAWIDE = 1907;
  */
 const TABLET_LANDSCAPE = 1180;
 
+/**
+ * The `xl` cutoff, and the pixel under it — the ONE boundary the three-column /
+ * tabs split turns on.
+ *
+ * 🔴 IT WAS THE `lg` CUTOFF (1184 / 1183) AND THE OPERATOR MOVED IT. At `lg` the
+ * three-column grid left ONE thumbnail per row where the tabbed layout renders three, so
+ * crossing 1183 → 1184 made the app's primary object smaller — two tiles lost on an
+ * ordinary 1280×800 laptop. The rail now starts at `xl`. The measurement is in
+ * `the thumbnail COUNT across the cutoff` below, which asserts both sides.
+ *
+ * 🔴 EVERY OTHER FIXTURE IN THIS FILE SITS STRICTLY INSIDE A TIER, DELIBERATELY, AND
+ * THAT IS WHY THIS PAIR EXISTS. An inside-the-tier fixture cannot tell `>= xl` from
+ * `> xl`: `INSIDE.lg` (1301) and `INSIDE.xl` (1523) are 222px apart, so a cutoff
+ * anywhere in 1302–1523 satisfies both. These two are adjacent integers on either side
+ * of the breakpoint, so they pin WHERE the swap happens rather than merely that it
+ * happens. They are on a boundary ON PURPOSE — the comparison IS the subject — which is
+ * the opposite of the `INSIDE` rule and not an exception to it.
+ */
+const XL_CUTOFF = 1440;
+const BELOW_XL_CUTOFF = 1439;
+
+/**
+ * The narrowest `lg` block — the OLD cutoff, kept because it is now the FLOOR of the band
+ * whose tile count must be flat. `resolveBlockTier` grades it in the cases that use it.
+ */
+const LG_FLOOR = 1184;
+
+/**
+ * Widths that get the three-column rail layout: the cutoff itself, then a middle of
+ * `xl`, and an ultrawide block. Boundary AND middles, named.
+ */
+const RAIL_WIDTHS = [XL_CUTOFF, INSIDE.xl, INSIDE_ULTRAWIDE] as const;
+
+/**
+ * Widths that get the tabbed one-column layout: every tier below `xl` — `lg` included,
+ * which is the change this round makes — plus the pixel immediately under the cutoff.
+ */
+const TAB_WIDTHS = [
+  INSIDE.base,
+  INSIDE.xs,
+  INSIDE.sm,
+  INSIDE.md,
+  INSIDE.lg,
+  BELOW_XL_CUTOFF,
+] as const;
+
+/** What the App's own `useUltrawide` seed resolves to for a stubbed `clientWidth`. */
+function ultrawideAt(width: number): boolean {
+  // The stub makes EVERY element report `width` as its `clientWidth`, and
+  // `useUltrawide` seeds from `clientWidth` (the padding box) right after `observe()`
+  // — so in this harness the threshold is compared against the block width itself.
+  // See `ULTRAWIDE_MIN`'s docblock for which box each observer really grades.
+  return width >= ULTRAWIDE_MIN;
+}
+
+/** The layout the App should resolve at a stubbed width, with no literals restated. */
+function expectedAt(width: number) {
+  return layoutForTier(resolveBlockTier(width), ultrawideAt(width));
+}
+
+/** The three-column track list the rail grid must emit at a given width. */
+function expectedRailTracks(width: number): string {
+  return `${expectedAt(width).railWidth}px minmax(0, 1fr) ${FORMATS_RAIL_WIDTH}px`;
+}
+
 const VIEWER = { viewer: { id: 2, username: 'dev', status: 'active' as const } };
 
 /** jsdom normalises a colour to `rgb(r, g, b)`; express the palette the same way. */
@@ -268,8 +333,12 @@ describe('the layout the App renders, at EVERY tier', () => {
     if (expected.rail) {
       const rail = screen.getByTestId('yt-rail');
       expect(screen.getByTestId('yt-main')).toBeInTheDocument();
+      // 🔴 THREE TRACKS NOW, NOT TWO: inputs rail | thumbnails | formats rail. The
+      // formats rail is a FIXED px track so the thumbnail grid keeps every pixel the
+      // block gains — see `FORMATS_RAIL_WIDTH` and the dedicated describe below for
+      // the arithmetic and the 50/50 mutant.
       expect(screen.getByTestId('yt-rail-grid').style.gridTemplateColumns).toBe(
-        `${expected.railWidth}px minmax(0, 1fr)`,
+        `${expected.railWidth}px minmax(0, 1fr) ${FORMATS_RAIL_WIDTH}px`,
       );
       // 🔴 STICKY IS LIVE IN PRODUCTION — and this line is annotated because the
       // version of it that shipped before this round said it was inert. Both host
@@ -281,15 +350,58 @@ describe('the layout the App renders, at EVERY tier', () => {
       // jsdom performs no layout, so it can never travel — and the pixels remain a
       // `deferred[]` item in `taste.json`.
       expect(rail.style.position).toBe('sticky');
-      // The prompt is IN the rail, and the format picker is NOT — that is the
+      // The prompt is IN the inputs rail, and the format picker is NOT — that is the
       // restructure, not just a second column existing.
       expect(rail).toContainElement(screen.getByLabelText(/prompt/i));
       expect(rail).not.toContainElement(grid);
-      expect(screen.getByTestId('yt-main')).toContainElement(grid);
+      // 🔴 AND THE PICKER IS NOT IN `yt-main` EITHER — THIS LINE USED TO ASSERT THAT IT
+      // WAS. It has its own column now, so `yt-main` holds the thumbnail surface and
+      // nothing else; a revert that stacks the picker back under the grid fails here
+      // rather than only in the dedicated describe below.
+      const formatsRail = screen.getByTestId('yt-formats-rail');
+      expect(formatsRail).toContainElement(grid);
+      expect(screen.getByTestId('yt-main')).not.toContainElement(grid);
+      // 🔴 AND ONLY THE PICKER IS IN THAT RAIL. Everything the picker OPENS — the
+      // composed-prompt textareas, the format editor, the published board — is in the MAIN
+      // column, because the rail's content box is 286px and those are full-width surfaces
+      // (two of them prompt textareas on the money path). Asserted in both directions, at
+      // every rail tier, so a revert that stuffs them back into the rail fails here.
+      expect(formatsRail).toContainElement(screen.getByTestId('yt-format-picker'));
+      expect(formatsRail).not.toContainElement(screen.getByTestId('yt-format-detail'));
+      expect(screen.getByTestId('yt-main')).toContainElement(
+        screen.getByTestId('yt-format-detail'),
+      );
+      // No tab control at the rail tiers: both surfaces are visible at once, so a
+      // switcher would be a control that hides something for no reason. Asserted by ROLE
+      // as well as by testid — a `SegmentedControl` rendered without the testid is still a
+      // tablist a viewer can press, and the testid query alone cannot see it. NOT
+      // `queryByRole('tablist')` — the Generate/Remix mode toggle is a `SegmentedControl`
+      // too and is present at every tier, so that query would always match and this would
+      // be a guard that can never pass. The two panel NAMES are the discriminating query.
+      expect(screen.queryByTestId('yt-panel-tabs')).not.toBeInTheDocument();
+      expect(screen.queryByRole('tab', { name: 'Thumbnails' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('tab', { name: 'Formats' })).not.toBeInTheDocument();
+      expect(screen.queryByTestId('yt-panel-thumbnails')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('yt-panel-formats')).not.toBeInTheDocument();
     } else {
       expect(screen.queryByTestId('yt-rail')).not.toBeInTheDocument();
       expect(screen.queryByTestId('yt-main')).not.toBeInTheDocument();
       expect(screen.queryByTestId('yt-rail-grid')).not.toBeInTheDocument();
+      // ...and neither is the formats rail: below `xl` there is one column, and the two
+      // output surfaces share it as tabs.
+      expect(screen.queryByTestId('yt-formats-rail')).not.toBeInTheDocument();
+      expect(screen.getByTestId('yt-panel-tabs')).toBeInTheDocument();
+      expect(screen.getByTestId('yt-panel-formats')).toContainElement(grid);
+      expect(screen.getByTestId('yt-panel-thumbnails')).not.toContainElement(grid);
+      // One column means picker AND detail are both in the Formats panel — there is no
+      // second column for the detail block to go to. The rail branch above asserts the
+      // split; this asserts there is nothing to split here.
+      expect(screen.getByTestId('yt-panel-formats')).toContainElement(
+        screen.getByTestId('yt-format-picker'),
+      );
+      expect(screen.getByTestId('yt-panel-formats')).toContainElement(
+        screen.getByTestId('yt-format-detail'),
+      );
     }
 
     // The one structural swap this app already shipped, still driven from the
@@ -315,8 +427,14 @@ describe('the layout the App renders, at EVERY tier', () => {
     expect(content()).not.toHaveAttribute('data-result-columns');
     expect(content()).toHaveAttribute('data-min-card', '220');
     expect(screen.getByTestId('yt-rail-grid').style.gridTemplateColumns).toBe(
-      '400px minmax(0, 1fr)',
+      `400px minmax(0, 1fr) ${FORMATS_RAIL_WIDTH}px`,
     );
+    // 🔴 THE INPUTS RAIL WIDENS AT ULTRAWIDE (340 → 400); THE FORMATS RAIL DOES NOT.
+    // That asymmetry is the constant's docblock argument, and this is the only case
+    // that can see it: the per-tier ladder above pins the third track at 320 for `lg`
+    // and `xl`, this pins it at 320 with the FIRST track at 400, so the two numbers
+    // are observed moving independently rather than together.
+    expect(expectedAt(INSIDE_ULTRAWIDE).railWidth).not.toBe(FORMATS_RAIL_WIDTH);
   });
 
   it('1523px and 1907px are the SAME tier — the difference is not the tier', async () => {
@@ -334,7 +452,7 @@ describe('the layout the App renders, at EVERY tier', () => {
     // about the tier.
     expect(content()).toHaveAttribute('data-min-card', '200');
     expect(screen.getByTestId('yt-rail-grid').style.gridTemplateColumns).toBe(
-      '340px minmax(0, 1fr)',
+      `340px minmax(0, 1fr) ${FORMATS_RAIL_WIDTH}px`,
     );
   });
 
@@ -406,7 +524,10 @@ describe('the layout the App renders, at EVERY tier', () => {
     // than picked — a magic number would drift the moment the shell's inset moved.
     // Whether the tail is reachable in pixels is unverified and carried as a
     // `deferred[]` item in `taste.json`.
-    setBlockWidth(INSIDE.lg);
+    //
+    // 🔴 `INSIDE.xl`, NOT `INSIDE.lg`. The rail moved to `xl`, so 1301 renders no rail at
+    // all and every assertion below would read an empty style off a missing element.
+    setBlockWidth(INSIDE.xl);
     uninstall = installMockMoneyHost(VIEWER);
     render(<App />);
     await screen.findByTestId('pm-generate');
@@ -431,14 +552,14 @@ describe('the layout the App renders, at EVERY tier', () => {
   });
 
   // =========================================================================
-  // THE HERO AT `lg`+ — the brand surface, in a pass whose subject is the brand
+  // THE HERO AT `xl`+ — the brand surface, in a pass whose subject is the brand
   // =========================================================================
 
-  it('the hero EXISTS in the rail layout, above both columns', async () => {
-    // 🔴 DELETING `{hero}` FROM THE `lg`+ BRANCH USED TO LEAVE THE SUITE GREEN.
+  it('the hero EXISTS in the rail layout, above all three columns', async () => {
+    // 🔴 DELETING `{hero}` FROM THE `xl`+ BRANCH USED TO LEAVE THE SUITE GREEN.
     // The hero was asserted only in the non-rail layout, so the app's brand surface
     // had no coverage at all on the widest screens — the ones this pass is about.
-    setBlockWidth(INSIDE.lg);
+    setBlockWidth(INSIDE.xl);
     uninstall = installMockMoneyHost(VIEWER);
     render(<App />);
     await screen.findByTestId('pm-generate');
@@ -461,8 +582,10 @@ describe('the layout the App renders, at EVERY tier', () => {
     //
     // Both widths are asserted, because either number alone passes against a
     // constant. The two fixtures are in different tiers AND on opposite sides of the
-    // rail boundary, which is the dimension the scaling keys on.
-    setBlockWidth(INSIDE.lg);
+    // rail boundary, which is the dimension the scaling keys on — `INSIDE.xl` since the
+    // boundary moved there; at `INSIDE.lg` both arms would now be the narrow value and the
+    // comparison would be two equal numbers.
+    setBlockWidth(INSIDE.xl);
     uninstall = installMockMoneyHost(VIEWER);
     render(<App />);
     await screen.findByTestId('pm-generate');
@@ -489,6 +612,872 @@ describe('the layout the App renders, at EVERY tier', () => {
 });
 
 // ===========================================================================
+// THE THIRD COLUMN — Formats gets its own FIXED rail beside the thumbnail grid.
+//
+// 🔴 THE DEFECT THIS SECTION EXISTS FOR, STATED AS THE MUTANT: a formats column
+// spelled `minmax(0, 1fr)` instead of a px length. It looks like the obvious way to
+// add a column, it is what a CSS-first instinct reaches for, and it costs the
+// thumbnail grid half of its row — at a 1440px block, 2 tiles become 1. The grid is
+// this app's primary object and the only surface that converts block width into
+// information; the picker is an `auto-fill` list with a 200px card floor whose appetite
+// stops at one column. See `FORMATS_RAIL_WIDTH` for the full arithmetic.
+//
+// 🔴 AND WHAT NONE OF IT MEASURES. jsdom lays nothing out. Every assertion below is
+// about the STYLE CONTRACT a browser would act on, plus arithmetic over the numbers in
+// that contract. No tile has been rendered, no rail has been seen to scroll, and the
+// three columns have never been observed side by side. A browser pass is still owed.
+// ===========================================================================
+
+/** The thumbnail grid's own gap, read off the shipped style rather than restated. */
+const TILE_GAP = Number(imageGridStyle().gap);
+
+/**
+ * How many `IMAGE_MIN_PX` tiles fit in a container, under `imageGridStyle()`'s rule.
+ *
+ * `auto-fill` + `minmax(min(300px, 100%), 1fr)` at `gap: TILE_GAP` fits n tiles when
+ * `n * IMAGE_MIN_PX + (n - 1) * TILE_GAP <= container`. Both inputs come from
+ * `ui-styles.ts`, so this cannot drift from the grid it is reasoning about.
+ */
+function tilesIn(containerPx: number): number {
+  return Math.max(0, Math.floor((containerPx + TILE_GAP) / (IMAGE_MIN_PX + TILE_GAP)));
+}
+
+/**
+ * The horizontal inset the images grid sits inside — ONE `panelRowStyle` (a history row),
+ * whose horizontal padding is the second value of its `padding` shorthand.
+ *
+ * Read off the shipped style rather than restated, and hoisted out of the one case that
+ * used to compute it inline because three cases need it now.
+ */
+function historyRowInset(): number {
+  const inset =
+    2 * Number.parseInt(String(panelRowStyle(palette.dark).padding).split(/\s+/)[1], 10);
+  // The control: a parse failure would read as `NaN` and quietly make every tile count
+  // `NaN`, which `toBe(3)` reports as a value mismatch rather than as a broken helper.
+  expect(inset, 'panelRowStyle’s padding shorthand no longer parses as `V H`').toBeGreaterThan(0);
+  return inset;
+}
+
+/** Every `data-testid` INSIDE a container, sorted — exact ids, never a prefix. */
+function testidsIn(el: HTMLElement): string[] {
+  return [...el.querySelectorAll('[data-testid]')]
+    .map((n) => n.getAttribute('data-testid') as string)
+    .sort();
+}
+
+describe('the formats rail is a FIXED third column, never a share of the thumbnails', () => {
+  let uninstall: (() => void) | undefined;
+
+  afterEach(() => {
+    uninstall?.();
+    uninstall = undefined;
+    restoreClientWidth?.();
+    restoreClientWidth = undefined;
+    restoreResizeObserver?.();
+    restoreResizeObserver = undefined;
+  });
+
+  async function renderAt(width: number) {
+    setBlockWidth(width);
+    uninstall = installMockMoneyHost(VIEWER);
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+  }
+
+  /**
+   * Unmount and uninstall, so a SECOND `renderAt` inside the same test starts from an
+   * empty document. The cross-boundary cases below render twice; without this every query
+   * would be ambiguous and could read the wrong tree.
+   */
+  async function teardownRail() {
+    uninstall?.();
+    uninstall = undefined;
+    cleanup();
+    restoreClientWidth?.();
+    restoreClientWidth = undefined;
+    restoreResizeObserver?.();
+    restoreResizeObserver = undefined;
+  }
+
+  it.each(RAIL_WIDTHS.map((w) => [w] as const))(
+    '🔴 at %ipx the THUMBNAILS track is the only flexible one',
+    async (width) => {
+      await renderAt(width);
+      const tracks = screen.getByTestId('yt-rail-grid').style.gridTemplateColumns;
+
+      // 🔴 THE STRUCTURAL CLAIMS COME FIRST, AND THE ORDER IS LOAD-BEARING. A whole-string
+      // `toBe` is strictly stronger than every structural check below it, so with the
+      // literal first NOTHING below it can ever execute on a failing run — the guards
+      // would read as coverage while being unreachable. Ordered this way the two halves
+      // are killed by DIFFERENT mutants: a second `fr` (the 50/50 split) dies on the
+      // track-count guard with its own message, and a wrong rail WIDTH passes every
+      // structural check and dies on the literal. Measured, both directions.
+      //
+      // EXACTLY ONE flexible track. A second `fr` anywhere is the 50/50 split, under
+      // whatever syntax — `1fr`, `minmax(0, 1fr)`, `minmax(200px, 1fr)` — and it is what
+      // takes the grid from 2 tiles to 1 at 1440px.
+      expect(
+        tracks.match(/fr\b/g),
+        `the rail grid has more than one flexible track: ${tracks}`,
+      ).toHaveLength(1);
+      // ...and the flexible one is the MIDDLE track, with a fixed px rail either side.
+      // A `%` would be the same defect in another unit, so it is rejected by name.
+      expect(tracks).toMatch(/^\d+px\s+minmax\(0,\s*1fr\)\s+\d+px$/);
+      expect(tracks).not.toContain('%');
+      expect(tracks.endsWith(`${FORMATS_RAIL_WIDTH}px`)).toBe(true);
+
+      // Then the literal, derived from the layout rather than restated: inputs rail (a px
+      // length that DOES vary by tier), thumbnails (the one `fr`), formats rail (a px
+      // length that does not).
+      expect(tracks).toBe(expectedRailTracks(width));
+
+      // The tier the tracks were chosen from, so a failure says WHY.
+      expect(document.querySelector('[data-block-tier]')).toHaveAttribute(
+        'data-block-tier',
+        resolveBlockTier(width),
+      );
+    },
+  );
+
+  it.each(RAIL_WIDTHS.map((w) => [w] as const))(
+    'at %ipx the picker is IN the formats rail and the thumbnails are in main',
+    async (width) => {
+      await renderAt(width);
+
+      const formatsRail = screen.getByTestId('yt-formats-rail');
+      const main = screen.getByTestId('yt-main');
+      const inputsRail = screen.getByTestId('yt-rail');
+
+      // 🔴 EXACT IDS, NEVER THE `yt-format-` PREFIX. `[data-testid^=yt-format-]` already
+      // matches the layout nodes (`yt-format-grid` / `-card` / `-check`) as well as the
+      // chips, so a prefix selector cannot be used for a count or a containment claim
+      // without silently meaning something else as the picker grows.
+      const grid = screen.getByTestId('yt-format-grid');
+      expect(formatsRail).toContainElement(grid);
+      expect(main).not.toContainElement(grid);
+      expect(inputsRail).not.toContainElement(grid);
+
+      // The three columns are three SIBLING children of the rail grid, in reading
+      // order: inputs | thumbnails | formats. Order is part of the operator's decision,
+      // and a grid with the right tracks can still put the wrong child in each.
+      const railGrid = screen.getByTestId('yt-rail-grid');
+      expect([...railGrid.children]).toEqual([inputsRail, main, formatsRail]);
+
+      // The prompt stays in the INPUTS rail — the picker moving must not have taken
+      // anything else with it.
+      expect(inputsRail).toContainElement(screen.getByLabelText(/prompt/i));
+      expect(formatsRail).not.toContainElement(screen.getByLabelText(/prompt/i));
+
+      // 🔴 THE RAIL HOLDS THE PICKER AND NOTHING ELSE. `yt-format-detail` — the
+      // composed-prompt textareas, the format editor's mount point and the published
+      // board — belongs to MAIN, because 286px of rail content box is not a surface you
+      // edit a prompt in. Asserted as the rail's whole formats content, not just as
+      // "the detail block is somewhere else": the rail's only `yt-format-*` container is
+      // the picker.
+      expect(formatsRail).toContainElement(screen.getByTestId('yt-format-picker'));
+      expect(formatsRail).not.toContainElement(screen.getByTestId('yt-format-detail'));
+      expect(main).toContainElement(screen.getByTestId('yt-format-detail'));
+      expect(inputsRail).not.toContainElement(screen.getByTestId('yt-format-detail'));
+
+      // ...and within MAIN the detail block is LAST, so the thumbnails stay the top of
+      // their own column. Asserted structurally (last child of the column's `Stack`)
+      // rather than against the history surface, because `showHistory` renders NOTHING
+      // for a signed-in viewer with zero rows and this case does not generate. The
+      // stronger version — the detail block after a REAL history row — is in the seam case
+      // below, which does.
+      const detail = screen.getByTestId('yt-format-detail');
+      expect(detail.parentElement?.lastElementChild).toBe(detail);
+    },
+  );
+
+  it.each(RAIL_WIDTHS.map((w) => [w] as const))(
+    'at %ipx the formats rail is HEIGHT-BOUNDED and scrolls its own overflow',
+    async (width) => {
+      // 🔴 WHY THIS MATTERS MORE HERE THAN ON THE INPUTS RAIL. The picker is about to go
+      // from 6 formats to 12 (a parallel change), and at `FORMATS_RAIL_WIDTH` the
+      // `auto-fill` grid is ONE card column — so the rail's height grows LINEARLY with the
+      // format count, and an unbounded sticky column strands the tail of the list below
+      // the fold for the whole sticky range. That is the failure mode `railStyle`
+      // documents for the Generate button. Nothing here assumes 6, and the bound is
+      // asserted as a formula over `SHELL_PADDING` rather than a px total, so twelve
+      // formats cannot quietly outgrow it.
+      //
+      // 🔴 WHAT IS NO LONGER AT RISK HERE: the composed-prompt boxes, the format editor
+      // and the published board. They used to sit under the cards in this same scrollport,
+      // so "+ New" opened an editor far below the fold of a column the viewer was not
+      // looking at. They are in the MAIN column now (`yt-format-detail`), which is why
+      // this case is about the LIST's length and nothing else.
+      await renderAt(width);
+      const formatsRail = screen.getByTestId('yt-formats-rail');
+
+      expect(formatsRail.style.overflowY).toBe('auto');
+      expect(formatsRail.style.maxHeight).toBe(`calc(100dvh - ${SHELL_PADDING * 2}px)`);
+      expect(formatsRail.style.position).toBe('sticky');
+      expect(formatsRail.style.top).toBe(`${SHELL_PADDING}px`);
+      // The bound is derived from the shell's inset, not picked — two insets, one above
+      // and one below — so it moves with the shell rather than beside it.
+      expect(formatsRail.style.maxHeight).toContain(String(SHELL_PADDING * 2));
+    },
+  );
+
+  it('the two rails share ONE chrome contract, not two copies of it', async () => {
+    // 🔴 A SEAM GUARD, AND IT PINS A RELATIONSHIP RATHER THAN A COMPONENT. Both rails
+    // are painted by the same `railStyle(pal)`, and the property that must survive is
+    // that they cannot DISAGREE — the half that would drift first is the height bound,
+    // which is the half that keeps each rail's tail reachable. Asserted as equality of
+    // the emitted declarations, so a second copy of the chrome fails here even if every
+    // individual value happens to be right on the day it is written.
+    await renderAt(INSIDE.xl);
+    const inputsRail = screen.getByTestId('yt-rail');
+    const formatsRail = screen.getByTestId('yt-formats-rail');
+
+    for (const prop of [
+      'position',
+      'top',
+      'maxHeight',
+      'overflowY',
+      'alignSelf',
+      'padding',
+      'borderRadius',
+      'border',
+      'backgroundColor',
+      'boxSizing',
+    ] as const) {
+      expect(
+        formatsRail.style[prop],
+        `the formats rail's ${prop} differs from the inputs rail's`,
+      ).toBe(inputsRail.style[prop]);
+    }
+    // The positive control: these really are non-empty declarations, so the loop above
+    // is not comparing ten empty strings to ten empty strings.
+    expect(formatsRail.style.overflowY).not.toBe('');
+    expect(formatsRail.style.maxHeight).not.toBe('');
+  });
+
+  it.each([
+    [XL_CUTOFF, 2],
+    [INSIDE.xl, 2],
+    [INSIDE_ULTRAWIDE, 3],
+  ] as const)(
+    '🔴 at %ipx the FIXED rail leaves %i thumbnail columns, where a 50/50 split would take one',
+    async (BLOCK, expectedTiles) => {
+      // 🔴 THE REGRESSION CASE, EXPRESSED IN TILES RATHER THAN IN CSS. The assertions
+      // above pin the track list; this one says what the track list is FOR, because
+      // "there is exactly one `fr`" reads as a style nit while the stake is how many
+      // thumbnails a viewer can compare at once.
+      //
+      // Every number is read off the shipped code — `SHELL_PADDING`, the rail grid's own
+      // `gap`, `panelRowStyle`'s inset, `IMAGE_MIN_PX` and `imageGridStyle()`'s gap — so
+      // nothing here is a second copy of a layout constant.
+      //
+      // 🔴 THREE WIDTHS NOW, AND THE REASON IS THE DEFECT THIS ROUND FIXED. The earlier
+      // version of this case ran at ONE width — 1440 — and that is EXACTLY why it could
+      // not see that the rail starting at `lg` left one tile per row across the whole
+      // 1184–1439 band. One width cannot see a band. The three here are the BOUNDARY
+      // (1440, the narrowest block that gets the rail at all, and the arithmetic the
+      // constant's docblock argues at) and two MIDDLES (1523 inside `xl`; 1907 inside `xl`
+      // AND above the ultrawide threshold, where the inputs rail widens to 400 and the
+      // grid still gains a tile). The expected count is a PARAMETER, so a change that
+      // makes every width agree fails rather than passing on a flat assertion.
+      //
+      // 🔴 WHAT THIS CASE IS AND IS NOT, MEASURED. The 50/50 figure is COMPUTED here, not
+      // read from the DOM, so this case does NOT die on a mutant that puts a second `fr`
+      // in `railGridStyle` — the guards above that one are what kill that, and they were
+      // watched doing it. What this one is: an invariant guard tying `FORMATS_RAIL_WIDTH`,
+      // `SHELL_PADDING`, the rail grid's gap, `panelRowStyle`'s inset and `IMAGE_MIN_PX`
+      // to a TILE COUNT, so none of them can move without someone reading what it costs
+      // the grid. It also dies on a swapped track order (the parsed inputs-rail width
+      // stops matching the layout's). Its reachability control is a rail widened to 420px:
+      // that reports `expected 1 to be 2`, i.e. the case really can see a width that costs
+      // a column. Labelled rather than counted as regression coverage for the CSS.
+      await renderAt(BLOCK);
+      expect(document.querySelector('[data-block-tier]')).toHaveAttribute('data-block-tier', 'xl');
+      expect(document.querySelector('[data-ultrawide]')).toHaveAttribute(
+        'data-ultrawide',
+        String(ultrawideAt(BLOCK)),
+      );
+
+      const railGrid = screen.getByTestId('yt-rail-grid');
+      const gridGap = Number.parseInt(railGrid.style.gap, 10);
+      const inputsRailPx = Number.parseInt(railGrid.style.gridTemplateColumns, 10);
+      expect(gridGap).toBeGreaterThan(0);
+      expect(inputsRailPx).toBe(expectedAt(BLOCK).railWidth);
+
+      const rowInset = historyRowInset();
+      const contentPx = BLOCK - 2 * SHELL_PADDING;
+
+      // What ships: two fixed rails and one flexible middle, across two gaps.
+      const fixedRailMain = contentPx - inputsRailPx - FORMATS_RAIL_WIDTH - 2 * gridGap;
+      // The mutant: the same area split 50/50 between thumbnails and formats.
+      const halfSplitMain = Math.floor((contentPx - inputsRailPx - 2 * gridGap) / 2);
+
+      expect(tilesIn(fixedRailMain - rowInset)).toBe(expectedTiles);
+
+      // The claim, as a comparison rather than two literals: a fixed rail always leaves
+      // the grid MORE tiles than a fractional one would.
+      expect(
+        tilesIn(fixedRailMain - rowInset),
+        `a fixed ${FORMATS_RAIL_WIDTH}px formats rail leaves ${fixedRailMain}px of main ` +
+          `(${fixedRailMain - rowInset}px inside the history row) and a 50/50 split would ` +
+          `leave ${halfSplitMain}px (${halfSplitMain - rowInset}px)`,
+      ).toBeGreaterThan(tilesIn(halfSplitMain - rowInset));
+    },
+  );
+
+  it('🔴 the thumbnail COUNT across the cutoff: 1439 tabs gets THREE, 1440 rail gets TWO', async () => {
+    // 🔴 THE CASE THE PREVIOUS ROUND DID NOT HAVE, AND THE ONE THE AUDIT'S 🔴 F1 WAS. The
+    // rail used to start at `lg`, and nothing in this file measured the tile count on BOTH
+    // SIDES of that boundary — so a layout that LOST two tiles by getting one pixel wider
+    // shipped with a full green suite. One width cannot see a cliff; a pair of adjacent
+    // integers can, and this is that pair at the boundary the rail now starts at.
+    //
+    // What it pins, in both directions:
+    //   - 1439 (the widest tabbed block, `lg`) renders ONE column capped at
+    //     `TWO_COLUMN_MAX_WIDTH`, so the grid container is the cap less one history-row
+    //     inset -> 3 tiles.
+    //   - 1440 (the narrowest rail block, `xl`) renders three columns, so the grid gets
+    //     what is left after two fixed rails and two gaps -> 2 tiles.
+    //   - the step is therefore exactly ONE tile, and it is asserted as `<= 1` rather than
+    //     `=== 1`: a future change that removes the step entirely should pass, and only a
+    //     change that makes it WORSE should fail.
+    //
+    // 🔴 AND THE CAP IS WHY THE STEP IS ONE. Uncapped, 1439 would render a 1391px content
+    // column -> 4 tiles and the step would be TWO, which is the same cliff relocated. That
+    // is the whole reason `TWO_COLUMN_MAX_WIDTH` binds inside `lg`; `layout.test.ts` pins
+    // the cap, this pins what the cap buys. Measured here rather than asserted from the
+    // constant: the tabbed arm reads the emitted `maxWidth` off the DOM.
+    const rowInset = historyRowInset();
+
+    // --- The tabbed side: 1439px, one capped column.
+    await renderAt(BELOW_XL_CUTOFF);
+    expect(document.querySelector('[data-block-tier]')).toHaveAttribute('data-block-tier', 'lg');
+    expect(screen.getByTestId('yt-panel-tabs')).toBeInTheDocument();
+    expect(screen.queryByTestId('yt-rail-grid')).not.toBeInTheDocument();
+    // The column's width is the EMITTED cap, or the block's content box if it is narrower.
+    const capPx = Number.parseInt(content().style.maxWidth, 10);
+    expect(capPx, 'the tabbed column is uncapped at 1439 — read the cap, do not assume it')
+      .toBeGreaterThan(0);
+    const tabbedColumn = Math.min(BELOW_XL_CUTOFF - 2 * SHELL_PADDING, capPx);
+    const tabbedTiles = tilesIn(tabbedColumn - rowInset);
+    expect(tabbedTiles).toBe(3);
+
+    // --- The rail side: 1440px, three columns.
+    await teardownRail();
+    await renderAt(XL_CUTOFF);
+    expect(document.querySelector('[data-block-tier]')).toHaveAttribute('data-block-tier', 'xl');
+    expect(screen.queryByTestId('yt-panel-tabs')).not.toBeInTheDocument();
+    const railGrid = screen.getByTestId('yt-rail-grid');
+    const gridGap = Number.parseInt(railGrid.style.gap, 10);
+    const inputsRailPx = Number.parseInt(railGrid.style.gridTemplateColumns, 10);
+    const railMain =
+      XL_CUTOFF - 2 * SHELL_PADDING - inputsRailPx - FORMATS_RAIL_WIDTH - 2 * gridGap;
+    const railTiles = tilesIn(railMain - rowInset);
+    expect(railTiles).toBe(2);
+
+    // The step, as the claim rather than as two literals.
+    expect(
+      tabbedTiles - railTiles,
+      `crossing ${BELOW_XL_CUTOFF} -> ${XL_CUTOFF} costs the thumbnail grid ` +
+        `${tabbedTiles - railTiles} tiles (${tabbedTiles} -> ${railTiles}). One is the ` +
+        `accepted price of the formats rail; two is the defect that moved the rail off ` +
+        `\`lg\` in the first place.`,
+    ).toBeLessThanOrEqual(1);
+    // ...and the two sides really are different layouts, so the comparison is not one
+    // shape measured twice.
+    expect(resolveBlockTier(BELOW_XL_CUTOFF)).not.toBe(resolveBlockTier(XL_CUTOFF));
+  });
+
+  it('🔴 the tile count is FLAT across `lg` — the band the one-width case could not see', async () => {
+    // 🔴 A BAND, NOT A POINT, AND THAT DISTINCTION IS THE AUDIT FINDING. `lg` runs
+    // 1184–1439. The rail-at-`lg` layout gave ONE tile at the bottom of that band and two
+    // at the top; the capped tabbed layout gives THREE at every width in it, because the
+    // cap stops the column growing. Asserted at the FLOOR, a MIDDLE and the TOP — named,
+    // so the claim carries its own scope — because "3 tiles at `lg`" measured once is a
+    // claim about one width.
+    const rowInset = historyRowInset();
+    const widths = [LG_FLOOR, INSIDE.lg, BELOW_XL_CUTOFF];
+    expect(widths.map(resolveBlockTier)).toEqual(['lg', 'lg', 'lg']);
+
+    const counts: number[] = [];
+    for (const [i, w] of widths.entries()) {
+      if (i > 0) await teardownRail();
+      await renderAt(w);
+      expect(document.querySelector('[data-block-tier]')).toHaveAttribute('data-block-tier', 'lg');
+      // No rail anywhere in the band — that IS the change.
+      expect(screen.queryByTestId('yt-formats-rail')).not.toBeInTheDocument();
+      const capPx = Number.parseInt(content().style.maxWidth, 10);
+      counts.push(tilesIn(Math.min(w - 2 * SHELL_PADDING, capPx) - rowInset));
+    }
+
+    expect(counts, `tile counts at ${widths.join('/')}px`).toEqual([3, 3, 3]);
+    // The positive control: this arithmetic CAN produce a number other than 3, so the
+    // flatness above is a measurement and not a constant. A block one pixel wider is the
+    // rail tier, where the same helper returns 2 — asserted in the cutoff case above.
+    expect(tilesIn(640 - rowInset)).toBe(2);
+    expect(tilesIn(300 - rowInset)).toBe(0);
+  });
+});
+
+// ===========================================================================
+// BELOW `xl` — ONE column, so Thumbnails and Formats become TABS.
+//
+// 🔴 WHY TABS AND NOT A STACK. Below `xl` there is one column, and stacking the picker
+// under the grid puts the two surfaces at two different scroll positions on exactly the
+// devices with the least scrollport — the same problem the rail solves at the wide end.
+// The control is the pack's `SegmentedControl`, which is already this app's switcher
+// idiom (Generate / Remix), so a viewer meets one control shape rather than two.
+//
+// 🔴 BOTH PANELS STAY MOUNTED; `display` IS WHAT SWITCHES. The inactive panel holds real
+// state — a half-written custom format, a fetched published board, an in-flight batch's
+// skeletons — and `display: none` removes it from the accessibility tree as well as the
+// page, so a screen reader still hears exactly one panel. That also makes the two panels'
+// content identical to the three-column layout's BY CONSTRUCTION, which the last case
+// here asserts as a set equality rather than as a hand-written ledger.
+//
+// 🔴 THE DEFAULT TAB IS FORMATS, NOT THUMBNAILS, AND IT SWAPS ON THE FIRST BATCH. A
+// first-run viewer has no thumbnails at all — `showHistory` renders the surface as nothing
+// for a signed-in viewer with zero rows — so selecting Thumbnails by default put an EMPTY
+// panel on screen with the one actionable surface hidden behind a tap. The latch is
+// one-way and runs on the empty → non-empty edge (the `useEffect` on `hasBatch` in
+// App.tsx — read its docblock for which of its guards are load-bearing and which are not,
+// which was measured rather than assumed); the cases below assert the
+// empty default, the swap, and that a manual pick is not overridden.
+// ===========================================================================
+
+describe('below xl, Thumbnails and Formats are TABS', () => {
+  let uninstall: (() => void) | undefined;
+
+  afterEach(() => {
+    uninstall?.();
+    uninstall = undefined;
+    restoreClientWidth?.();
+    restoreClientWidth = undefined;
+    restoreResizeObserver?.();
+    restoreResizeObserver = undefined;
+  });
+
+  async function renderAt(width: number, host: Parameters<typeof installMockMoneyHost>[0] = VIEWER) {
+    setBlockWidth(width);
+    uninstall = installMockMoneyHost(host);
+    render(<App />);
+    await screen.findByTestId('pm-generate');
+  }
+
+  /**
+   * Unmount the tree and uninstall the host, so the NEXT render inside the same test
+   * starts from an empty document.
+   *
+   * 🔴 `cleanup()` RATHER THAN A SECOND `render()` BESIDE THE FIRST. The rest of this
+   * file renders twice and reads `getAllByTestId(...).at(-1)`, which works but leaves
+   * every query ambiguous — and the cases here compare two renders' CONTENTS, where an
+   * ambiguous query would silently read the wrong tree. One tree at a time instead.
+   */
+  async function teardown() {
+    uninstall?.();
+    uninstall = undefined;
+    cleanup();
+    restoreClientWidth?.();
+    restoreClientWidth = undefined;
+    restoreResizeObserver?.();
+    restoreResizeObserver = undefined;
+  }
+
+  /** Re-render at another width, inside one test, in a fresh document. */
+  async function rerenderAt(width: number, host: Parameters<typeof installMockMoneyHost>[0]) {
+    await teardown();
+    await renderAt(width, host);
+  }
+
+  /** Drive the real money path to a succeeded run, so both panels have real content. */
+  async function generateAt(width: number) {
+    setBlockWidth(width);
+    uninstall = installMockMoneyHost({
+      ...VIEWER,
+      consentGranted: true,
+      cost: 8,
+      pollsUntilDone: 2,
+      buzzBalance: { blue: 100, green: 0, yellow: 0 },
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    const generateBtn = await screen.findByTestId('pm-generate');
+    await user.type(screen.getByLabelText(/prompt/i), 'a serene mountain lake');
+    await user.click(generateBtn);
+    await screen.findByAltText(/generated result/i, {}, { timeout: 5000 });
+  }
+
+  it.each(TAB_WIDTHS.map((w) => [w] as const))(
+    '🔴 at %ipx the tab control is a real tablist and FORMATS is selected while there is nothing to show',
+    async (width) => {
+      // 🔴 THE DEFAULT IS FORMATS AND THAT IS THE OPERATOR'S DECISION, NOT A SLIP. This
+      // case asserted `Thumbnails ... selected` one revision ago. A first-run viewer has no
+      // rows, and `showHistory` renders the thumbnail surface as NOTHING in exactly that
+      // state — so the old default put an empty selected panel on screen and hid the only
+      // surface they could act on. The ORDER of the tabs is unchanged (Thumbnails first,
+      // because it is the primary object); only the initial SELECTION moved.
+      await renderAt(width);
+      const tabs = screen.getByTestId('yt-panel-tabs');
+      expect(tabs).toHaveAttribute('role', 'tablist');
+
+      // The LABELS and their ORDER, as a whole list rather than two `toContain`s.
+      expect(within(tabs).getAllByRole('tab').map((t) => t.textContent)).toEqual([
+        'Thumbnails',
+        'Formats',
+      ]);
+      expect(within(tabs).getByRole('tab', { name: 'Formats' })).toHaveAttribute(
+        'aria-selected',
+        'true',
+      );
+      expect(within(tabs).getByRole('tab', { name: 'Thumbnails' })).toHaveAttribute(
+        'aria-selected',
+        'false',
+      );
+
+      // 🔴 THE PRECONDITION, ASSERTED RATHER THAN ASSUMED. "Formats by default" is only
+      // right while there is nothing in Thumbnails; if this host ever settled with rows the
+      // expectation above would be the WRONG one and this case would be pinning the latch
+      // failing to fire. `yt-history` absent IS `showHistory` returning false.
+      expect(screen.queryByTestId('yt-history')).not.toBeInTheDocument();
+
+      // Both panels mounted; exactly one visible. `toBeVisible()` reads the
+      // `display: none` — it is the one hiding spelling jsdom can actually observe.
+      expect(screen.getByTestId('yt-panel-formats')).toBeVisible();
+      expect(screen.getByTestId('yt-panel-thumbnails')).not.toBeVisible();
+      expect(screen.getByTestId('yt-panel-thumbnails')).toBeInTheDocument();
+
+      // 🔴 AND THE FORMAT CONTROLS ARE THEREFORE REACHABLE WITHOUT A TAB PRESS, which is
+      // the whole point of the default. `toBeVisible()` on the controls themselves, not
+      // just on the panel: `userEvent.click` succeeds on a `display: none` subtree in jsdom
+      // (it gates on `pointer-events`, not visibility), so a test that only CLICKS them
+      // cannot tell a reachable control from a hidden one.
+      for (const id of ['yt-format-grid', 'yt-format-cost-note', 'yt-format-new']) {
+        expect(screen.getByTestId(id), `${id} is not visible on a first render`).toBeVisible();
+      }
+
+      // The tier the decision was made from, so a failure says WHY.
+      expect(document.querySelector('[data-block-tier]')).toHaveAttribute(
+        'data-block-tier',
+        resolveBlockTier(width),
+      );
+    },
+  );
+
+  // 🔴 `at %ipx there is NO tab control` (×4 widths) WAS DELETED HERE. Its four assertions
+  // are the four the per-tier ladder at the top of this file already makes inside its
+  // `expected.rail` branch, at the same widths and from the same render — including the
+  // `queryByRole('tab', …)` half, which was moved up there with this deletion so nothing
+  // was lost in kind. Four full App renders for a duplicated claim is the cost; the
+  // boundary case below is what pins WHERE the control stops rendering.
+
+  it('🔴 1439px tabs and 1440px gets three columns — the cutoff, pinned on both sides', async () => {
+    // 🔴 EVERY OTHER FIXTURE SITS INSIDE A TIER, SO NONE OF THEM CAN SEE WHERE THE
+    // CUTOFF IS. `INSIDE.lg` is 1301 and `INSIDE.xl` is 1523, so a cutoff anywhere in
+    // 1302–1523 satisfies the whole matrix. These are adjacent integers.
+    //
+    // 🔴 THE PAIR MOVED FROM 1183/1184 TO 1439/1440 WITH THE RAIL. The old pair pinned the
+    // boundary correctly and said nothing about what crossing it COST — which is how a
+    // two-tile loss shipped green. `the thumbnail COUNT across the cutoff` above is the
+    // half this case does not cover.
+    await renderAt(BELOW_XL_CUTOFF);
+    expect(screen.getByTestId('yt-panel-tabs')).toBeInTheDocument();
+    expect(screen.queryByTestId('yt-formats-rail')).not.toBeInTheDocument();
+    expect(document.querySelector('[data-block-tier]')).toHaveAttribute('data-block-tier', 'lg');
+
+    await rerenderAt(XL_CUTOFF, VIEWER);
+    expect(screen.getByTestId('yt-formats-rail')).toBeInTheDocument();
+    expect(screen.queryByTestId('yt-panel-tabs')).not.toBeInTheDocument();
+    expect(screen.getByTestId('yt-rail-grid').style.gridTemplateColumns).toBe(
+      expectedRailTracks(XL_CUTOFF),
+    );
+    // One pixel of block width is the whole difference, so the two renders must disagree
+    // about the tier as well — otherwise this passes against one shape rendered twice.
+    expect(document.querySelector('[data-block-tier]')).toHaveAttribute('data-block-tier', 'xl');
+    expect(resolveBlockTier(BELOW_XL_CUTOFF)).not.toBe(resolveBlockTier(XL_CUTOFF));
+  });
+
+  it('switching tabs swaps WHICH panel is visible, in both directions', async () => {
+    await renderAt(INSIDE.base);
+    const user = userEvent.setup();
+    const tabs = screen.getByTestId('yt-panel-tabs');
+    const thumbnailsPanel = screen.getByTestId('yt-panel-thumbnails');
+    const formatsPanel = screen.getByTestId('yt-panel-formats');
+
+    // Formats is the default on a first render (nothing in Thumbnails yet).
+    expect(formatsPanel).toBeVisible();
+    expect(thumbnailsPanel).not.toBeVisible();
+
+    await user.click(within(tabs).getByRole('tab', { name: 'Thumbnails' }));
+    expect(thumbnailsPanel).toBeVisible();
+    expect(formatsPanel).not.toBeVisible();
+    expect(within(tabs).getByRole('tab', { name: 'Thumbnails' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+
+    // 🔴 AND BACK. A one-way test passes against an `onChange` that can only ever set
+    // one value, which is a real way to write this wrong.
+    await user.click(within(tabs).getByRole('tab', { name: 'Formats' }));
+    expect(formatsPanel).toBeVisible();
+    expect(thumbnailsPanel).not.toBeVisible();
+    expect(within(tabs).getByRole('tab', { name: 'Formats' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+  });
+
+  it('🔴 both panels are role=tabpanel AND focusable — a keyboard user can leave the tablist', async () => {
+    // 🔴 A `role="tabpanel"` THAT IS NOT FOCUSABLE IS A DEAD END FOR A KEYBOARD USER. The
+    // expected behaviour is that Tab from the tablist lands ON the selected panel; without
+    // `tabIndex` the panel is skipped entirely and focus jumps to the next interactive
+    // thing after it. Asserted as the attribute rather than by driving a Tab press, because
+    // jsdom does not implement sequential focus navigation — stated so nobody reads this as
+    // a keyboard-behaviour measurement. The `aria-controls` / `aria-labelledby` association
+    // is genuinely blocked by the pack's `SegmentedControl` API and is documented in
+    // App.tsx; `tabIndex` is not blocked, which is why it is asserted and they are not.
+    await renderAt(INSIDE.md);
+    for (const id of ['yt-panel-thumbnails', 'yt-panel-formats']) {
+      const panel = screen.getByTestId(id);
+      expect(panel, `${id} is not a tabpanel`).toHaveAttribute('role', 'tabpanel');
+      expect(panel, `${id} is not focusable — a keyboard user cannot land on it`).toHaveAttribute(
+        'tabindex',
+        '0',
+      );
+    }
+  });
+
+  it('the format controls are REACHABLE on the Formats tab, and were only hidden', async () => {
+    // The panel being `display: none` must not mean the picker is absent — the whole
+    // point of keeping both mounted is that nothing is torn down. Exact ids.
+    //
+    // 🔴 THIS CASE NOW SWITCHES AWAY AND BACK, BECAUSE THE DEFAULT IS FORMATS. Driving the
+    // picker on the DEFAULT tab would no longer exercise a hidden-then-shown panel at all —
+    // and the hidden case is the one that matters, since `userEvent.click` succeeds on a
+    // `display: none` subtree in jsdom and so cannot by itself tell reachable from hidden.
+    // So: assert it hidden, switch to Thumbnails and back, then drive it.
+    await renderAt(INSIDE.sm);
+    const user = userEvent.setup();
+    const tabs = screen.getByTestId('yt-panel-tabs');
+    const formatsPanel = screen.getByTestId('yt-panel-formats');
+    for (const id of ['yt-format-grid', 'yt-format-cost-note', 'yt-format-new', 'yt-board-toggle']) {
+      expect(formatsPanel, `${id} is not inside the formats panel`).toContainElement(
+        screen.getByTestId(id),
+      );
+    }
+
+    // Hide it, and assert it really is hidden — otherwise the "and back" below proves
+    // nothing about a panel that was never off screen.
+    await user.click(within(tabs).getByRole('tab', { name: 'Thumbnails' }));
+    expect(formatsPanel).not.toBeVisible();
+    expect(screen.getByTestId('yt-format-cost-note')).not.toBeVisible();
+
+    // ...and after switching back, the picker is VISIBLE and interactive: toggling a second
+    // format changes the cost disclosure, which is the money path, not just a style. The
+    // `toBeVisible()` is load-bearing — a click alone would pass on a hidden panel.
+    await user.click(within(tabs).getByRole('tab', { name: 'Formats' }));
+    expect(screen.getByTestId('yt-format-grid')).toBeVisible();
+    const unselected = screen
+      .getAllByTestId('yt-format-card')
+      .find((c) => c.querySelector('[role="checkbox"][aria-checked="false"]'));
+    expect(unselected, 'no unselected format card to click').toBeDefined();
+    await user.click(unselected!.querySelector('[role="checkbox"]') as HTMLElement);
+    const note = screen.getByTestId('yt-format-cost-note');
+    expect(note).toBeVisible();
+    expect(note.textContent).toContain('2 separate generations');
+  });
+
+  it('🔴 the first batch moves the selection to Thumbnails, and a later pick survives the next batch', async () => {
+    // 🔴 WHAT THIS CASE MEASURES, MUTATION-MEASURED RATHER THAN ASSUMED — and it is not
+    // what two earlier drafts of this comment said. Two claims:
+    //
+    //   1. THE LATCH FIRES. A first batch moves the selection to Thumbnails. Killed by
+    //      deleting the effect.
+    //   2. A TAB PICKED AFTER THAT BATCH SURVIVES THE NEXT BATCH. This one is killed only
+    //      by removing BOTH protections at once (keying the effect on the batch COUNT *and*
+    //      dropping `panelTouchedRef`) — measured: each mutant ALONE survives this case,
+    //      because either protection is sufficient on its own. So it is a BEHAVIOUR guard
+    //      on a property a viewer can feel, NOT regression coverage for either guard
+    //      individually. Labelled rather than counted.
+    //
+    // The case that DOES pin `panelTouchedRef` by itself is the next one — the pre-batch
+    // pick, which is the only sequence where the touched flag changes the outcome.
+    await generateAt(INSIDE.md);
+    const tabs = screen.getByTestId('yt-panel-tabs');
+    expect(within(tabs).getByRole('tab', { name: 'Thumbnails' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(screen.getByTestId('yt-panel-thumbnails')).toBeVisible();
+    // The precondition, so this is not passing against a latch that never fired: there IS
+    // something in Thumbnails now.
+    expect(screen.getByTestId('yt-history')).toBeVisible();
+
+    // ...and a manual switch AFTER the first batch is not undone by a SECOND batch.
+    const user = userEvent.setup();
+    await user.click(within(tabs).getByRole('tab', { name: 'Formats' }));
+    expect(screen.getByTestId('yt-panel-formats')).toBeVisible();
+
+    await user.click(screen.getByTestId('pm-generate'));
+    await waitFor(() => expect(screen.getAllByTestId('yt-history-row').length).toBeGreaterThan(1));
+    expect(
+      screen.getByTestId('yt-panel-formats'),
+      'a second batch yanked the viewer off a tab they had chosen — the touched guard is gone',
+    ).toBeVisible();
+    expect(within(tabs).getByRole('tab', { name: 'Formats' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+  });
+
+  it('🔴 a tab picked BEFORE the first batch is not overridden by it — the touched guard', async () => {
+    // 🔴 THE REACHABILITY CONTROL FOR `panelTouchedRef`, AND IT NEEDS THIS EXACT SEQUENCE.
+    // The latch is already one-shot, so the case above cannot see the touched guard at all:
+    // it switches AFTER the first batch, where the latch has fired and would not fire
+    // again. The guard is only observable while the latch is still ARMED — before the first
+    // batch — and only when the viewer's choice differs from what the latch would do.
+    //
+    // Clicking Thumbnails pre-batch is NOT that case: the latch would set Thumbnails too,
+    // so deleting the guard would change nothing and the mutant would survive. Clicking
+    // AWAY and BACK is: it leaves the viewer on Formats with `panelTouchedRef` set, so a
+    // latch that ignored the flag yanks them to Thumbnails on submit and one that honours it
+    // leaves them alone.
+    //
+    // 🔴 MEASURED, AND THIS IS THE ONLY CASE THAT KILLS THAT MUTANT. Deleting
+    // `panelTouchedRef` from the effect leaves the rest of the file green — including the
+    // "a later pick survives the next batch" case above, where the boolean dependency alone
+    // is enough. Without this sequence the guard is a line nothing executes against.
+    setBlockWidth(INSIDE.md);
+    uninstall = installMockMoneyHost({
+      ...VIEWER,
+      consentGranted: true,
+      cost: 8,
+      pollsUntilDone: 2,
+      buzzBalance: { blue: 100, green: 0, yellow: 0 },
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    const generateBtn = await screen.findByTestId('pm-generate');
+    const tabs = screen.getByTestId('yt-panel-tabs');
+
+    // Pre-batch: Formats is the default, so a bare "click Formats" would not be a CHANGE and
+    // would never reach `onChange`. Away and back is what sets the flag.
+    expect(screen.getByTestId('yt-panel-formats')).toBeVisible();
+    expect(screen.queryByTestId('yt-history')).not.toBeInTheDocument();
+    await user.click(within(tabs).getByRole('tab', { name: 'Thumbnails' }));
+    await user.click(within(tabs).getByRole('tab', { name: 'Formats' }));
+    expect(screen.getByTestId('yt-panel-formats')).toBeVisible();
+
+    // Now the first batch arrives. The latch is still armed — it has never fired — but the
+    // viewer has chosen, so it must not move the selection.
+    await user.type(screen.getByLabelText(/prompt/i), 'a serene mountain lake');
+    await user.click(generateBtn);
+    await screen.findByAltText(/generated result/i, {}, { timeout: 5000 });
+    // The precondition: there really IS a batch now, so the latch had something to fire on.
+    expect(screen.getByTestId('yt-panel-thumbnails')).toContainElement(
+      screen.getByTestId('yt-history'),
+    );
+    expect(
+      screen.getByTestId('yt-panel-formats'),
+      'the first batch overrode a tab the viewer had already picked',
+    ).toBeVisible();
+    expect(within(tabs).getByRole('tab', { name: 'Formats' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+  });
+
+  it('🔴 each tab panel holds EXACTLY what the three-column layout puts in its column', async () => {
+    // 🔴 THE SEAM NOBODY OWNS: "the tabs work" and "the columns work" are two tests of
+    // two surfaces, and the defect that survives both is the CONTENT forking — a control
+    // added to the picker in one branch and not the other, or an alert that only renders
+    // on phones. Asserted as a RELATIONSHIP: the set of `data-testid`s inside each tab
+    // panel must EQUAL the set inside the column that replaces it at `lg`. It fails when
+    // the set grows on one side OR shrinks on one side, which a hand-written ledger of
+    // expected ids does not.
+    //
+    // Exact ids throughout — `[data-testid^=yt-format-]` matches layout nodes as well as
+    // chips, so a prefix here would quietly compare the wrong things.
+    //
+    // 🔴 IT DRIVES A REAL GENERATION AT BOTH WIDTHS, AND THAT IS WHAT MAKES THE
+    // THUMBNAILS ARM MEAN ANYTHING. `showHistory` hides the surface entirely for a
+    // signed-in viewer whose storage settles to zero rows — measured, both here and with
+    // an anonymous host — so on a plain render the thumbnails panel is EMPTY on BOTH
+    // sides and `[] === []` passes just as well against a layout that renders neither.
+    // A generation puts a real row, its images and its cost on the surface. The
+    // `toContain` controls at the bottom are what prove it actually did.
+    // 🔴 THE RELATIONSHIP IS NOW PANEL-TO-PANEL, NOT PANEL-TO-COLUMN, AND THAT IS BECAUSE
+    // THE FORMATS SURFACE IS SPLIT ACROSS TWO COLUMNS AT THE RAIL TIER. The picker is the
+    // rail; everything it opens (`yt-format-detail`) is in MAIN. So "the formats tab panel
+    // equals the formats rail" is no longer the right claim and asserting it would now be
+    // false for a correct layout. What is still exactly the same property — content must
+    // not fork between the two layouts — is the UNION: every id the tabbed layout renders
+    // in its two panels is an id the rail layout renders in its two columns, and vice
+    // versa. It fails when the set grows on one side OR shrinks on one side.
+    //
+    // Plus the three PLACEMENT claims, which the union deliberately cannot see: picker in
+    // the rail, detail in main, thumbnails in main.
+    await generateAt(INSIDE.sm);
+    const tabFormats = testidsIn(screen.getByTestId('yt-panel-formats'));
+    const tabThumbnails = testidsIn(screen.getByTestId('yt-panel-thumbnails'));
+    const tabPicker = testidsIn(screen.getByTestId('yt-format-picker'));
+    const tabDetail = testidsIn(screen.getByTestId('yt-format-detail'));
+
+    await teardown();
+    await generateAt(INSIDE.xl);
+    const columnFormats = testidsIn(screen.getByTestId('yt-formats-rail'));
+    const columnThumbnails = testidsIn(screen.getByTestId('yt-main'));
+    const columnPicker = testidsIn(screen.getByTestId('yt-format-picker'));
+    const columnDetail = testidsIn(screen.getByTestId('yt-format-detail'));
+
+    const sorted = (xs: string[]) => [...xs].sort();
+    expect(sorted([...tabFormats, ...tabThumbnails])).toEqual(
+      sorted([...columnFormats, ...columnThumbnails]),
+    );
+    // ...and each of the three surfaces matches itself across the two layouts, which is
+    // strictly stronger than the union and is what catches a control that moved from the
+    // picker into the detail block (or back) in one layout only.
+    expect(tabPicker).toEqual(columnPicker);
+    expect(tabDetail).toEqual(columnDetail);
+    expect(tabThumbnails).toEqual(
+      // Main holds the thumbnails AND the detail block at the rail tier, so the thumbnails
+      // arm is main less the detail block and its own id.
+      columnThumbnails.filter((id) => id !== 'yt-format-detail' && !columnDetail.includes(id)),
+    );
+
+    // 🔴 THE PLACEMENT CLAIMS. The sets above are blind to WHICH container each id is in,
+    // which is precisely the operator's decision (O2) — so it is asserted separately.
+    expect(screen.getByTestId('yt-formats-rail')).toContainElement(
+      screen.getByTestId('yt-format-picker'),
+    );
+    expect(screen.getByTestId('yt-main')).toContainElement(
+      screen.getByTestId('yt-format-detail'),
+    );
+    expect(screen.getByTestId('yt-formats-rail')).not.toContainElement(
+      screen.getByTestId('yt-format-detail'),
+    );
+    // ...and in MAIN the thumbnails really do precede the detail block, with a REAL history
+    // row present — the structural `lastElementChild` check further up cannot say that.
+    const history = screen.getByTestId('yt-history');
+    const detail = screen.getByTestId('yt-format-detail');
+    expect(
+      history.compareDocumentPosition(detail) & Node.DOCUMENT_POSITION_FOLLOWING,
+      'the formats detail block is ABOVE a populated thumbnail surface in the main column',
+    ).toBeTruthy();
+
+    // 🔴 THE POSITIVE CONTROLS. Two empty arrays are equal, so without these the case
+    // passes just as well against a layout that renders neither panel's contents — and
+    // EVERY arm needs one, not just the formats side.
+    expect(tabFormats.length).toBeGreaterThan(3);
+    expect(tabFormats).toContain('yt-format-grid');
+    expect(tabFormats).toContain('yt-format-cost-note');
+    expect(tabPicker).toContain('yt-format-grid');
+    expect(tabDetail.length).toBeGreaterThan(0);
+    expect(tabThumbnails).toContain('yt-history');
+    expect(tabThumbnails).toContain('yt-history-images');
+    expect(columnThumbnails).toContain('yt-history-images');
+  });
+});
+
+// ===========================================================================
 // COST DISCLOSURE — the copy that may never be deleted.
 //
 // 🔴 NO TEST PINNED ANY OF THESE, IN THE PASS THAT DELETED THREE ADJACENT STRINGS
@@ -507,6 +1496,23 @@ describe('the layout the App renders, at EVERY tier', () => {
 // contradicted it. It is a `toBe` now. Its expected value leads with `Done`
 // because that is the `Alert`'s own `title` prop, written in `App.tsx`: app copy
 // like the rest of the string, not pack chrome leaking into the assertion.
+//
+// 🔴 AND NOW ALSO: *VISIBLE*, NOT MERELY PRESENT. This header claimed the cost
+// disclosures "survive" while two of the three cases below only asserted
+// `textContent` on a node inside a `display: none` tab panel — which they were,
+// at `INSIDE.md`, for the whole revision in which Thumbnails was the default tab.
+// A cost disclosure a viewer cannot see is not a cost disclosure, and `toBe` on
+// its text cannot tell the difference. Every case here now asserts
+// `toBeVisible()` as well, which is the one hiding spelling jsdom can observe.
+//
+// WHERE THE PRE-SPEND DISCLOSURE ENDS UP, STATED: `yt-format-cost-note` is in the
+// FORMATS surface (the picker block), so below `xl` it lives in a tab panel and is
+// visible only while that tab is selected — which, on a first render, it is, since
+// Formats is the default. The OTHER two pre-spend disclosures — the `Generate ·
+// <N> Buzz` price on the button and the `AccountPicker`'s `cost=` — are in
+// `inputs`, outside both panels, and are therefore ALWAYS visible at every tier.
+// So AGENTS.md's "always show a cost preview before submitting" holds regardless of
+// which tab is selected; the per-format note is the richer disclosure on top of it.
 // ===========================================================================
 
 describe('the cost disclosures survive', () => {
@@ -524,14 +1530,26 @@ describe('the cost disclosures survive', () => {
   /** Collapse whitespace so a re-wrap in JSX is not a failure. */
   const norm = (el: HTMLElement) => (el.textContent ?? '').replace(/\s+/g, ' ').trim();
 
-  it('the PRE-spend per-format cost note says generations cost Buzz', async () => {
+  it('the PRE-spend per-format cost note is VISIBLE and says generations cost Buzz', async () => {
     setBlockWidth(INSIDE.md);
     uninstall = installMockMoneyHost(VIEWER);
     render(<App />);
     await screen.findByTestId('pm-generate');
 
     // One format is selected by default (the at-least-one invariant).
-    expect(norm(screen.getByTestId('yt-format-cost-note'))).toBe('One generation. Costs Buzz.');
+    const note = screen.getByTestId('yt-format-cost-note');
+    // 🔴 VISIBILITY FIRST, THEN THE STRING. At this width the note lives in a tab panel, so
+    // the previous version of this case read the right text out of a `display: none`
+    // subtree and passed. Formats is the default tab, so it is on screen without a press.
+    expect(note, 'the per-format cost note is in a hidden tab panel').toBeVisible();
+    expect(norm(note)).toBe('One generation. Costs Buzz.');
+
+    // 🔴 AND THE DISCLOSURES THAT DO NOT DEPEND ON A TAB AT ALL. The price on the Generate
+    // button and the `AccountPicker`'s cost are in `inputs`, outside both panels, so they
+    // are visible whichever tab is selected — which is what makes "always show a cost
+    // preview" a property of the layout rather than of the selection.
+    expect(screen.getByTestId('pm-generate')).toBeVisible();
+    expect(screen.getByTestId('pm-account-trigger')).toBeVisible();
   });
 
   it('the cost note scales to N formats — the format count IS the bill', async () => {
@@ -548,11 +1566,16 @@ describe('the cost disclosures survive', () => {
       .getAllByTestId('yt-format-card')
       .find((c) => c.querySelector('[role="checkbox"][aria-checked="false"]'));
     expect(unselected, 'no unselected format card to click').toBeDefined();
+    // 🔴 THE CARD IS VISIBLE BEFORE IT IS CLICKED. `userEvent.click` gates on
+    // `pointer-events`, not on visibility, so in jsdom it succeeds just as well on a
+    // `display: none` panel — which is exactly what this case used to do. Without this line
+    // the interaction below is not evidence that a viewer could perform it.
+    expect(unselected!, 'the format card a viewer must click is hidden').toBeVisible();
     await user.click(unselected!.querySelector('[role="checkbox"]') as HTMLElement);
 
-    expect(norm(screen.getByTestId('yt-format-cost-note'))).toBe(
-      '2 separate generations — each one costs Buzz.',
-    );
+    const note = screen.getByTestId('yt-format-cost-note');
+    expect(note).toBeVisible();
+    expect(norm(note)).toBe('2 separate generations — each one costs Buzz.');
   });
 
   it('the POST-spend figure is reported, and it is the SERVER’s number', async () => {
@@ -711,10 +1734,11 @@ describe.each([
     expect(check.style.backgroundColor).not.toBe(selected!.style.backgroundColor);
   });
 
-  it('the rail ground comes from THIS theme, at lg', async () => {
+  it('the rail ground comes from THIS theme, at xl', async () => {
     // The rail is new in this pass, so it has no host-token history to fall back
-    // on — if it were wrong in one theme nothing else would say so.
-    setBlockWidth(INSIDE.lg);
+    // on — if it were wrong in one theme nothing else would say so. `INSIDE.xl`, not
+    // `INSIDE.lg`: the rail moved to `xl`, and at 1301 there is no rail to grade.
+    setBlockWidth(INSIDE.xl);
     uninstall = installMockMoneyHost({ ...VIEWER, theme });
     render(<App />);
     await screen.findByTestId('pm-generate');
@@ -773,8 +1797,8 @@ describe.each([
     restoreResizeObserver = undefined;
   });
 
-  /** One `lg` render, returning the hero's emitted `background-image` list. */
-  async function heroLayers(width: number = INSIDE.lg): Promise<string> {
+  /** One rail-tier render, returning the hero's emitted `background-image` list. */
+  async function heroLayers(width: number = INSIDE.xl): Promise<string> {
     setBlockWidth(width);
     uninstall = installMockMoneyHost({ ...VIEWER, theme });
     render(<App />);
@@ -846,7 +1870,7 @@ describe.each([
   });
 
   it('the photo is sized and anchored so the burst on its right survives a crop', async () => {
-    setBlockWidth(INSIDE.lg);
+    setBlockWidth(INSIDE.xl);
     uninstall = installMockMoneyHost({ ...VIEWER, theme });
     render(<App />);
     await screen.findByTestId('pm-generate');
@@ -863,7 +1887,7 @@ describe.each([
     // a gap between the headline and the sub-line. `start` is what makes "the text
     // does not move" true rather than merely intended. No `textAlign` and no
     // `justifyContent`: the hero is a plain left-aligned stack, as before.
-    setBlockWidth(INSIDE.lg);
+    setBlockWidth(INSIDE.xl);
     uninstall = installMockMoneyHost({ ...VIEWER, theme });
     render(<App />);
     await screen.findByTestId('pm-generate');
@@ -891,10 +1915,12 @@ describe('the hero has room for the image to read', () => {
   it('the minHeight DIFFERS between the rail and non-rail layouts', async () => {
     // 🔴 BOTH ARMS, BECAUSE EITHER ALONE PASSES AGAINST A CONSTANT — the same mutant
     // that survived a green suite for `heroStyle`'s padding. The two fixtures are
-    // 1301 (`lg`, rail on) and 1099 (`md`, rail off): different tiers, opposite sides
+    // 1523 (`xl`, rail on) and 1099 (`md`, rail off): different tiers, opposite sides
     // of the rail boundary, and neither is any of 480 / 768 / 1024 / 1184 / 1440, so
-    // the comparison is genuinely reachable rather than decided by a boundary.
-    setBlockWidth(INSIDE.lg);
+    // the comparison is genuinely reachable rather than decided by a boundary. The wide
+    // arm was 1301 (`lg`) until the rail moved to `xl`, where 1301 is rail-OFF and both
+    // arms would have been the same number.
+    setBlockWidth(INSIDE.xl);
     uninstall = installMockMoneyHost(VIEWER);
     render(<App />);
     await screen.findByTestId('pm-generate');
@@ -902,7 +1928,7 @@ describe('the hero has room for the image to read', () => {
     const wide = screen.getByTestId('yt-hero');
     expect(wide.style.minHeight).toBe('132px');
     // Derived from the layout rather than re-stated, so the two cannot drift.
-    expect(wide.style.minHeight).toBe(`${layoutForTier('lg').heroMinHeight}px`);
+    expect(wide.style.minHeight).toBe(`${layoutForTier('xl').heroMinHeight}px`);
 
     uninstall?.();
     restoreClientWidth?.();
@@ -1055,7 +2081,7 @@ describe('results and the editor, at width', () => {
   it.each([
     [INSIDE.base],
     [INSIDE.md],
-    [INSIDE.lg],
+    [INSIDE.xl],
     [INSIDE_ULTRAWIDE],
   ])('🔴 at %ipx the image grid is intrinsically sized and the rows are full width', async (width) => {
     await generate(width as number);
@@ -1092,22 +2118,51 @@ describe('results and the editor, at width', () => {
   // not otherwise need. The structural `not.toMatch(/repeat\(\s*\d/)` is what makes the
   // four literals more than four coincidences.
 
-  it('the results land ABOVE the controls once they exist', async () => {
-    // Phase 2: the app's primary object is the first thing on screen. Asserted
-    // structurally (document order), not by looking for a heading. Still true after
-    // the surfaces merged — and it is the reason the history block moved up the
-    // column: it used to be LAST, which was fine while a separate grid held the
-    // images and would now put them below every input.
-    await generate(INSIDE.md);
-    const results = screen.getByTestId('yt-history-images');
-    const prompt = screen.getByLabelText(/prompt/i);
-    expect(
-      results.compareDocumentPosition(prompt) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
+  it('🔴 the PROMPT comes before the results, in BOTH layouts — the order the operator set', async () => {
+    // 🔴 THIS CASE ASSERTED THE OPPOSITE ONE REVISION AGO, AND THE REVERSAL IS THE
+    // OPERATOR'S DECISION, NOT A REGRESSION. "Results above the controls" was right while
+    // the format picker sat BETWEEN the two halves of the inputs: the primary object could
+    // be first and the prompt could still precede the picker. Tabs ended that — Thumbnails
+    // and Formats share one tab control, a tab control cannot be in two places, so the
+    // panels move as a pair. Putting them first put the PICKER above the prompt box, and
+    // the picker decides the bill, so reading "pick your formats" before "say what you
+    // want" inverts the sentence the form is. The operator chose prompt-then-formats.
+    //
+    // 🔴 ASSERTED AT BOTH TIERS, because "the order" is one claim about two different
+    // containers and the tabbed arm alone cannot see the rail arm. At the rail tier it
+    // follows from the grid's child order (inputs rail first, thumbnails second), which is
+    // also asserted directly as a list in the rail describe; here it is the same property
+    // read the way a viewer meets it — document order between the prompt and the images.
+    for (const width of [INSIDE.md, INSIDE.xl]) {
+      const tabbed = width === INSIDE.md;
+      await generate(width);
+      // The layout the order was read from, so a failure says WHICH arm broke.
+      expect(Boolean(screen.queryByTestId('yt-panel-tabs'))).toBe(tabbed);
+      const results = screen.getByTestId('yt-history-images');
+      const prompt = screen.getByLabelText(/prompt/i);
+      expect(
+        prompt.compareDocumentPosition(results) & Node.DOCUMENT_POSITION_FOLLOWING,
+        `at ${width}px the thumbnail images come BEFORE the prompt box`,
+      ).toBeTruthy();
+      if (tabbed) {
+        // ...and in the tabbed layout the picker is after the prompt too, which is the
+        // half the images comparison does not cover: both live in the same panel pair.
+        const picker = screen.getByTestId('yt-format-grid');
+        expect(
+          prompt.compareDocumentPosition(picker) & Node.DOCUMENT_POSITION_FOLLOWING,
+          'the format picker comes BEFORE the prompt box',
+        ).toBeTruthy();
+      }
+      cleanup();
+      restoreClientWidth?.();
+      restoreClientWidth = undefined;
+      restoreResizeObserver?.();
+      restoreResizeObserver = undefined;
+    }
   });
 
-  it('the editor puts the canvas beside its controls at lg', async () => {
-    const user = await generate(INSIDE.lg);
+  it('the editor puts the canvas beside its controls at xl', async () => {
+    const user = await generate(INSIDE.xl);
     restoreImageLoad = installImageLoad();
     await user.click(screen.getAllByTestId('yt-history-edit')[0]);
     const split = await screen.findByTestId('pm-editor-split');

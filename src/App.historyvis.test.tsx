@@ -186,8 +186,38 @@ function stockStorage(records: Array<{ key: string; value: unknown }>) {
  * one path that still drives a manual reload of both halves — goes unexercised. The
  * 'Show RE-READS both halves' case below presses it deliberately for that reason.
  */
+/**
+ * Put the thumbnail surface ON SCREEN, then open it.
+ *
+ * 🔴 THE TAB SWITCH IS NOT OPTIONAL AND THIS FILE DID NOT USED TO DO IT. These tests stub
+ * no block width, so jsdom reports `clientWidth: 0`, the tier resolves to `base`, and the
+ * app renders its TABBED layout — where Thumbnails and Formats are two `display: none`
+ * panels and the selected tab starts on FORMATS whenever there is nothing in Thumbnails
+ * yet (which is every case in this file: the point of them is the zero-row and error
+ * states). So the entire history surface sat inside a hidden panel.
+ *
+ * It stayed green because `getByTestId` does not check visibility and `userEvent.click`
+ * gates on `pointer-events`, not on visibility — so every assertion and every click here
+ * was being made against a surface a real viewer could not see or press. One case
+ * (`LOAD ERROR`) failed out loud, only because it happens to query by ROLE, and role
+ * queries DO exclude a `display: none` subtree.
+ *
+ * Switching the tab first makes every case in this file a claim about a reachable surface,
+ * and the `toBeVisible()` below is the guard: if a future change hides the thumbnails panel
+ * again, this fails HERE, for every test in the file, instead of being absorbed.
+ */
 async function openHistory(user: ReturnType<typeof userEvent.setup>) {
+  const tabs = screen.queryByTestId('yt-panel-tabs');
+  if (tabs) {
+    await user.click(within(tabs).getByRole('tab', { name: 'Thumbnails' }));
+    expect(
+      screen.getByTestId('yt-panel-thumbnails'),
+      'the thumbnails panel is hidden even after selecting its own tab',
+    ).toBeVisible();
+  }
   const toggle = await screen.findByTestId('yt-history-toggle');
+  expect(toggle, 'the history toggle is not visible — this file is driving a hidden panel')
+    .toBeVisible();
   if (/show/i.test(toggle.textContent ?? '')) await user.click(toggle);
 }
 
