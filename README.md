@@ -197,12 +197,16 @@ Three tiers:
   (which also records each preview's `sourceWorkflowId`) and mirrored as
   `BUILTIN_FORMATS` in `src/formats.ts`. A test pins the two in lockstep, and a
   second pins the exact ledger of twelve ids so the set cannot grow *or* shrink
-  unnoticed. **Six of the twelve have no preview art** — `Format.preview` is
-  optional and the picker renders a letter placeholder inside the same 16/9 box,
-  so a previewless format costs no layout and shows no broken image. A format
-  with no art carries no `preview`, no `sourceWorkflowId` and no `costBuzz`: the
-  three travel together or not at all, because a fabricated workflow id would be
-  a false provenance record.
+  unnoticed. **All twelve carry generated preview art** (two batches: six on
+  SD XL 1.0 at 3 Buzz, six on ChatGPT Images at 209 — provenance in
+  `claudedocs/format-previews.md`), pinned as a hand-written SET of ids rather
+  than a count, because a count cannot tell *"we added art for `magic`"* from
+  *"we lost the art for `gaming`"*. `Format.preview` stays optional, and the
+  picker's letter-placeholder branch stays live code: every **custom** and
+  **published** format has no art, so that branch is the one they take. The
+  provenance triple — `preview`, `sourceWorkflowId`, `costBuzz` — travels together
+  or not at all, and the `sourceWorkflowId` is checked **by shape** with
+  `costBuzz > 0` required, because co-presence alone let a fabricated id through.
 - **Custom** — the viewer's own, **private by default**, persisted per-viewer
   via `useAppStorage` under `formats:custom:v1`. Anonymous viewers get no
   persistence at all (`get` resolves `null`, `set` rejects) and are told so
@@ -221,6 +225,20 @@ text is only in `data` is dropped.
 Selection carries an invariant: **at least one format is always selected**, so
 Generate can never submit zero workflows and report success having spent
 nothing.
+
+🔴 **A suffix may not contain `#`, and that is checked on SAVE — never on LOAD.**
+The generator consumes `#name` **server-side** as a wildcard reference, so it never
+reaches the model: measured, a suffix containing `#FF49BD` came back with
+`targets.prompt[0].category = "FF49BD"` — the `#` and the word after it lifted
+straight out of the paid prompt, with nothing erroring. A format's suffix is
+appended to *every* prompt made with that format, so one `#` corrupts every
+generation it will ever produce, and **publishing** such a format carries that into
+other viewers' paid generations. `suffixWildcardReason` is the single place the rule
+lives; it is reached from `validateCustomFormat` (save) and from the publish
+handler, and the built-in literals are checked by the same predicate as a
+byproduct. It is deliberately **not** applied in `parseCustomFormats`: a viewer who
+stored a `#` suffix before the rule existed keeps their format and is told why on
+the next save or publish, rather than watching it disappear from their own picker.
 
 ### Images per format (quantity 1–4)
 

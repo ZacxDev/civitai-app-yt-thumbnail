@@ -78,10 +78,19 @@ const hash = (p) => createHash('sha256').update(readFileSync(p)).digest('hex');
 /**
  * Run the suite over `testFiles` and return what the RUNNER ITSELF said.
  *
- * 🔴 Two independent parses of the same output. `lines` counts the per-test
- * result markers; `summary` reads the "Tests N failed | M passed" line. They are
- * cross-checked by the caller: if they disagree, the output format changed and no
- * verdict from this run may be trusted. Never an exit code.
+ * 🔴 TWO INDEPENDENT PARSES OF THE SAME OUTPUT, and the SPLIT BETWEEN THEM IS
+ * NOT SYMMETRIC — which this script learned the hard way, from its own control.
+ *
+ * vitest's default reporter prints a `× <title>` line for every FAILING test but
+ * prints NO `✓` line for a passing one unless it is attached to a TTY. So:
+ *   - RED is available twice: counted from the `×` lines AND read off the summary.
+ *     Those two are cross-checked, and red is the number that decides
+ *     KILLED vs SURVIVED, so it is the one that needs two witnesses.
+ *   - GREEN is available only from the summary line. Counting `✓` markers in a
+ *     piped run yields a confident ZERO for a fully passing suite — exactly the
+ *     "instrument wired to nothing" reading this script exists to refuse. The
+ *     first version of this function did that and its own control aborted the run.
+ * Never an exit code, in either case.
  */
 function runSuite() {
   const r = spawnSync('npx', ['vitest', 'run', ...testFiles], {
@@ -93,11 +102,16 @@ function runSuite() {
   const out = `${r.stdout ?? ''}\n${r.stderr ?? ''}`;
   const count = (re) => (out.match(re) ?? []).length;
 
-  const lines = { red: count(/^\s*× /gm), green: count(/^\s*✓ /gm) };
-
   // `Tests  3 failed | 60 passed (63)` — either half may be absent.
   const m = out.match(/^\s*Tests\s+(?:(\d+) failed)?(?:\s*\|\s*)?(?:(\d+) passed)?/m);
   const summary = m ? { red: Number(m[1] ?? 0), green: Number(m[2] ?? 0) } : null;
+
+  // 🔴 Proof the runner REACHED ITS OWN SUMMARY. Without this, a crash before the
+  // summary parses as `summary === null` and could be mistaken for a format change
+  // rather than for a run that never finished.
+  const finished = /^\s*Test Files\s+/m.test(out);
+
+  const lines = { red: count(/^\s*× /gm), green: summary?.green ?? 0 };
 
   // Noise that is NOT an assertion failure. A mutant "killed" by one of these is
   // not graded — it is a broken mutant, and counting it is how a sweep certifies
@@ -108,8 +122,15 @@ function runSuite() {
   if (/Unhandled (Rejection|Error)/.test(out)) noise.push('unhandled');
   if (/No .* export is defined on the mock/.test(out)) noise.push('mock-missing-export');
 
-  return { lines, summary, noise, out };
+  return { lines, summary, noise, finished, out };
 }
+
+/**
+ * Is this run's output internally consistent enough to read a verdict from?
+ * The summary must exist, the runner must have reached it, and the two RED counts
+ * must agree. Anything else is UNREADABLE, never SURVIVED.
+ */
+const readable = (r) => r.finished && r.summary !== null && r.summary.red === r.lines.red;
 
 /** The per-test titles that went red, so a row can quote the assertion that bit. */
 function redTitles(out) {
@@ -156,10 +177,11 @@ console.log(
     `   summary: green=${control.summary?.green} red=${control.summary?.red}` +
     `   noise: ${control.noise.join(',') || 'none'}`,
 );
-if (!control.summary || control.summary.red !== control.lines.red) {
+if (!readable(control)) {
   console.error(
-    '\n🔴 ABORT: the two parses of the runner output DISAGREE. The output format ' +
-      'changed, so no count from this script can be trusted. Fix the parse first.',
+    '\n🔴 ABORT: the control run is UNREADABLE — it did not reach its own summary, ' +
+      'or the two RED parses disagree. The output format changed, so no count from ' +
+      'this script can be trusted. Fix the parse first.',
   );
   process.exit(3);
 }
@@ -212,9 +234,8 @@ for (const mut of mutants) {
   const r = runSuite();
   restoreAll();
 
-  const agree = r.summary && r.summary.red === r.lines.red;
   const verdict =
-    !agree ? 'UNREADABLE'
+    !readable(r) ? 'UNREADABLE'
     : r.noise.length > 0 ? `NOISE(${r.noise.join(',')})`
     : r.lines.red > 0 ? 'KILLED'
     : 'SURVIVED';
