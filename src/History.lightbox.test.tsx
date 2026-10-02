@@ -356,7 +356,19 @@ describe('🔴 arrow-key navigation — a stated feature, so it is exercised as 
     expect(dialog()).not.toBeInTheDocument();
   });
 
-  it('🔴 the listener is REMOVED on close, not left on document', async () => {
+  /**
+   * 🔴 THIS ASSERTION WAS WRONG ONCE AND THE CORRECTION IS THE INTERESTING PART.
+   * It used to press the arrows after closing, then CLICK TILE 0 and check the
+   * picture was B1 — and it passed against a deliberately leaked listener, because
+   * the click reset the index before anything was read. MEASURED: replacing the
+   * effect's cleanup with `return undefined` left that version green.
+   *
+   * What a leaked listener actually does is REOPEN the dialog: the stale closure
+   * calls `onIndexChange` with a real index, which is exactly the state that means
+   * "open". So the observable is the dialog's own presence, with nothing clicked in
+   * between to paper over it.
+   */
+  it('🔴 the listener is REMOVED on close — a stray arrow must not REOPEN the dialog', async () => {
     const user = userEvent.setup();
     renderSurface([ROW_B]);
     await user.click(tiles()[0]!);
@@ -366,9 +378,12 @@ describe('🔴 arrow-key navigation — a stated feature, so it is exercised as 
     await user.keyboard('{Escape}');
     expect(dialog()).not.toBeInTheDocument();
 
-    // A leaked listener would advance the hidden index; reopening tile 0 would then
-    // show something other than B1.
     await user.keyboard('{ArrowRight}{ArrowRight}');
+    expect(dialog()).not.toBeInTheDocument();
+    await user.keyboard('{ArrowLeft}');
+    expect(dialog()).not.toBeInTheDocument();
+
+    // And reopening from scratch still starts where it was told to.
     await user.click(tiles()[0]!);
     expect(shownSrc()).toBe(B1);
     expect(position()).toBe('1 of 3');

@@ -85,12 +85,16 @@ export function ImageLightbox({
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [at, count, onIndexChange]);
 
-  if (view === null) {
-    // Still render `Modal` closed rather than returning null: `Modal` restores focus
-    // to the triggering tile from the CLEANUP of its own `opened` effect, and a
-    // component that unmounts outright never gets to run it.
-    return <Modal opened={false} onClose={onClose} />;
-  }
+  // Nothing to show: closed, or the batch's pictures went away under an open dialog.
+  //
+  // 🔴 PLAIN `null`, AND THE OBVIOUS-LOOKING ALTERNATIVE IS RECORDED BECAUSE IT WAS
+  // WRONG. This was `<Modal opened={false} …/>` on the reasoning that `Modal` restores
+  // focus to the triggering tile from the CLEANUP of its own `opened` effect, so the
+  // component had to stay mounted to run it. That reasoning is false: React runs an
+  // effect's cleanup on UNMOUNT as well as on a dep change, so the restore happens
+  // either way. MEASURED — swapping the two forms leaves `focus returns to the TILE
+  // THAT OPENED IT` green, which is how the mistake was found. The simpler form wins.
+  if (view === null) return null;
 
   // The dialog's accessible name. The POSITION is deliberately not in here — it has
   // one home, the indicator below, which is `aria-live` so the move is announced.
