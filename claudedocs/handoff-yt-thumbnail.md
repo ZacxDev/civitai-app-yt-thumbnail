@@ -16,14 +16,13 @@ Ship **YT Thumbnail** — a Civitai page-money app generating YouTube thumbnails
 
 ## State now
 - **No clawgate task** — `resolve` exited **5**; an unknown id also answers 200/empty, so not a clean bill of health.
-- **`main` = `ba867c0`**, clean. **No open PRs in this repo.**
-- ✅ **0.1.11 IS LIVE on our own commit `b022e3b`**, serving `assets/index-YPsZxCZP.js`. ARC 8 closed by asset compare with a negative control. A sourceless twin spawned `withdrawn`; the 0.1.9 inversion did NOT recur.
-- ✅ **ONE MUTATION DRIVER — #39 merged as `ba867c0`,** after a round-0 audit found **two controls it had LOST while claiming to add three**. Both closed; a false provenance claim the PR introduced at `src/Lightbox.tsx:282` was corrected to name its real source.
-- ✅ **VERIFIED ON THE MERGED TREE at `ba867c0`, not inherited from the branch** — the base had moved. `tsc` rc 0 · **933/933 / 34 files** · build rc 0 · lightbox sweep **control 933 / 0 red, 8/8 KILLED** each by its named assertion · formats **71 / 0 red, 11/11 KILLED** · restoration hash-verified. Every rc read **UNPIPED**.
-- ⏳ **devrc `#1981` OPEN and GREEN** — 4/4 Tekton statuses incl. `devrc-cairn-client-runs`; check-runs empty there (statuses, not Actions).
-- 🔴 **ONE RED IN 933, SEEN ONCE, NOT IDENTIFIED** — see its block. Not fixed, not claimed fixed.
-- ✅ **ARC 6 REMAINS CLOSED (2026-10-01 16:15 CDT) — carried forward AGAIN because `State now` is REPLACED each round and criteria 1+2 live ONLY here.** (1) Three `DONE` generations 2026-09-30 CDT: **17:51:22 / 209 Buzz** (1 fmt, 1 img) · **17:56:30 / 418** (2, 2) · **23:06:03 / 836** (4, 4), ChatGPT Images, 1536×864; 23:06:03 is **nine minutes after 0.1.7 went live (22:57)**, proving the money path on 0.1.7 itself. (2) `yt-history-resume` moved three values at once — prompt `""` → the stored 61-char prompt, formats `clickbait` → `+cinematic+tutorial+gaming`, button `209` → **`836 Buzz`**, app printing *"Form restored. Nothing was submitted."* (3) the `useSaveImage` save, evidence in its RESOLVED block.
-- **Buzz spent this session: 1254.** `pm-generate` never clicked. ⚠ The 7 Buzz gap from arc 3 is still unexplained. ⚠ `.claude/` is still not gitignored.
+- 🔴 **`main` = `157fc5e`, AHEAD OF WHAT IS LIVE.** Another session merged **#40** (`blocks-react` 0.62→**0.63.0**, `app-sdk` 0.49→**0.55.0**, idempotency-key guard) at 15:06 CDT. **Live 0.1.11 was built from `b022e3b` and does NOT carry it** — main holds unreleased work. Clean, no open PRs.
+- ✅ **Verified at `157fc5e` after `npm ci`:** `blocks-react` **0.63.0** installed, `tsc` rc 0, **933/933 / 34 files**, both rcs read UNPIPED.
+- ✅ **0.1.11 LIVE on `b022e3b`**, serving `index-YPsZxCZP.js`; ARC 8 closed by asset compare with a negative control. A sourceless twin sits `withdrawn`; the 0.1.9 inversion did NOT recur.
+- ✅ **#39 merged `ba867c0`** — one mutation driver, after a round-0 audit found **two controls it had LOST while claiming to add three**. Merged-tree re-verified: lightbox **933 / 0 red, 8/8 KILLED**, formats **71 / 0 red, 11/11 KILLED**.
+- ✅ **Cairn ROUTE live** (devrc #1981 `9eb88457` + a switch) — `recall` no longer refuses. 🔴 But the first index WRITE was refused **rc 6** by the pod's token allowlist; see rank 2.
+- 🔴 **ONE RED IN 933 ON AN UNMUTATED TREE, SEEN ONCE, NOT IDENTIFIED** — see its block. Not fixed, not claimed fixed.
+- **Buzz spent 2026-10-02: 1254.** `pm-generate` never clicked. ⚠ The 7 Buzz gap from arc 3 is unexplained. ⚠ `.claude/` is still not gitignored.
 
 ## Version history (server-confirmed, never from a CLI exit code)
 | ver | source | state |
@@ -198,8 +197,10 @@ ARCHIVED → `claudedocs/handoff-yt-thumbnail-ARCHIVE.md`. Short version: `orche
 - **Next probe:** none on its own. When the abort fires again, read the title it now prints, then timestamp that test's mock calls.
 
 ## Next steps (ranked)
-1. **Two art judgements, live on the store app now.** ChatGPT Images renders legible text where SD XL could not: **`clickbait`** shipped a baked-in *"$10,000 A DAY?!"* headline **and a YouTube play-button mark**, **`gaming`** garbled fragments. Honest output of their suffixes (`clickbait`'s begins *"youtube thumbnail"*), but a third-party mark in store art is a judgement. Either is one 209-Buzz re-draw plus a release. `public/formats/`.
+1. **Two art judgements, live on the store app now.** **`clickbait`** shipped a baked-in *"$10,000 A DAY?!"* headline **and a YouTube play-button mark**, **`gaming`** garbled fragments — honest output of their suffixes, but a third-party mark in store art is a judgement. One 209-Buzz re-draw plus a release each. `public/formats/`.
    forcing: user — a trademark/representation call, not a technical one
+2. **Add `civitai-app-yt-thumbnail` to the cairn pod token's SCOPE ALLOWLIST, then write the first entry.** A `formats` entry was drafted and validated clean this session but lives only in a session scratchpad — re-draft with `subsystem_touch.py --template formats --scope civitai-app-yt-thumbnail --writer handoff` plus the gotchas below. See `cairn`'s operator-surface reference.
+   forcing: user — only the operator can edit the pod's token allowlist
 
 ## Defects (batched)
 - **None outstanding in any repo we own.**
@@ -351,6 +352,10 @@ ARCHIVED → `claudedocs/handoff-yt-thumbnail-ARCHIVE.md`. Short version: `orche
 - 🔴 **CORRECTION — `--autoevict` DOES NOT SUPERSEDE THIS DOC'S "a block cannot be pruned" BULLET; an entry earlier today said it did.** Measured hours later on this doc: it clears rule (p) only when enough CLOSED investigation content exists — here **1,727 B of closed blocks against a 2,846 B delta** → `status=size-ratchet`, nothing written. The older bullet's routes (prune named lines, shrink a REPLACE section) are still the ones that work, and **`--autoevict` and `--prune` cannot be combined** (rc 2) — land the prune first. Try autoevict first; expect it to be insufficient on a doc this far over.
 
 - ✅ **A `home-manager switch` RETURNED rc 0 WHILE ITS OWN LOG READ `Failed services: …` — and `readlink -f` is what settled it.** The two failures were PRE-EXISTING: `ExecMainExitTimestamp` **07:39 / 08:00 CDT against a switch that finished 13:34**, the cheap discriminating control run before blaming the change. Verified at the CONSUMER instead — the live `routes.json` re-resolved `…c6gwamb0…` → `…q29918ba…`, row grep **0 → 1**, and `cairn recall` went from `🔴 REFUSING` to reaching the store. ⚠ **A switch applies EVERY devrc commit since the live generation — six here, not one.**
+
+- 📌 **ARC 6's CRITERIA 1+2, MOVED HERE 2026-10-02 SO THEY STOP BEING RE-PAID.** They lived in `State now`, which is REPLACED every round, so every update had to carry ~1.1 KB forward verbatim or silently drop it — and the write gate flagged exactly that, every round. An APPEND section is where durable evidence belongs. **ARC 6 CLOSED 2026-10-01 16:15 CDT.** (1) Three `DONE` generations 2026-09-30 CDT: **17:51:22 / 209 Buzz** (1 fmt, 1 img) · **17:56:30 / 418** (2, 2) · **23:06:03 / 836** (4, 4), ChatGPT Images, 1536×864 — 23:06:03 is **nine minutes after 0.1.7 went live (22:57)**, proving the money path on 0.1.7 itself. (2) `yt-history-resume` moved three values at once — prompt `""` → the stored 61-char prompt, formats `clickbait` → `+cinematic+tutorial+gaming`, button `209` → **`836 Buzz`**, app printing *"Form restored. Nothing was submitted."* (3) the `useSaveImage` save, evidence in its RESOLVED block.
+- ⚠ **A stale `node_modules` only READS AS "main is red" when the new version's API is actually USED** — 0.49→0.62 added `declaredScopes` call sites (`tsc` **rc 2**); 0.62→0.63 touched none (**rc 0**). **A green `tsc` is NOT evidence your install matches `package.json`** — compare the versions directly, and `npm ci` after any lockfile merge.
+- 🔴 **THE CAIRN ROUTE IS NECESSARY, NOT SUFFICIENT — a SECOND, POD-SIDE gate exists.** Route live and `recall` answering, yet `cairn create` was **REFUSED rc 6 `[not-found]`**, writing nothing. On the CREATE path only the token-allowlist arm yields that, so the remedy is a **pod allowlist edit** — not seeding. ⚠ No client can confirm it; that is cairn's documented reading, not a measurement.
 
 ## How to verify
 ```bash
