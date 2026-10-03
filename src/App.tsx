@@ -3308,8 +3308,9 @@ export function App() {
   // THUMBNAILS — the output surface, as ONE binding, rendered by both layouts.
   //
   // 🔴 IT IS A BINDING RATHER THAN TWO COPIES BECAUSE THE PANELS MUST NOT FORK. At
-  // `xl`+ this is the middle column; below `xl` it is one of two tab panels, and the
-  // ONLY difference between the two is the container. Two JSX copies of
+  // `xl`+ this is the LAST of the three columns — the only flexible track, after both
+  // rails; below `xl` it is one of two tab panels, and the ONLY difference between the
+  // two is the container. Two JSX copies of
   // `{resultsBlock}{historyBlock}` would be a predicate open-coded twice — the shape
   // `layout.ts`'s module docblock says is wrong at N−1 sites — and the failure would
   // be silent: a block that stopped rendering the partial-failure alert on phones
@@ -3350,15 +3351,33 @@ export function App() {
               >
                 <Stack gap={16}>{inputs}</Stack>
               </aside>
-              {/* 🔴 THUMBNAILS TAKE WHAT IS LEFT — the only `fr` track in the grid.
-                  The format PICKER used to sit UNDER this column; it is now the third
-                  column, and it is a FIXED px track so that every px the block gains
+              {/* 🔴 FORMATS GET THEIR OWN RAIL, WITH `railStyle` — the SAME function the
+                  inputs rail uses, not a copy of its chrome. Both are bounded, sticky,
+                  self-scrolling columns, and the height bound is the load-bearing half
+                  here too: the picker is about to grow from 6 formats to 12, so at one
+                  card column per row an unbounded sticky column would strand the tail
+                  of the LIST below the fold for the whole sticky range.
+                  One function means the two rails cannot drift into disagreeing about
+                  that. What is NO LONGER stranded here is everything the picker opens —
+                  that moved to the main column (`formatsDetailBlock`).
+                  🔴 THE SECOND GRID CHILD, BY THE OPERATOR'S DECISION. The two rails sit
+                  side by side and the thumbnails take the whole right of the grid; this
+                  column used to be third, after the thumbnails. It is still a FIXED px
+                  track — the position changed, the sizing did not. */}
+              <aside style={railStyle(pal)} data-testid="yt-formats-rail" aria-label="Formats">
+                <Stack gap={16}>{formatsPickerBlock}</Stack>
+              </aside>
+              {/* 🔴 THUMBNAILS TAKE WHAT IS LEFT — the only `fr` track in the grid, and
+                  the LAST of the three columns. The format PICKER used to sit UNDER this
+                  column, then beside it on the right; it is now the column immediately
+                  before it, and it is a FIXED px track so that every px the block gains
                   goes to the thumbnail grid rather than being split with a surface
                   that cannot spend it. The arithmetic is in `FORMATS_RAIL_WIDTH`.
                   🔴 AND `formatsDetailBlock` IS HERE, NOT IN THE RAIL. The composed-prompt
                   boxes, the format editor and the published board are full-width surfaces
                   — the first two are prompt textareas on the money path — and the rail's
-                  content box is 286px. They sit AFTER the thumbnails so the app's primary
+                  content box is 286px. That is unchanged by the reorder: the rail is the
+                  same 320px it was. They sit AFTER the thumbnails so the app's primary
                   object stays the first thing in this column; see `formatsPickerBlock`. */}
               <main style={mainColumnStyle} data-testid="yt-main">
                 <Stack gap={16}>
@@ -3366,18 +3385,6 @@ export function App() {
                   {formatsDetailBlock}
                 </Stack>
               </main>
-              {/* 🔴 FORMATS GET THEIR OWN RAIL, WITH `railStyle` — the SAME function the
-                  inputs rail uses, not a copy of its chrome. Both are bounded, sticky,
-                  self-scrolling columns flanking the grid, and the height bound is the
-                  load-bearing half here too: the picker is about to grow from 6 formats
-                  to 12, so at one card column per row an unbounded sticky column would
-                  strand the tail of the LIST below the fold for the whole sticky range.
-                  One function means the two rails cannot drift into disagreeing about
-                  that. What is NO LONGER stranded here is everything the picker opens —
-                  that moved to the main column (`formatsDetailBlock`). */}
-              <aside style={railStyle(pal)} data-testid="yt-formats-rail" aria-label="Formats">
-                <Stack gap={16}>{formatsPickerBlock}</Stack>
-              </aside>
             </div>
           </Stack>
         </div>
@@ -3398,8 +3405,18 @@ export function App() {
   // "pick your formats" before "say what you want" inverts the sentence the form is. The
   // operator chose prompt-then-formats, i.e. controls first. Below the rail tier the
   // results are therefore BELOW the prompt, which `responsive.test.tsx` now pins as the
-  // order rather than its opposite. It is the same order the rail tier renders, where the
-  // inputs rail is the first grid child and the thumbnails column the second.
+  // order rather than its opposite. It agrees with the rail tier on the half this tab
+  // order is about — the inputs rail is the FIRST grid child there, so the prompt
+  // precedes both output surfaces in both layouts. It is NOT the same order beyond that:
+  // at the rail tier the formats column is the second grid child and the thumbnails the
+  // third, while the tabs here present Thumbnails first and Formats second. That is not a
+  // contradiction — a tab control shows one panel at a time, so its left-to-right order
+  // is a pick list rather than a reading order, and it does not even decide which panel a
+  // viewer meets first: `narrowPanel` starts on FORMATS whatever order the two tabs are
+  // listed in, with the first-batch latch moving it. Nothing about the tabs changed when
+  // the rail columns were reordered, and `responsive.test.tsx` pins the two claims
+  // separately: the prompt-before-results order in BOTH layouts, and the rail grid's
+  // three children as an ordered list.
   //
   // 🔴 AND THE TWO OUTPUT SURFACES ARE TABS HERE, NOT A STACK. At `xl`+ Thumbnails and
   // Formats are two columns; below it there is one column, and stacking them put the
@@ -4196,15 +4213,28 @@ function contentProps(layout: BlockLayout) {
 const fillStyle: React.CSSProperties = { width: '100%' };
 
 /**
- * THREE columns at the `rail` tier: inputs rail | thumbnails | formats rail.
+ * THREE columns at the `rail` tier: inputs rail | formats rail | thumbnails.
+ *
+ * 🔴 THE TWO RAILS ARE ADJACENT AND THE THUMBNAILS ARE LAST — THE OPERATOR'S ORDER.
+ * It used to be inputs | thumbnails | formats, with the thumbnails between the two
+ * rails. Nothing about the WIDTHS changed with the reorder: CSS grid track order does
+ * not affect track sizing, so the main column is the same width it was and every number
+ * in `FORMATS_RAIL_WIDTH`'s arithmetic still holds. What changed is only which track
+ * each surface sits in.
  *
  * 🔴 EXACTLY ONE TRACK IS FLEXIBLE, AND THAT IS THE WHOLE RULE. Both rails are fixed
- * px; `minmax(0, 1fr)` in the middle means the thumbnail grid gets the block's width
+ * px; the single `minmax(0, 1fr)` means the thumbnail grid gets the block's width
  * MINUS the two rails and the two gaps, and absorbs every pixel the block gains. A
- * second `1fr` — the obvious way to add a formats column — splits the main area 50/50
- * and drops the grid from 2 tiles to 1 at a 1440px block; `FORMATS_RAIL_WIDTH` in
+ * second `1fr` — the obvious way to add a formats column — splits the remaining area
+ * 50/50 and drops the grid from 2 tiles to 1 at a 1440px block; `FORMATS_RAIL_WIDTH` in
  * `layout.ts` carries the arithmetic and the reason the formats column's appetite is
  * bounded while the grid's is not.
+ *
+ * 🔴 AND WITH BOTH FIXED TRACKS NOW ADJACENT, THE TWO px WIDTHS BEING DISTINCT MATTERS
+ * MORE, NOT LESS. `340px 320px …` and `320px 340px …` are both well-formed, so a swap
+ * of the two rails' widths is a silent defect; it is caught because the numbers differ
+ * on purpose (`FORMATS_RAIL_WIDTH`'s docblock) and `responsive.test.tsx` pins the
+ * formats width as the SECOND track specifically.
  *
  * The `minmax(0, …)` rather than a bare `1fr` is the usual grid-overflow guard: a
  * `1fr` track's implicit minimum is `auto`, so a wide child (a long prompt, an image
@@ -4216,7 +4246,7 @@ const fillStyle: React.CSSProperties = { width: '100%' };
 function railGridStyle(layout: BlockLayout): React.CSSProperties {
   return {
     display: 'grid',
-    gridTemplateColumns: `${layout.railWidth}px minmax(0, 1fr) ${FORMATS_RAIL_WIDTH}px`,
+    gridTemplateColumns: `${layout.railWidth}px ${FORMATS_RAIL_WIDTH}px minmax(0, 1fr)`,
     gap: 20,
     alignItems: 'start',
   };
@@ -4241,8 +4271,9 @@ function panelStyle(active: boolean): React.CSSProperties {
 }
 
 /**
- * A persistent rail. BOTH of them: the inputs rail on the left and the formats rail on
- * the right are painted by this one function.
+ * A persistent rail. BOTH of them: the inputs rail and the formats rail — the first and
+ * second columns of the rail grid, side by side on the left of the thumbnails — are
+ * painted by this one function.
  *
  * 🔴 ONE FUNCTION, NOT A SECOND COPY OF THE CHROME. The two rails want the identical
  * contract — sticky, inset from the frame's top by one `SHELL_PADDING`, height-bounded
