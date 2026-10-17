@@ -11,6 +11,7 @@ import {
   coverCrop,
   drawThumbnail,
   exportLadder,
+  overlayFit,
   thumbnailFileName,
   wrapLines,
   type ThumbCtx,
@@ -247,6 +248,45 @@ describe('drawThumbnail (recording fake ctx)', () => {
     expect(y).toBeGreaterThanOrEqual(0);
     expect(y).toBeLessThan((20 / 100) * 720); // within one line height of the top
   });
+
+  it('🔴 a bottom-anchored block clamps so its BOTTOM stays on the canvas', () => {
+    // The bottom arm of the clamp put the block's CENTRE on the bottom edge
+    // until the 2026-10-17 audit — a single line at yPct 100 drew centred on
+    // 720 (half off-canvas), and multi-line titles lost whole lines. This is
+    // the arm the case above never pinned.
+    const { ctx, calls } = recordingCtx();
+    drawThumbnail(
+      ctx,
+      { width: 1280, height: 720 },
+      { ...DEFAULT_TEXT_OVERLAY, text: 'BOTTOM', yPct: 100, sizePct: 20 },
+    );
+    const fill = calls.find((c) => c.op === 'fillText');
+    const y = fill?.args[2] as number;
+    const lineHeight = (20 / 100) * 720 * 1.15;
+    // The line's bottom (centre + half a line) lands exactly on the frame edge.
+    expect(y + lineHeight / 2).toBeCloseTo(720, 6);
+  });
+
+  it('🔴 a multi-line block anchored low keeps EVERY line on the canvas', () => {
+    const { ctx, calls } = recordingCtx(100);
+    drawThumbnail(
+      ctx,
+      { width: 1280, height: 720 },
+      { ...DEFAULT_TEXT_OVERLAY, text: 'one two three four five six', yPct: 100, sizePct: 20 },
+    );
+    const fills = calls.filter((c) => c.op === 'fillText');
+    expect(fills.length).toBe(3);
+    const lineHeight = (20 / 100) * 720 * 1.15;
+    for (const f of fills) {
+      const y = f.args[2] as number;
+      expect(y - lineHeight / 2).toBeGreaterThanOrEqual(0);
+      expect(y + lineHeight / 2).toBeLessThanOrEqual(720 + 1e-6);
+    }
+    // And the last line's bottom is exactly the frame edge — the clamp moved
+    // the block up by the overflow, no more.
+    const lastY = fills.at(-1)?.args[2] as number;
+    expect(lastY + lineHeight / 2).toBeCloseTo(720, 6);
+  });
 });
 
 describe('exportLadder', () => {
@@ -303,6 +343,57 @@ describe('thumbnailFileName', () => {
   });
   it('floors a fractional counter', () => {
     expect(thumbnailFileName(2.7)).toBe('yt-thumbnail-2.jpg');
+  });
+});
+
+describe('overlayFit (the editor’s fit note)', () => {
+  // The note in App.tsx is driven by this geometry: `moved` is the draw
+  // clamp engaging (the position slider stops being exactly true) and
+  // `overflows` is the block being taller than the frame itself.
+  const per = (px: number) => (t: string) => t.length * px;
+
+  it('the default overlay fits where it was put: no move, no overflow', () => {
+    const fit = overlayFit({ ...DEFAULT_TEXT_OVERLAY }, per(40));
+    expect(fit.lines).toHaveLength(1);
+    expect(fit.moved).toBe(false);
+    expect(fit.overflows).toBe(false);
+  });
+
+  it('a block pushed past the bottom edge is MOVED back into the frame', () => {
+    const fit = overlayFit({ ...DEFAULT_TEXT_OVERLAY, yPct: 98 }, per(40));
+    expect(fit.lines).toHaveLength(1);
+    expect(fit.moved).toBe(true);
+    expect(fit.overflows).toBe(false);
+  });
+
+  it('a wrapped title reports its line count and the move', () => {
+    // 100px per char → the same 3-line wrap drawThumbnail produces.
+    const fit = overlayFit(
+      { ...DEFAULT_TEXT_OVERLAY, text: 'one two three four five six', yPct: 82 },
+      per(100),
+    );
+    expect(fit.lines).toHaveLength(3);
+    expect(fit.moved).toBe(true);
+    expect(fit.overflows).toBe(false);
+  });
+
+  it('a block taller than the frame OVERFLOWS (no clamp can save it)', () => {
+    const fit = overlayFit(
+      { ...DEFAULT_TEXT_OVERLAY, text: 'aaaa bbbb cccc', sizePct: 60 },
+      per(100),
+    );
+    expect(fit.lines.length).toBeGreaterThan(1);
+    expect(fit.blockHeightPx).toBeGreaterThan(YT_H);
+    expect(fit.overflows).toBe(true);
+    expect(fit.moved).toBe(true);
+  });
+
+  it('agrees with drawThumbnail on the lines it draws', () => {
+    const { ctx, calls } = recordingCtx(100);
+    const overlay = { ...DEFAULT_TEXT_OVERLAY, text: 'one two three four five six', yPct: 50 };
+    drawThumbnail(ctx, { width: 1280, height: 720 }, overlay);
+    const drawn = calls.filter((c) => c.op === 'fillText').map((c) => c.args[0]);
+    expect(overlayFit(overlay, per(100)).lines).toEqual(drawn);
   });
 });
 

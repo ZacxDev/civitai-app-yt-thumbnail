@@ -91,3 +91,24 @@ button:focus-visible {
   outline: 2px solid var(--yt-focus-ring, currentColor);
   outline-offset: 2px;
 }
+
+/* The editor's sliders (the pack's <Slider> is a native range input) rendered
+   with NO VISIBLE TRACK in dark mode — four floating thumbs, nothing to drag
+   along (audit 2026-10-17). The pack styles the thumb via accent-color but
+   leaves the track to the UA, whose dark track sits within a hair of the
+   editor's own ground. Paint the track from the app's palette instead:
+   `--yt-range-track` is set inline on the block root by `shellStyle` from
+   `pal.borderStrong`, exactly like `--yt-focus-ring` above, with the same
+   `currentColor` fallback for anything rendered outside the root. Only the
+   track is painted here — the thumb stays the pack's. */
+input[type='range']::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--yt-range-track, currentColor);
+}
+
+input[type='range']::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--yt-range-track, currentColor);
+}
