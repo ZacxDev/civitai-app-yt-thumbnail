@@ -256,9 +256,14 @@ function expectedAt(width: number) {
   return layoutForTier(resolveBlockTier(width), ultrawideAt(width));
 }
 
-/** The three-column track list the rail grid must emit at a given width. */
+/**
+ * The three-column track list the rail grid must emit at a given width: inputs rail,
+ * formats rail, then the thumbnails' flexible track. DERIVED from `layoutForTier` and
+ * the module constant, never a hardcoded string — a per-tier formats width or a wrong
+ * rail width can then only reach the DOM by disagreeing with this.
+ */
 function expectedRailTracks(width: number): string {
-  return `${expectedAt(width).railWidth}px minmax(0, 1fr) ${FORMATS_RAIL_WIDTH}px`;
+  return `${expectedAt(width).railWidth}px ${FORMATS_RAIL_WIDTH}px minmax(0, 1fr)`;
 }
 
 const VIEWER = { viewer: { id: 2, username: 'dev', status: 'active' as const } };
@@ -333,12 +338,13 @@ describe('the layout the App renders, at EVERY tier', () => {
     if (expected.rail) {
       const rail = screen.getByTestId('yt-rail');
       expect(screen.getByTestId('yt-main')).toBeInTheDocument();
-      // 🔴 THREE TRACKS NOW, NOT TWO: inputs rail | thumbnails | formats rail. The
+      // 🔴 THREE TRACKS NOW, NOT TWO: inputs rail | formats rail | thumbnails. The
       // formats rail is a FIXED px track so the thumbnail grid keeps every pixel the
       // block gains — see `FORMATS_RAIL_WIDTH` and the dedicated describe below for
-      // the arithmetic and the 50/50 mutant.
+      // the arithmetic and the 50/50 mutant. The thumbnails are the LAST track by the
+      // operator's decision; the widths are unchanged by that reorder.
       expect(screen.getByTestId('yt-rail-grid').style.gridTemplateColumns).toBe(
-        `${expected.railWidth}px minmax(0, 1fr) ${FORMATS_RAIL_WIDTH}px`,
+        `${expected.railWidth}px ${FORMATS_RAIL_WIDTH}px minmax(0, 1fr)`,
       );
       // 🔴 STICKY IS LIVE IN PRODUCTION — and this line is annotated because the
       // version of it that shipped before this round said it was inert. Both host
@@ -427,13 +433,15 @@ describe('the layout the App renders, at EVERY tier', () => {
     expect(content()).not.toHaveAttribute('data-result-columns');
     expect(content()).toHaveAttribute('data-min-card', '220');
     expect(screen.getByTestId('yt-rail-grid').style.gridTemplateColumns).toBe(
-      `400px minmax(0, 1fr) ${FORMATS_RAIL_WIDTH}px`,
+      `400px ${FORMATS_RAIL_WIDTH}px minmax(0, 1fr)`,
     );
     // 🔴 THE INPUTS RAIL WIDENS AT ULTRAWIDE (340 → 400); THE FORMATS RAIL DOES NOT.
     // That asymmetry is the constant's docblock argument, and this is the only case
-    // that can see it: the per-tier ladder above pins the third track at 320 for `lg`
-    // and `xl`, this pins it at 320 with the FIRST track at 400, so the two numbers
-    // are observed moving independently rather than together.
+    // that can see it: the per-tier ladder above pins the SECOND track at 320 at every
+    // rail tier, this pins it at 320 with the FIRST track at 400, so the two numbers
+    // are observed moving independently rather than together. With the two fixed tracks
+    // adjacent, this pair is also what makes a swap of them legible as two numbers that
+    // move independently rather than as one convention.
     expect(expectedAt(INSIDE_ULTRAWIDE).railWidth).not.toBe(FORMATS_RAIL_WIDTH);
   });
 
@@ -452,7 +460,7 @@ describe('the layout the App renders, at EVERY tier', () => {
     // about the tier.
     expect(content()).toHaveAttribute('data-min-card', '200');
     expect(screen.getByTestId('yt-rail-grid').style.gridTemplateColumns).toBe(
-      `340px minmax(0, 1fr) ${FORMATS_RAIL_WIDTH}px`,
+      `340px ${FORMATS_RAIL_WIDTH}px minmax(0, 1fr)`,
     );
   });
 
@@ -665,7 +673,7 @@ function testidsIn(el: HTMLElement): string[] {
     .sort();
 }
 
-describe('the formats rail is a FIXED third column, never a share of the thumbnails', () => {
+describe('the formats rail is a FIXED second column, never a share of the thumbnails', () => {
   let uninstall: (() => void) | undefined;
 
   afterEach(() => {
@@ -708,10 +716,11 @@ describe('the formats rail is a FIXED third column, never a share of the thumbna
       // 🔴 THE STRUCTURAL CLAIMS COME FIRST, AND THE ORDER IS LOAD-BEARING. A whole-string
       // `toBe` is strictly stronger than every structural check below it, so with the
       // literal first NOTHING below it can ever execute on a failing run — the guards
-      // would read as coverage while being unreachable. Ordered this way the two halves
-      // are killed by DIFFERENT mutants: a second `fr` (the 50/50 split) dies on the
-      // track-count guard with its own message, and a wrong rail WIDTH passes every
-      // structural check and dies on the literal. Measured, both directions.
+      // would read as coverage while being unreachable. Ordered this way the halves are
+      // killed by DIFFERENT mutants: a second `fr` (the 50/50 split) dies on the
+      // track-count guard with its own message, a SWAP of the two fixed tracks dies on
+      // the second-track guard with its own message, and a wrong rail WIDTH passes every
+      // structural check and dies on the literal. Measured, all three.
       //
       // EXACTLY ONE flexible track. A second `fr` anywhere is the 50/50 split, under
       // whatever syntax — `1fr`, `minmax(0, 1fr)`, `minmax(200px, 1fr)` — and it is what
@@ -720,15 +729,35 @@ describe('the formats rail is a FIXED third column, never a share of the thumbna
         tracks.match(/fr\b/g),
         `the rail grid has more than one flexible track: ${tracks}`,
       ).toHaveLength(1);
-      // ...and the flexible one is the MIDDLE track, with a fixed px rail either side.
-      // A `%` would be the same defect in another unit, so it is rejected by name.
-      expect(tracks).toMatch(/^\d+px\s+minmax\(0,\s*1fr\)\s+\d+px$/);
+      // ...and the flexible one is the LAST track, with the two fixed px rails ahead of
+      // it — the operator's column order. A `%` would be the same defect in another unit,
+      // so it is rejected by name.
+      expect(tracks).toMatch(/^\d+px\s+\d+px\s+minmax\(0,\s*1fr\)$/);
       expect(tracks).not.toContain('%');
-      expect(tracks.endsWith(`${FORMATS_RAIL_WIDTH}px`)).toBe(true);
+      // 🔴 AND THE FORMATS RAIL IS THE SECOND TRACK SPECIFICALLY — not merely "one of the
+      // two fixed ones". This replaces an `endsWith(FORMATS_RAIL_WIDTH + 'px')` that was
+      // the equivalent claim while the formats rail was the last track. With both fixed
+      // tracks now ADJACENT the claim matters more than it did: `340px 320px …` and
+      // `320px 340px …` are both well-formed, so the swap mutant is invisible to the
+      // regex above and to the `fr` count. It is pinned by POSITION rather than by
+      // membership (`toContain` would pass against either order) and the two widths are
+      // deliberately distinct for exactly this reason — see `FORMATS_RAIL_WIDTH`'s
+      // docblock and `layout.test.ts`'s distinctness case, which is what keeps this
+      // discriminating.
+      const trackList = tracks.split(/\s+(?=\d+px|minmax)/);
+      expect(trackList, `not three tracks: ${tracks}`).toHaveLength(3);
+      expect(trackList[1], `the formats rail is not the second track: ${tracks}`).toBe(
+        `${FORMATS_RAIL_WIDTH}px`,
+      );
+      // The control: the FIRST track is the inputs rail, and at these widths it is NOT
+      // `FORMATS_RAIL_WIDTH` — so the line above is reading a position and could not pass
+      // against a track list whose two fixed widths were equal or swapped.
+      expect(trackList[0]).toBe(`${expectedAt(width).railWidth}px`);
+      expect(trackList[0]).not.toBe(`${FORMATS_RAIL_WIDTH}px`);
 
       // Then the literal, derived from the layout rather than restated: inputs rail (a px
-      // length that DOES vary by tier), thumbnails (the one `fr`), formats rail (a px
-      // length that does not).
+      // length that DOES vary by tier), formats rail (a px length that does not), then
+      // thumbnails (the one `fr`).
       expect(tracks).toBe(expectedRailTracks(width));
 
       // The tier the tracks were chosen from, so a failure says WHY.
@@ -758,10 +787,13 @@ describe('the formats rail is a FIXED third column, never a share of the thumbna
       expect(inputsRail).not.toContainElement(grid);
 
       // The three columns are three SIBLING children of the rail grid, in reading
-      // order: inputs | thumbnails | formats. Order is part of the operator's decision,
-      // and a grid with the right tracks can still put the wrong child in each.
+      // order: inputs | formats | thumbnails. Order is part of the operator's decision,
+      // and a grid with the right tracks can still put the wrong child in each. The
+      // thumbnails column moved from second to LAST in this round; the track WIDTHS did
+      // not move with it, which is why this ledger and the track-list guard above are
+      // two separate claims.
       const railGrid = screen.getByTestId('yt-rail-grid');
-      expect([...railGrid.children]).toEqual([inputsRail, main, formatsRail]);
+      expect([...railGrid.children]).toEqual([inputsRail, formatsRail, main]);
 
       // The prompt stays in the INPUTS rail — the picker moving must not have taken
       // anything else with it.
@@ -906,7 +938,10 @@ describe('the formats rail is a FIXED third column, never a share of the thumbna
       const rowInset = historyRowInset();
       const contentPx = BLOCK - 2 * SHELL_PADDING;
 
-      // What ships: two fixed rails and one flexible middle, across two gaps.
+      // What ships: two fixed rails and one flexible track after them, across two gaps.
+      // Track ORDER does not enter this arithmetic — a grid's track sizes are the same
+      // whichever order they are listed in — so this subtraction is unchanged by the
+      // column reorder.
       const fixedRailMain = contentPx - inputsRailPx - FORMATS_RAIL_WIDTH - 2 * gridGap;
       // The mutant: the same area split 50/50 between thumbnails and formats.
       const halfSplitMain = Math.floor((contentPx - inputsRailPx - 2 * gridGap) / 2);

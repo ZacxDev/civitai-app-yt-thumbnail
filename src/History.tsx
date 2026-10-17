@@ -87,13 +87,27 @@ export function HistorySurface({
   // render.
   if (!showHistory({ state, entryCount: entries.length, note })) return null;
 
+  // 🔴 THE BADGE COUNTS THUMBNAILS, NOT BATCHES. It read `entries.length`
+  // under a header that says "Thumbnails", so a 2-format run showed "1"
+  // over two pictures (audit 2026-10-17) — a batch is the app's bookkeeping
+  // unit, not a thing the viewer counts. In-flight thumbnails count too,
+  // via the same `skeletonCount` the rows use, so the number does not jump
+  // when a running batch's pictures land.
+  const thumbnailCount = entries.reduce(
+    (n, e) =>
+      n +
+      e.imageUrls.length +
+      (e.status === 'running' ? skeletonCount(e.record, e.imageUrls.length) : 0),
+    0,
+  );
+
   return (
     <div style={fieldStyle} data-testid="yt-history">
       <Group justify="space-between" align="center" gap={8}>
         <span style={fieldLabelStyle}>
           Thumbnails{' '}
           <Badge color="info" variant="light">
-            {entries.length}
+            {thumbnailCount}
           </Badge>
         </span>
         <Group gap={6}>
@@ -434,6 +448,24 @@ function HistoryRow({
         {entry.record.form.checkpoint.label} · {entry.record.form.quantity}×
       </span>
 
+      {/* 🔴 THE FAILED CASE SAYS SOMETHING SPECIFIC — the shape the badge
+          removal (see the header of this row) explicitly left open: "if this
+          proves too thin in practice the fix is to make the FAILED case say
+          something specific, not to put the five-way badge back." It proved
+          thin: a run that failed on insufficient Buzz filed here as a bare
+          row with a "Reuse settings" button and no images, indistinguishable
+          from a succeeded batch whose pictures aged out (audit 2026-10-17).
+          This is a sentence, not a badge; it names the outcome and the
+          working next action, and only for a TERMINAL failed batch with no
+          images to show for it. A partial batch keeps its images and the
+          `pm-partial` alert's per-format account. */}
+      {entry.status === 'failed' && entry.imageUrls.length === 0 && !entry.unavailable && (
+        <span style={fieldDescStyle(pal)} data-testid="yt-history-failed">
+          This run failed — no images were generated. Reuse settings restores the form so you
+          can try again.
+        </span>
+      )}
+
       {entry.unavailable && (
         <span style={fieldDescStyle(pal)} data-testid="yt-history-unavailable">
           These images are no longer available, but the settings are — Resume refills the form.
@@ -490,45 +522,41 @@ function HistoryRow({
                   data-testid="yt-history-img"
                 />
               </button>
-              {/* 🔴 TWO BUTTONS THAT DO GENUINELY DIFFERENT THINGS, AND THE
-                  DISTINCTION IS NOW CARRIED BY THE ICON PLUS `aria-label`/`title`
-                  RATHER THAN BY VISIBLE TEXT. The previous version of this comment
-                  argued the opposite — that they had to be LABELLED because the
-                  difference matters — and the operator has reversed that to buy the
-                  width back for the pictures. The difference it was protecting is
-                  real and unchanged: "Save image" (the download icon) is the RAW
-                  candidate going through the host's SAVE_IMAGE bridge — a real file,
-                  every time. "Add text" (the text icon) opens the canvas editor,
-                  whose export is a local `blob:` that same bridge REFUSES
-                  (https-only allowlist), so that path ends in the honest
+              {/* 🔴 TWO BUTTONS THAT DO GENUINELY DIFFERENT THINGS, NOW CARRYING
+                  VISIBLE LABELS — "Download" and "Add text" — with `aria-label`
+                  and `title` carrying the SAME words. The distinction they label
+                  is real: Download is the RAW candidate going through the host's
+                  SAVE_IMAGE bridge — a real file, every time. Add text opens the
+                  canvas editor, whose export is a local `blob:` that same bridge
+                  REFUSES (https-only allowlist), so that path ends in the honest
                   right-click note.
 
-                  🔴 SO BOTH ATTRIBUTES ARE MANDATORY ON BOTH BUTTONS, and that is
-                  not style: `title` is the only hover affordance this UI pack
-                  offers (there is no `Tooltip` in `@civitai/blocks-react/ui`) and
-                  `aria-label` is the ONLY accessible name an icon-only control has.
-                  An icon with neither is not a tidier button, it is a button nobody
-                  on a screen reader can identify — a regression in accessibility,
-                  not a visual change. The guard is
-                  `src/App.inflight.test.tsx`'s "🔴 the icon-only controls carry BOTH a
-                  title and an aria-label", which asserts the exact wording on both
-                  controls here — not merely that the attributes exist. (This pointer
-                  previously named a `pm-icon-labels` testid in `App.history.test.tsx`;
-                  no such testid exists anywhere in the tree and the file was wrong
-                  too. The coverage was real; only the reference was not.)
-                  The testids and
-                  both `onClick` payloads — including the `i + 1` index and the
-                  per-image `imageLabels[i]` that stop a cinematic picture being
-                  saved as `…-clickbait-3.jpg` — are byte-for-byte what they were. */}
+                  🔴 THIS IS THE SECOND REVERSAL, AND IT IS THE OPERATOR'S BOTH
+                  TIMES. The buttons were labelled, then went icon-only on the
+                  operator's call to buy the width back for the pictures, with the
+                  attributes above carrying the names alone. The 2026-10-17 UX
+                  audit found the icon-only pair was the one place in the app
+                  where the next action was not obvious — a bare "T" does not say
+                  "add text" — and the operator overrode it. The width rationale
+                  does not bind here anyway: these buttons sit in their own row
+                  UNDER the image, where the row's width is free, so a label
+                  costs the picture nothing. Visible text, title and aria-label
+                  agree word-for-word (label-in-name), and the guard is
+                  `src/App.inflight.test.tsx`'s label case, which asserts the
+                  exact wording in all three places on both controls. The testids
+                  and both `onClick` payloads — including the `i + 1` index and
+                  the per-image `imageLabels[i]` that stop a cinematic picture
+                  being saved as `…-clickbait-3.jpg` — are byte-for-byte what
+                  they were. */}
               <Group gap={6} wrap={false}>
                 <Button
                   size="sm"
-                  aria-label="Save image"
-                  title="Save image"
+                  aria-label="Download"
+                  title="Download"
                   onClick={() => onSave(url, i + 1, entry.imageLabels[i] ?? undefined)}
                   data-testid="yt-history-save"
                 >
-                  <DownloadIcon />
+                  <DownloadIcon /> Download
                 </Button>
                 <Button
                   size="sm"
@@ -538,7 +566,7 @@ function HistoryRow({
                   onClick={() => onEdit(url)}
                   data-testid="yt-history-edit"
                 >
-                  <AddTextIcon />
+                  <AddTextIcon /> Add text
                 </Button>
               </Group>
             </div>

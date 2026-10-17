@@ -109,10 +109,12 @@ import {
   DEFAULT_TEXT_OVERLAY,
   YT_H,
   YT_W,
+  THUMB_FONT_STACK,
   downloadBlob,
   drawThumbnail,
   exportLadder,
   loadImageElement,
+  overlayFit,
   thumbnailFileName,
   type TextOverlay,
 } from './editor.js';
@@ -642,6 +644,10 @@ export function App() {
     'idle',
   );
   const [exportNote, setExportNote] = useState<string | null>(null);
+  // What the editor says when the title's wrapped block no longer sits where
+  // the position slider put it (or cannot fit the frame at all) — computed
+  // from the same geometry `drawThumbnail` draws with, in the draw effect.
+  const [fitNote, setFitNote] = useState<string | null>(null);
   const [downloadCount, setDownloadCount] = useState(0);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -862,11 +868,13 @@ export function App() {
       setEditorImage(null);
       setEditorStatus('idle');
       setExportNote(null);
+      setFitNote(null);
       return;
     }
     let alive = true;
     setEditorStatus('loading');
     setExportNote(null);
+    setFitNote(null);
     loadImageElement(editing)
       .then((img) => {
         if (!alive) return;
@@ -893,6 +901,22 @@ export function App() {
     canvas.width = YT_W;
     canvas.height = YT_H;
     drawThumbnail(ctx, editorImage, overlay);
+    // The draw CLAMPS an over-tall or off-centre block back into the frame
+    // silently — the canvas stays honest but the position slider stops being
+    // quite true, and a block taller than the frame is clipped no matter
+    // what. Say so under the title field instead of letting the viewer
+    // discover it in YouTube Studio. The font is set explicitly for the
+    // measure: drawThumbnail's save/restore REVERTED the context font, so
+    // measuring on the restored context would measure in the UA default
+    // and report every title as fitting (caught in the audit re-walk).
+    ctx.font = `900 ${(overlay.sizePct / 100) * YT_H}px ${THUMB_FONT_STACK}`;
+    const fit = overlayFit(overlay, (t) => ctx.measureText(t).width);
+    const note = fit.overflows
+      ? 'This title is too long to fit the frame — shorten it or reduce the text size.'
+      : fit.moved
+        ? `The title wrapped to ${fit.lines.length} lines and was moved to fit the frame — shorten it or reduce the text size to place it exactly.`
+        : null;
+    setFitNote((prev) => (prev === note ? prev : note));
   }, [editorImage, overlay]);
 
   /**
@@ -1712,6 +1736,30 @@ export function App() {
       return !open;
     });
   }, [loadBoard]);
+
+  // --- Bring a just-opened panel into view ---
+  // The format editor and the published board render in the DETAIL block,
+  // which in the single-column layout sits BELOW "What gets sent" — a long
+  // scroll away from the "+ New" / "Browse published" buttons that open them.
+  // A viewer who tapped either got no visible change at all (audit
+  // 2026-10-17). Scroll the opened panel to them. Keyed on the OPEN state
+  // (draft identity / the boolean), never on draft CONTENT, so typing in the
+  // editor does not keep yanking the scroll. `?.` because jsdom has no
+  // scrollIntoView — the call is a no-op there and in any host that lacks it.
+  const formatDraftOpen = formatDraft != null;
+  useEffect(() => {
+    if (!formatDraftOpen) return;
+    document
+      .querySelector('[data-testid="yt-format-editor"]')
+      ?.scrollIntoView?.({ block: 'nearest' });
+  }, [formatDraftOpen, formatDraft?.id]);
+
+  useEffect(() => {
+    if (!boardOpen) return;
+    document
+      .querySelector('[data-testid="yt-published-board"]')
+      ?.scrollIntoView?.({ block: 'nearest' });
+  }, [boardOpen]);
 
   // Pull a published format into this session's picker and select it. It is NOT
   // copied into the viewer's own storage: it stays someone else's format, so it
@@ -2581,9 +2629,22 @@ export function App() {
                       label="Title text"
                       value={overlay.text}
                       onChange={(e) => setOverlay((o) => ({ ...o, text: e.target.value }))}
+                      // The field starts on the DEFAULT overlay text, which is
+                      // a real value, not a placeholder — so a viewer who just
+                      // starts typing APPENDED to it ("YOUR TITLE HEREI TRIED
+                      // IT!" on the canvas, audit 2026-10-17). Selecting the
+                      // contents on focus makes typing replace it, while a
+                      // click-to-place-caret still works on the second click.
+                      onFocus={(e) => e.currentTarget.select()}
                       data-testid="pm-editor-text"
                       aria-label="Title text"
                     />
+
+                    {fitNote && (
+                      <span style={fieldDescStyle(pal)} data-testid="pm-editor-fit-note">
+                        {fitNote}
+                      </span>
+                    )}
 
                     <Slider
                       label="Text size"
@@ -3084,6 +3145,21 @@ export function App() {
         </span>
       )}
 
+      {/* 🔴 WHY IS GENERATE LIVE WITH AN EMPTY PROMPT? Because a format is
+          selected — but the only place that said so was "What gets sent",
+          below the fold in the single-column layout, so a cold-open viewer
+          could spend on a prompt they never saw (audit 2026-10-17). The line
+          sits with the button it explains, and only in the exact state that
+          needs explaining: signed in, prompt empty, formats selected, and
+          not already carrying the Remix hint above. */}
+      {!anon && !remixIncomplete && prompt.trim() === '' && selectedFormats.length > 0 && (
+        <span style={fieldDescStyle(pal)} data-testid="pm-generate-format-hint">
+          {selectedFormats.length === 1
+            ? `Prompt optional — the ${selectedFormats[0]!.label} format will be used on its own.`
+            : `Prompt optional — your ${selectedFormats.length} selected formats will be used on their own.`}
+        </span>
+      )}
+
       {phase === 'needs-consent' && (
         <Alert color="info" title="Grant access to generate">
           Confirm in the Civitai dialog. If you dismissed it, click Generate again.
@@ -3308,8 +3384,9 @@ export function App() {
   // THUMBNAILS — the output surface, as ONE binding, rendered by both layouts.
   //
   // 🔴 IT IS A BINDING RATHER THAN TWO COPIES BECAUSE THE PANELS MUST NOT FORK. At
-  // `xl`+ this is the middle column; below `xl` it is one of two tab panels, and the
-  // ONLY difference between the two is the container. Two JSX copies of
+  // `xl`+ this is the LAST of the three columns — the only flexible track, after both
+  // rails; below `xl` it is one of two tab panels, and the ONLY difference between the
+  // two is the container. Two JSX copies of
   // `{resultsBlock}{historyBlock}` would be a predicate open-coded twice — the shape
   // `layout.ts`'s module docblock says is wrong at N−1 sites — and the failure would
   // be silent: a block that stopped rendering the partial-failure alert on phones
@@ -3350,15 +3427,33 @@ export function App() {
               >
                 <Stack gap={16}>{inputs}</Stack>
               </aside>
-              {/* 🔴 THUMBNAILS TAKE WHAT IS LEFT — the only `fr` track in the grid.
-                  The format PICKER used to sit UNDER this column; it is now the third
-                  column, and it is a FIXED px track so that every px the block gains
+              {/* 🔴 FORMATS GET THEIR OWN RAIL, WITH `railStyle` — the SAME function the
+                  inputs rail uses, not a copy of its chrome. Both are bounded, sticky,
+                  self-scrolling columns, and the height bound is the load-bearing half
+                  here too: the picker is about to grow from 6 formats to 12, so at one
+                  card column per row an unbounded sticky column would strand the tail
+                  of the LIST below the fold for the whole sticky range.
+                  One function means the two rails cannot drift into disagreeing about
+                  that. What is NO LONGER stranded here is everything the picker opens —
+                  that moved to the main column (`formatsDetailBlock`).
+                  🔴 THE SECOND GRID CHILD, BY THE OPERATOR'S DECISION. The two rails sit
+                  side by side and the thumbnails take the whole right of the grid; this
+                  column used to be third, after the thumbnails. It is still a FIXED px
+                  track — the position changed, the sizing did not. */}
+              <aside style={railStyle(pal)} data-testid="yt-formats-rail" aria-label="Formats">
+                <Stack gap={16}>{formatsPickerBlock}</Stack>
+              </aside>
+              {/* 🔴 THUMBNAILS TAKE WHAT IS LEFT — the only `fr` track in the grid, and
+                  the LAST of the three columns. The format PICKER used to sit UNDER this
+                  column, then beside it on the right; it is now the column immediately
+                  before it, and it is a FIXED px track so that every px the block gains
                   goes to the thumbnail grid rather than being split with a surface
                   that cannot spend it. The arithmetic is in `FORMATS_RAIL_WIDTH`.
                   🔴 AND `formatsDetailBlock` IS HERE, NOT IN THE RAIL. The composed-prompt
                   boxes, the format editor and the published board are full-width surfaces
                   — the first two are prompt textareas on the money path — and the rail's
-                  content box is 286px. They sit AFTER the thumbnails so the app's primary
+                  content box is 286px. That is unchanged by the reorder: the rail is the
+                  same 320px it was. They sit AFTER the thumbnails so the app's primary
                   object stays the first thing in this column; see `formatsPickerBlock`. */}
               <main style={mainColumnStyle} data-testid="yt-main">
                 <Stack gap={16}>
@@ -3366,18 +3461,6 @@ export function App() {
                   {formatsDetailBlock}
                 </Stack>
               </main>
-              {/* 🔴 FORMATS GET THEIR OWN RAIL, WITH `railStyle` — the SAME function the
-                  inputs rail uses, not a copy of its chrome. Both are bounded, sticky,
-                  self-scrolling columns flanking the grid, and the height bound is the
-                  load-bearing half here too: the picker is about to grow from 6 formats
-                  to 12, so at one card column per row an unbounded sticky column would
-                  strand the tail of the LIST below the fold for the whole sticky range.
-                  One function means the two rails cannot drift into disagreeing about
-                  that. What is NO LONGER stranded here is everything the picker opens —
-                  that moved to the main column (`formatsDetailBlock`). */}
-              <aside style={railStyle(pal)} data-testid="yt-formats-rail" aria-label="Formats">
-                <Stack gap={16}>{formatsPickerBlock}</Stack>
-              </aside>
             </div>
           </Stack>
         </div>
@@ -3398,8 +3481,18 @@ export function App() {
   // "pick your formats" before "say what you want" inverts the sentence the form is. The
   // operator chose prompt-then-formats, i.e. controls first. Below the rail tier the
   // results are therefore BELOW the prompt, which `responsive.test.tsx` now pins as the
-  // order rather than its opposite. It is the same order the rail tier renders, where the
-  // inputs rail is the first grid child and the thumbnails column the second.
+  // order rather than its opposite. It agrees with the rail tier on the half this tab
+  // order is about — the inputs rail is the FIRST grid child there, so the prompt
+  // precedes both output surfaces in both layouts. It is NOT the same order beyond that:
+  // at the rail tier the formats column is the second grid child and the thumbnails the
+  // third, while the tabs here present Thumbnails first and Formats second. That is not a
+  // contradiction — a tab control shows one panel at a time, so its left-to-right order
+  // is a pick list rather than a reading order, and it does not even decide which panel a
+  // viewer meets first: `narrowPanel` starts on FORMATS whatever order the two tabs are
+  // listed in, with the first-batch latch moving it. Nothing about the tabs changed when
+  // the rail columns were reordered, and `responsive.test.tsx` pins the two claims
+  // separately: the prompt-before-results order in BOTH layouts, and the rail grid's
+  // three children as an ordered list.
   //
   // 🔴 AND THE TWO OUTPUT SURFACES ARE TABS HERE, NOT A STACK. At `xl`+ Thumbnails and
   // Formats are two columns; below it there is one column, and stacking them put the
@@ -3960,9 +4053,13 @@ function AccountPicker({
           would remove the only thing that said so. Two names, on purpose. */}
       <span style={fieldLabelStyle}>Buzz</span>
       {/* Kept short, but the "preference, not a guarantee" half stays: this is
-          the control that decides whose Buzz is debited. */}
+          the control that decides whose Buzz is debited. The earlier wording
+          ("the server picks the final pool") named a mechanism the viewer has
+          never seen defined — "pool" is the app's word, not theirs — so the
+          Auto behaviour is now stated in the viewer's terms instead (audit
+          2026-10-17). */}
       <span style={fieldDescStyle(pal)} id={ACCOUNT_DESC_ID}>
-        A preference — the server picks the final pool.
+        A preference, not a guarantee — Auto spends from whichever pool can cover it.
       </span>
       <div ref={wrapRef} style={accountWrapStyle}>
         <button
@@ -4143,6 +4240,12 @@ function shellStyle(pal: Palette): React.CSSProperties {
     // with. The cast is because `React.CSSProperties` has no index signature for
     // `--*`; React itself passes such keys through to `style.setProperty`.
     ['--yt-focus-ring' as string]: pal.brand,
+    // The editor's range-track colour, handed to `index.css` the same way and
+    // for the same reason: a stylesheet cannot read the palette, and a
+    // hardcoded hex here would be wrong in one of the two themes.
+    // `borderStrong` is the palette's "has to be seen rather than felt" border
+    // — strong enough to read as a track under the slider thumb in both.
+    ['--yt-range-track' as string]: pal.borderStrong,
   } as React.CSSProperties;
 }
 
@@ -4196,15 +4299,28 @@ function contentProps(layout: BlockLayout) {
 const fillStyle: React.CSSProperties = { width: '100%' };
 
 /**
- * THREE columns at the `rail` tier: inputs rail | thumbnails | formats rail.
+ * THREE columns at the `rail` tier: inputs rail | formats rail | thumbnails.
+ *
+ * 🔴 THE TWO RAILS ARE ADJACENT AND THE THUMBNAILS ARE LAST — THE OPERATOR'S ORDER.
+ * It used to be inputs | thumbnails | formats, with the thumbnails between the two
+ * rails. Nothing about the WIDTHS changed with the reorder: CSS grid track order does
+ * not affect track sizing, so the main column is the same width it was and every number
+ * in `FORMATS_RAIL_WIDTH`'s arithmetic still holds. What changed is only which track
+ * each surface sits in.
  *
  * 🔴 EXACTLY ONE TRACK IS FLEXIBLE, AND THAT IS THE WHOLE RULE. Both rails are fixed
- * px; `minmax(0, 1fr)` in the middle means the thumbnail grid gets the block's width
+ * px; the single `minmax(0, 1fr)` means the thumbnail grid gets the block's width
  * MINUS the two rails and the two gaps, and absorbs every pixel the block gains. A
- * second `1fr` — the obvious way to add a formats column — splits the main area 50/50
- * and drops the grid from 2 tiles to 1 at a 1440px block; `FORMATS_RAIL_WIDTH` in
+ * second `1fr` — the obvious way to add a formats column — splits the remaining area
+ * 50/50 and drops the grid from 2 tiles to 1 at a 1440px block; `FORMATS_RAIL_WIDTH` in
  * `layout.ts` carries the arithmetic and the reason the formats column's appetite is
  * bounded while the grid's is not.
+ *
+ * 🔴 AND WITH BOTH FIXED TRACKS NOW ADJACENT, THE TWO px WIDTHS BEING DISTINCT MATTERS
+ * MORE, NOT LESS. `340px 320px …` and `320px 340px …` are both well-formed, so a swap
+ * of the two rails' widths is a silent defect; it is caught because the numbers differ
+ * on purpose (`FORMATS_RAIL_WIDTH`'s docblock) and `responsive.test.tsx` pins the
+ * formats width as the SECOND track specifically.
  *
  * The `minmax(0, …)` rather than a bare `1fr` is the usual grid-overflow guard: a
  * `1fr` track's implicit minimum is `auto`, so a wide child (a long prompt, an image
@@ -4216,7 +4332,7 @@ const fillStyle: React.CSSProperties = { width: '100%' };
 function railGridStyle(layout: BlockLayout): React.CSSProperties {
   return {
     display: 'grid',
-    gridTemplateColumns: `${layout.railWidth}px minmax(0, 1fr) ${FORMATS_RAIL_WIDTH}px`,
+    gridTemplateColumns: `${layout.railWidth}px ${FORMATS_RAIL_WIDTH}px minmax(0, 1fr)`,
     gap: 20,
     alignItems: 'start',
   };
@@ -4241,8 +4357,9 @@ function panelStyle(active: boolean): React.CSSProperties {
 }
 
 /**
- * A persistent rail. BOTH of them: the inputs rail on the left and the formats rail on
- * the right are painted by this one function.
+ * A persistent rail. BOTH of them: the inputs rail and the formats rail — the first and
+ * second columns of the rail grid, side by side on the left of the thumbnails — are
+ * painted by this one function.
  *
  * 🔴 ONE FUNCTION, NOT A SECOND COPY OF THE CHROME. The two rails want the identical
  * contract — sticky, inset from the frame's top by one `SHELL_PADDING`, height-bounded

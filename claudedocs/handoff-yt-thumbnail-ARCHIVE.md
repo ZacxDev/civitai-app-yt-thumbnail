@@ -188,3 +188,101 @@ already live as gotchas in the main doc.
 - **Consolidation found a second, latent bug.** The single-shot idiom was open-coded at **five** sites. Only `estimate` had a second app-internal caller, but `runGeneration` issues one `submit` **per format**, so **both submit holds were wrong by construction** and would hang silently the day a second format is selected by default. All five now use `deferred`. `via: code`
 - **Leading hypothesis:** none outstanding — the mechanism is established and the control pair closes it.
 - **Next probe:** none for this. If the suite ever flakes here again, timestamp the mock's calls first; aggregate timings are the wrong instrument.
+
+## Evicted from `claudedocs/handoff-yt-thumbnail.md` — 2026-10-02
+
+Closed investigation blocks evicted by rule (s) on 2026-10-02, when ARC 7 closed and 0.1.11 went into review.
+
+From `Open investigations — live diagnosis state`:
+
+- **How it was measured, verbatim-reusable:** `browser --instance work open <run-url>` → `emulate --width W --height 1000` → `wake --wait` → `frames` → `--frame <id> js` reading `getComputedStyle(...).gridTemplateColumns`. 🔴 **`emulate` REQUIRES TAB OWNERSHIP and is refused on a `--tab` you merely name**, so open+emulate+measure must all run in ONE ssh invocation; ownership does not survive a separate one.
+- **Observed (with values) — block width vs layout vs THUMBNAIL GRID COLUMNS:**
+  `vw=1456 → block=1184 TABS, thumbTrack=1112, columns=3` · `vw=1502 → block=1184 TABS, 1112, 3` · `vw=1503 → block=1440 THREE-COL, thumbTrack=718, columns=2, rail=320` · `vw=1600 → block=1537 THREE-COL, 815, 2` · `vw=1920 → block=1857 THREE-COL, 1075, 3`. `formatCards=12` at every width. `via: measurement`
+- 🔴 **THE CLIFF IS REAL AND IT RELOCATED RATHER THAN VANISHED — and this is the DELIBERATE tradeoff, not a regression discovered late.** Crossing into three columns at block 1440 drops the thumbnail grid **3 → 2**, recovering 3 by block 1857. PR #33's own commit predicted exactly this: *"uncapped, 1439 renders 4 tiles and the two-tile cliff simply RELOCATES to 1439→1440. Capped, the step is one tile."* The step is one column, as chosen. `via: measurement`
+- 🔴 **NOT established — whether this is worse than 0.1.8 at any width.** 0.1.8 is superseded and was never measured; comparing would be arithmetic dressed as measurement. Do not assert a regression without measuring a build that still serves it.
+- ✅ **Ruled out — the lightbox width override being unprovable.** The auditor flagged it as derived from the pack's stylesheet TEXT, not measured. Measured now at vw=1920: `panelMaxWidth: 1536px`, `panelWidth: 1536`, image rendered **1498×632** from `naturalSize 1376×768` — a full-size candidate genuinely fits. `position "1 of 2"`, `prevDisabled true`, `nextDisabled false` — the clamp holds in a browser. `via: measurement`
+- 🔴 **Ruled out — a tile-starvation finding I nearly filed, and the instrument is the lesson.** A first pass reported `tilesPerRow=[2,2,2,…]` and read as starvation. It was counting **how many IMAGES each batch contains** (most runs are 1–2), not how many COLUMNS fit; the ancestor chain shows `yt-history-images` carrying `cols = 351.656px 351.672px 351.656px` — THREE columns — inside a 1075px track. **The instrument for grid capacity is `gridTemplateColumns`, never a count of rendered children.** The audit's arithmetic was right and my inference that it was wrong was itself wrong. `via: measurement`
+- **Leading hypothesis:** none outstanding for layout. The remaining question is product judgement, not fact: is the 3→2 column step at 1440 an acceptable price for Formats being permanently visible?
+- **Next probe:** none for the numbers. Put the live app in front of the operator — that is ARC 7's closing condition and nothing an agent runs can answer it.
+
+## Evicted from `claudedocs/handoff-yt-thumbnail.md` — 2026-10-02
+
+Closed investigation blocks evicted by rule (s) on 2026-10-02.
+
+From `Open investigations — live diagnosis state`:
+
+- **The symptom is GONE, with the exact repro that proves it:** `https://civitai.com/apps/run/yt-thumbnail`, signed in as the operator, frame `https://yt-thumbnail.civit.ai/` (frameId 3519), bundle `index-BQ7kpc1g.js`. `pm-save-note` **absent** pre-click (`null`, so any text after is attributable); one synthetic in-frame `click` on `[data-testid=yt-history-save]` — first of **7**, all `disabled:false`, all labelled `Save image`, across **3** `yt-history-row`s; note → **`Saved — check your downloads.`**, stable across 6 polls. The BROKEN string `Couldn't save that image: image url is not allowed` did **not** appear. `via: measurement`
+- 🔴 **"Saved" ALONE WOULD HAVE BEEN A VACUOUS GREEN — and this doc already records the precedent.** `<a download>` was inert in the block's sandbox for every version *while the app said "Saved"*, so the note cannot close this criterion. The file was therefore verified ON DISK: `/home/zach/Downloads/yt-thumbnail-clickbait-1.jpg`, **360819 B**, `JPEG … 1536x864` by `magick identify`, mtime **16:15:37 CDT** (seconds after the click), sha256 `13338409dcc8ef26b1ae20adaec9c772dae7c93b5566545de0bfcc6442c3281f`. `via: measurement`
+- 🔴 **Provenance is EXACT, not circumstantial — and the mechanism is reusable.** The JPEG's EXIF `software` field reads **`05a0dd81-75fb-4909-a721-3ca90aeaf916`**, which is the blob UUID of the very candidate the clicked button owned (`https://orchestration-new.civitai.com/v2/consumer/blobs/05a0dd81-75fb-4909-a721-3ca90aeaf916-0.jpg`). That ties the bytes on disk to **that** click, ruling out a cached file, a different row, and an unrelated download. All 7 candidates were on `orchestration-new.civitai.com` — the exact host the allowlist had omitted. `via: measurement`
+- **Ruled out — "merged but not DEPLOYED", which is the rival mechanism a failure would otherwise have been blamed on.** Measured BEFORE the click, against the **deployed artifact**: the production chunk for route `/apps/run/[slug]/[[...path]]` carries `["image.civitai.com","orchestration.civitai.com","orchestration-new.civitai.com","orchestration-next.civitai.com"]` verbatim, in the SAME chunk as the `image url is not allowed` refusal string. Corroborated in git: `fd3831b0` is an ancestor of `origin/release` (tip `d8425346b7`, tagged `5.1.159`). `via: measurement`
+- 🔴 **How to grep a civitai production bundle — because the obvious way returns a confident ALL-ZERO.** `_buildManifest.js` names **249** `static/chunks/*.js`, but those are turbopack **page-chunk loaders** (`__turbopack_load_page_chunks__("<route>", [...])`), ~1.2 KB each, containing **no app code**. Grepping them scored **0 for every positive control** (`image.civitai.com` → 0), which is the only reason the mistake was caught. Resolve one level: find the loader naming your route, fetch the **26** chunks IT lists, grep those — controls then read `image url is not allowed` → 1 and `image.civitai.com` → 2. **Report the control pair, never the zero alone.** `via: measurement`
+- **Leading hypothesis:** none outstanding. Both sides are established — the host code is deployed, and a file the click produced is on disk.
+- **Next probe:** none for the save; re-running it spends nothing but proves nothing new. The open question is ARC 7's: get a version past 0.1.7 deployed so the UI can be looked at.
+
+## Evicted from `claudedocs/handoff-yt-thumbnail.md` — 2026-10-02
+
+Evicted 2026-10-02: a twin-recurrence note superseded by 0.1.11 spawning one, and a pointer to a past eviction.
+
+From `Gotchas / decisions / dead-ends`:
+
+- **The sourceless twin did NOT recur on 0.1.10.** 0.1.5/0.1.6/0.1.7/0.1.9 each produced exactly one; 0.1.10 produced none and deployed on our own commit. The "every approval spawns a twin" hypothesis is weakened, not confirmed.
+- 📁 **EVICTED verbatim to `claudedocs/handoff-yt-thumbnail-ARCHIVE.md`, two sections:** §"…2026-09-30 (arc 6)" (12 bullets, PR #23) and §"…2026-10-01 (arc 6 close)" (16, PR #25). The second is half **relocated** — the browser-driving facts now live in devrc's `flows/yt-thumbnail.civit.ai.md`, `flows/civit.ai.md`, `reference/errors.md` (PR #1951), where a browser session loads them — and half **closed with arcs 3–5**: the listing-media/CLI mechanics **rank 2 should read in the ARCHIVE**. 🔴 Commit a companion file FIRST and separately — the handoff tool commits path-limited, so a delta adding pointers ships them without their target.
+
+## Evicted from `claudedocs/handoff-yt-thumbnail.md` — 2026-10-02
+
+Closed investigation blocks evicted by rule (s) on 2026-10-02 when PR #39 merged.
+
+From `Open investigations — live diagnosis state`:
+
+- 🔴 **THIS ANSWERS THE BLOCK ABOVE TITLED "Does 0.1.11 deploy on OUR request, or does the twin inversion recur?" — ITS QUESTION IS SPENT.** Both halves are settled; do not re-run its next probe.
+- **Observed (with values):** submitted **15:52Z**, `pending` → **`approved`/`building` 16:31Z** → **`live` 16:32Z**, row reading `0.1.11 approved live b022e3b`. A SECOND `0.1.11` row carrying **no source commit** appeared and sits **`withdrawn`**. Served bundle moved `index-rGpkvQLX.js` → **`index-YPsZxCZP.js`**. `via: measurement`
+- 🔴 **Ruled out — the 0.1.9 inversion recurring.** That failure was *our sourced request withdrawn while a sourceless one deployed*. Here the sourced request is the one that went live and the twin is the withdrawn one. `via: measurement`
+- 🔴 **Ruled out — "the deploy landed" resting on the bundle hash.** The previews are static files in `public/`, so they never enter the JS bundle and a bundle grep is structurally blind to them. The instrument was a **byte compare of the served asset against the repo copy**: all six MATCH, and the pre-change art at `4a86bb9` does **not** match the served bytes — the negative control that makes the six matches mean something. `via: measurement`
+- **What this does to the twin hypothesis:** 0.1.5/0.1.6/0.1.7/0.1.9 each produced exactly one, **0.1.10 produced none**, 0.1.11 produced one. So "every approval spawns a twin" is still **refuted by 0.1.10** and nothing explains the exception. The disposition remains variable and, 0.1.8 aside, harmless.
+- **Next probe:** none worth running on its own. Record `(version, status, deploy, req, source)` for BOTH rows on the next release and see whether a second no-twin case ever appears.
+
+## Evicted from `claudedocs/handoff-yt-thumbnail.md` — 2026-10-02
+
+Evicted 2026-10-02: two audit-dispatch/CLI notes that are audit-pr SKILL knowledge rather than yt-thumbnail knowledge, and the path-limited-commit note, which this day showed is incomplete — with --archive-write the tool carries BOTH paths in one commit.
+
+From `Gotchas / decisions / dead-ends`:
+
+- 🔴 **`audit-dispatch.py` run from a FOREIGN repo cannot measure the payload it gates on.** For a cross-repo PR it still assembles correctly, but `git log` runs in the invoking repo, which does not hold those commits — so it prints `🔴 PAYLOAD NOT VERIFIED … the gate is reading the count as POSTED`. Say so on the PR rather than letting a posted number read as measured. (Round 3 later confirmed `payload=437` mechanically from a checkout that *did* hold them.)
+- **`npx civitai` fails ("could not determine executable")** — the PATH binary validates. Not a defect to chase.
+- 🔴 **The handoff tool commits PATH-LIMITED to the handoff doc.** A delta that adds pointers to a NEW companion file ships the pointers without their target — measured this session: `bb2698f` landed five references to an ARCHIVE file that existed only in a working tree. **Commit the companion file separately (PR #21 here) and verify with `git cat-file -e origin/main:<path>` before believing the cross-references resolve.**
+
+## Evicted from `claudedocs/handoff-yt-thumbnail.md` — 2026-10-02
+
+Evicted 2026-10-02 at session close: the two-commit eviction recipe (this session measured --archive-write carrying BOTH paths in ONE commit), a listing-verify bullet duplicated by the pixel-content one, and a browser-screenshot note whose arc has closed.
+
+From `Gotchas / decisions / dead-ends`:
+
+- **If you DO have a prunable set, eviction is a MOVE taking TWO commits in a fixed order.** `--archive FILE` is **read, never written**, and the handoff tool commits **path-limited to the handoff doc** — so: append to the ARCHIVE → commit/PR that **first and separately** → verify by content (`git cat-file -e origin/main:<path>` plus a grep) → only then `--update … --prune … --prune-count … --archive …`. ⚠ `--archive` is checked over **every** removed line, whitespace-collapsed but otherwise verbatim; verify coverage mechanically before the run (32/32 here) rather than reading its refusal.
+- **Verify a listing attach by PALETTE, not status** — listing status cannot tell an approved revision from a rejected one. `env -i curl -sS https://civitai.com/api/v1/apps/<slug>` → `iconUrl`, fetch with `curl -sSL` (it 301s), read the histogram.
+- **A screenshot is worth taking even when the DOM read already passed** — the DOM proved `yt-history-bolt` EXISTS (count 3); only the image showed it renders as a readable `836 ⚡` beside a relative `17h ago` on a real tile. For a *visual* claim the DOM count is necessary and not sufficient. ⚠ Driven over raw `ssh`, `browser screenshot` writes the PNG on the REMOTE host (not locally as a `bw://` reference would) — `scp` it back, then delete the remote copy.
+
+## Evicted from `claudedocs/handoff-yt-thumbnail.md` — 2026-10-02
+
+Evicted 2026-10-02 to clear the size ratchet: three investigation blocks whose own text declares them closed — the useSaveImage production block (its heading is FALSE, superseded by the RESOLVED 2026-10-01 block), the money-path flake (fixed, "Leading hypothesis: none outstanding"), and the 0.1.8 deploy failure (three versions superseded). Each keeps its heading and as-of stamp in the live doc as a pointer here. Read these for closed evidence, never as current state.
+
+From `Open investigations — live diagnosis state`:
+
+- **Symptom + exact repro:** `civitai app status` (no slug) shows `yt-thumbnail 0.1.8 approved failed e994fed`. Detail via `civitai app status yt-thumbnail` — safe here only because our row IS the newest; **a sourceless twin makes that view lie, so prefer the no-slug form and grep your sha.**
+- **Observed (with values):** `Deploy detail:` carries `SCAN-BLOCKED (F10): trivy found un-ignored HIGH/CRITICAL vulnerabilities in image.tar -- failing the build BEFORE publish.` · `image.tar (alpine 3.23.4)` · `Total: 4 (HIGH: 4, CRITICAL: 0)`, all in **pcre2**, installed **10.47-r0**: `CVE-2026-103111` (fixed 10.49-r0, out-of-bounds write), `CVE-2026-86145` (fixed 10.48-r0, arbitrary code execution), `CVE-2026-89157`, `CVE-2026-89161` (memory corruption in `pcre2_jit_match`). `Source commit: e994fed04c00a0767ea549f614bac41290f9390f (reported clean)`. Timeline: submitted **15:20 CDT**, reviewed **15:21**, deploy updated **15:22**. `via: command`
+- **Ruled out — our source.** The gate names only `image.tar`'s alpine packages; this app ships no pcre2, and the scan reports the source commit clean. The same tree passed `tsc` rc 0, 841/841, `npm run build` rc 0 and `civitai app validate .` locally. `via: measurement` + `via: code`
+- **Ruled out — a packaging mistake of ours.** The bundle was inspected with `--package-only` first: **6.8 MB / 114 files**, zero `.claude` paths, scan completed, one known-benign hit. `via: measurement`
+- 🔴 **Ruled out — that this is a transient to re-submit through, which CORRECTS guidance now in the ARCHIVE.** That evicted note said to "treat `failed` as a re-submit rather than a source problem". That is wrong for THIS failure: the blocking CVEs are in the base image, so a re-submit rebuilds the same image and fails identically until the platform bumps pcre2 to ≥10.48-r0. `via: code`
+- ⚠ **NOT a control:** yt-thumbnail is the only app whose newest row is `failed` (8 `live`, 8 withdrawn/pending). But those 8 builds PREDATE these `CVE-2026-*` entries, so they say nothing about a build started now — any app building today would likely hit the same gate. `via: measurement`
+- **Leading hypothesis:** the platform's builder base image is pinned to an alpine 3.23.4 with pcre2 10.47-r0, and its Trivy DB has since learned four HIGH pcre2 CVEs. Nothing in this repo can move it; the fix is a platform-side base-image bump or an ignore entry. **NOT established:** whether the platform team already knows, and whether F10 has a documented waiver path.
+- **Next probe, verbatim:** `civitai app status | grep e994fed` — does the deploy state move on its own (the builder may retry on a newer base image)? If still `failed` later, re-submit once (`civitai app submit --yes` from a clean `main`); an identical failure confirms it is platform-side and the ask goes to whoever owns the App Blocks builder. 🔴 **Do NOT withdraw 0.1.8** — that deletes the store listing and everything on it, and 0.1.7 is live, so there is nothing to rescue.
+
+## Evicted from `claudedocs/handoff-yt-thumbnail.md` — 2026-10-03
+
+Evicted 2026-10-03 to clear the size ratchet after ARC 9 closed. Closed investigation blocks only, picked smallest-first by --autoevict; each keeps its heading and as-of stamp in the live doc as a pointer here. Read these for the evidence behind a closed arc, never as current state.
+
+From `Open investigations — live diagnosis state`:
+
+- 🔴 **THIS CLOSES THE BLOCK ABOVE TITLED "MEASURED 2026-10-02 — the cairn write is refused by the TOKEN ALLOWLIST, and merging the fix is NOT sufficient". Its diagnosis was right and its six-step probe is now SPENT — do not re-run it.**
+- **Observed — the full ladder, in order:** #945 merged `36f419bca` (content verified on `origin/trunk` by decrypting it: both rows 27 scopes, scope present — never by ancestry, since a squash makes that false). `flux reconcile kustomization subsystem-store --with-source` → `applied revision trunk@sha1:36f419bca`. 🔴 **The MOUNT then still read 26 scopes on both rows** — the documented lag, reproduced. A HUP at that moment would have reloaded the OLD file and reported `LOADED`. Polled until both rows read 27, then `kill -HUP 1` → `subsystem-store-api: token reload: LOADED 2 identities [da3756b5e6f7:chief,fe18cd862614:zach] (was 2 …)`. Pod NOT replaced: `startTime=2026-10-01T19:00:36Z`, `restarts=0`, `ready=true` throughout — zero downtime, no `rollout restart`. `via: measurement`
+- 🔴 **Ruled out — that the reload line proves the grant.** It names IDENTITIES, not scopes, and read `(was 2 … )` either side, so it is identical whether or not the new scope landed. The authority is the WRITE that used to fail: `create` answered **`created`** where it had answered **rc 6 `[not-found]`** all session, and `recall` then returned the entry. **Reproduce the original symptom; do not accept an adjacent green.** `via: measurement`
+- **Next probe:** none. The grant is live and exercised end-to-end.

@@ -177,6 +177,52 @@ export function drawCover(ctx: ThumbCtx, img: ThumbImage): void {
   ctx.drawImage(img, sx, sy, sw, sh, 0, 0, YT_W, YT_H);
 }
 
+/** How an overlay's wrapped text block sits in the frame, in canvas pixels. */
+export interface OverlayFit {
+  /** The wrapped lines, exactly as {@link drawThumbnail} draws them. */
+  lines: string[];
+  /** Font size in px (from `sizePct`). */
+  fontSizePx: number;
+  /** Height of one line in px. */
+  lineHeightPx: number;
+  /** Height of the whole text block in px. */
+  blockHeightPx: number;
+  /**
+   * True when the block had to be MOVED off the requested `yPct` centre to
+   * stay inside the frame — the position slider is no longer quite what the
+   * canvas shows, which the editor surfaces rather than hiding.
+   */
+  moved: boolean;
+  /** True when the block is taller than the whole frame: it cannot fit. */
+  overflows: boolean;
+}
+
+/**
+ * Compute an overlay's text geometry WITHOUT drawing: the wrap, the block
+ * height, and whether the keep-it-on-canvas clamp in {@link drawThumbnail}
+ * engages. `measure` must measure in the overlay's font (the caller sets the
+ * context font first, or supplies an equivalent measure). Pure.
+ */
+export function overlayFit(
+  raw: TextOverlay,
+  measure: (text: string) => number,
+): OverlayFit {
+  const overlay = clampOverlay(raw);
+  const fontSizePx = (overlay.sizePct / 100) * YT_H;
+  const lines = wrapLines(measure, overlay.text, YT_W * 0.92);
+  const lineHeightPx = fontSizePx * 1.15;
+  const blockHeightPx = lines.length * lineHeightPx;
+  const top = (overlay.yPct / 100) * YT_H - blockHeightPx / 2;
+  return {
+    lines,
+    fontSizePx,
+    lineHeightPx,
+    blockHeightPx,
+    moved: top < 0 || top + blockHeightPx > YT_H,
+    overflows: blockHeightPx > YT_H,
+  };
+}
+
 /**
  * Draw the composed thumbnail: image cover-fit to YT_W×YT_H, then the overlay
  * text (multi-line, centered on xPct, vertically centered as a block on yPct)
@@ -194,19 +240,28 @@ export function drawThumbnail(ctx: ThumbCtx, img: ThumbImage, raw: TextOverlay):
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
-  const maxWidth = YT_W * 0.92;
-  const lines = wrapLines((t) => ctx.measureText(t).width, overlay.text, maxWidth);
-  const lineHeight = fontSize * 1.15;
-  const blockH = lines.length * lineHeight;
+  const fit = overlayFit(overlay, (t) => ctx.measureText(t).width);
+  const lines = fit.lines;
+  const lineHeight = fit.lineHeightPx;
+  const blockH = fit.blockHeightPx;
   const cx = (overlay.xPct / 100) * YT_W;
   let firstCenter = (overlay.yPct / 100) * YT_H - blockH / 2 + lineHeight / 2;
 
   // Keep the whole block on the canvas: clamp the first line's center so the
   // block fits, honoring the user's yPct as closely as the clamp allows.
+  //
+  // 🔴 THE BOTTOM ARM WAS WRONG until the 2026-10-17 audit walk caught it in
+  // a real browser: it read `YT_H - halfBlock + lineHeight / 2`, which puts
+  // the block's CENTRE on the bottom edge — a 4-line title rendered with
+  // its last two lines off-canvas while this comment claimed the block was
+  // kept whole. The bottom edge belongs to the block's BOTTOM:
+  // `firstCenter = YT_H - blockH + lineHeight / 2` makes the last line's
+  // bottom land exactly on YT_H. (The top arm was always right, and was
+  // also the only arm a test pinned — the asymmetry is how this survived.)
   const halfBlock = blockH / 2;
   const top = (overlay.yPct / 100) * YT_H - halfBlock;
   if (top < 0) firstCenter = lineHeight / 2;
-  else if (top + blockH > YT_H) firstCenter = YT_H - halfBlock + lineHeight / 2;
+  else if (top + blockH > YT_H) firstCenter = YT_H - blockH + lineHeight / 2;
 
   ctx.strokeStyle = overlay.strokeColor;
   ctx.lineWidth = (overlay.strokePct / 100) * fontSize;
