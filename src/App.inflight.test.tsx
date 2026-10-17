@@ -905,18 +905,22 @@ describe('🔴 a record written by the OLD shape still loads, renders and resume
 
 // ===========================================================================
 
-describe('🔴 the icon-only controls carry BOTH a title and an aria-label', () => {
+describe('🔴 the result controls carry their wording in text, title AND aria-label', () => {
   /**
-   * 🔴 THIS IS AN ACCESSIBILITY GUARD, NOT A STYLE ONE, AND IT IS WHY THE OPERATOR'S
-   * ICON REQUEST IS SAFE TO HONOUR. The UI pack ships no `Tooltip` and no icon set,
-   * so for an icon-only `Button` the native `title` is the ONLY hover affordance and
-   * `aria-label` is the ONLY accessible name. A button with neither is not a tidier
-   * button — it is a control nobody on a screen reader can identify, which is a
-   * regression in accessibility rather than a visual change.
+   * 🔴 THIS GUARD'S SHAPE HAS FLIPPED TWICE, BOTH TIMES ON THE OPERATOR'S WORD.
+   * It began as an accessibility guard for ICON-ONLY buttons (no `Tooltip` in the
+   * pack, so `title` was the only hover affordance and `aria-label` the only
+   * accessible name, and this case pinned both attributes plus the buttons'
+   * EMPTY textContent). The 2026-10-17 UX audit then found the icon-only pair
+   * was the one step in the app whose next action was not obvious, and the
+   * operator overrode it: the buttons now carry VISIBLE labels. What this case
+   * still guards is the wording being IDENTICAL in all three places — visible
+   * text, `title`, `aria-label` — because a control whose visible label and
+   * accessible name disagree is its own defect (label-in-name), and a guard on
+   * PRESENCE would pass against a label of "".
    *
-   * 🔴 ASSERTED AS THE ACTUAL WORDING, not merely "has an attribute". The previous
-   * visible text was "Save image" and "Add text", and those exact strings are what
-   * the attributes must carry: a guard on PRESENCE would pass against a label of "".
+   * The wording is the operator's: "Download" (not the earlier "Save image")
+   * and "Add text".
    */
   beforeEach(() => {
     store.set(`${HISTORY_PREFIX}98299999999999:legacy-1`, {
@@ -947,7 +951,7 @@ describe('🔴 the icon-only controls carry BOTH a title and an aria-label', () 
     ];
   });
 
-  it('Save image and Add text keep their wording in title AND aria-label', async () => {
+  it('Download and Add text keep their wording in text, title AND aria-label', async () => {
     render(<App />);
     await screen.findByTestId('pm-generate');
     // 🔴 NO `yt-history-toggle` CLICK. The surface AUTO-OPENS whenever there are rows
@@ -958,21 +962,21 @@ describe('🔴 the icon-only controls carry BOTH a title and an aria-label', () 
 
     const save = screen.getByTestId('yt-history-save');
     const edit = screen.getByTestId('yt-history-edit');
-    expect(save).toHaveAttribute('title', 'Save image');
-    expect(save).toHaveAttribute('aria-label', 'Save image');
+    expect(save).toHaveAttribute('title', 'Download');
+    expect(save).toHaveAttribute('aria-label', 'Download');
     expect(edit).toHaveAttribute('title', 'Add text');
     expect(edit).toHaveAttribute('aria-label', 'Add text');
-    // The visible text really is gone — otherwise this guard would be asserting
-    // attributes on a button that never needed them.
-    expect(save.textContent).toBe('');
-    expect(edit.textContent).toBe('');
-    // ...and an icon is actually there, so the controls are not blank boxes.
+    // The visible labels are really there — the whole point of the override.
+    // (This assertion read `toBe('')` in the icon-only revision.)
+    expect(save.textContent?.trim()).toBe('Download');
+    expect(edit.textContent?.trim()).toBe('Add text');
+    // ...and the icons are still there beside the words, so the two controls
+    // stay distinguishable at a glance as well as by name.
     expect(save.querySelector('svg')).not.toBeNull();
     expect(edit.querySelector('svg')).not.toBeNull();
     // 🔴 THE TWO ICONS ARE DIFFERENT SHAPES. They do genuinely different things (a
-    // real file download vs. the canvas editor), and with the words gone the glyph is
-    // half of what carries that — two buttons with the same icon would be the defect
-    // this whole change risks.
+    // real file download vs. the canvas editor); two buttons with the same icon
+    // would be the defect this whole surface risks.
     expect(save.querySelector('svg')?.innerHTML).not.toBe(edit.querySelector('svg')?.innerHTML);
     // Decorative: the accessible name comes from `aria-label`, so the svg must not
     // also be announced.

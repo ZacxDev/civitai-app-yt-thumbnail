@@ -109,10 +109,12 @@ import {
   DEFAULT_TEXT_OVERLAY,
   YT_H,
   YT_W,
+  THUMB_FONT_STACK,
   downloadBlob,
   drawThumbnail,
   exportLadder,
   loadImageElement,
+  overlayFit,
   thumbnailFileName,
   type TextOverlay,
 } from './editor.js';
@@ -642,6 +644,10 @@ export function App() {
     'idle',
   );
   const [exportNote, setExportNote] = useState<string | null>(null);
+  // What the editor says when the title's wrapped block no longer sits where
+  // the position slider put it (or cannot fit the frame at all) — computed
+  // from the same geometry `drawThumbnail` draws with, in the draw effect.
+  const [fitNote, setFitNote] = useState<string | null>(null);
   const [downloadCount, setDownloadCount] = useState(0);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -862,11 +868,13 @@ export function App() {
       setEditorImage(null);
       setEditorStatus('idle');
       setExportNote(null);
+      setFitNote(null);
       return;
     }
     let alive = true;
     setEditorStatus('loading');
     setExportNote(null);
+    setFitNote(null);
     loadImageElement(editing)
       .then((img) => {
         if (!alive) return;
@@ -893,6 +901,22 @@ export function App() {
     canvas.width = YT_W;
     canvas.height = YT_H;
     drawThumbnail(ctx, editorImage, overlay);
+    // The draw CLAMPS an over-tall or off-centre block back into the frame
+    // silently — the canvas stays honest but the position slider stops being
+    // quite true, and a block taller than the frame is clipped no matter
+    // what. Say so under the title field instead of letting the viewer
+    // discover it in YouTube Studio. The font is set explicitly for the
+    // measure: drawThumbnail's save/restore REVERTED the context font, so
+    // measuring on the restored context would measure in the UA default
+    // and report every title as fitting (caught in the audit re-walk).
+    ctx.font = `900 ${(overlay.sizePct / 100) * YT_H}px ${THUMB_FONT_STACK}`;
+    const fit = overlayFit(overlay, (t) => ctx.measureText(t).width);
+    const note = fit.overflows
+      ? 'This title is too long to fit the frame — shorten it or reduce the text size.'
+      : fit.moved
+        ? `The title wrapped to ${fit.lines.length} lines and was moved to fit the frame — shorten it or reduce the text size to place it exactly.`
+        : null;
+    setFitNote((prev) => (prev === note ? prev : note));
   }, [editorImage, overlay]);
 
   /**
@@ -1712,6 +1736,30 @@ export function App() {
       return !open;
     });
   }, [loadBoard]);
+
+  // --- Bring a just-opened panel into view ---
+  // The format editor and the published board render in the DETAIL block,
+  // which in the single-column layout sits BELOW "What gets sent" — a long
+  // scroll away from the "+ New" / "Browse published" buttons that open them.
+  // A viewer who tapped either got no visible change at all (audit
+  // 2026-10-17). Scroll the opened panel to them. Keyed on the OPEN state
+  // (draft identity / the boolean), never on draft CONTENT, so typing in the
+  // editor does not keep yanking the scroll. `?.` because jsdom has no
+  // scrollIntoView — the call is a no-op there and in any host that lacks it.
+  const formatDraftOpen = formatDraft != null;
+  useEffect(() => {
+    if (!formatDraftOpen) return;
+    document
+      .querySelector('[data-testid="yt-format-editor"]')
+      ?.scrollIntoView?.({ block: 'nearest' });
+  }, [formatDraftOpen, formatDraft?.id]);
+
+  useEffect(() => {
+    if (!boardOpen) return;
+    document
+      .querySelector('[data-testid="yt-published-board"]')
+      ?.scrollIntoView?.({ block: 'nearest' });
+  }, [boardOpen]);
 
   // Pull a published format into this session's picker and select it. It is NOT
   // copied into the viewer's own storage: it stays someone else's format, so it
@@ -2581,9 +2629,22 @@ export function App() {
                       label="Title text"
                       value={overlay.text}
                       onChange={(e) => setOverlay((o) => ({ ...o, text: e.target.value }))}
+                      // The field starts on the DEFAULT overlay text, which is
+                      // a real value, not a placeholder — so a viewer who just
+                      // starts typing APPENDED to it ("YOUR TITLE HEREI TRIED
+                      // IT!" on the canvas, audit 2026-10-17). Selecting the
+                      // contents on focus makes typing replace it, while a
+                      // click-to-place-caret still works on the second click.
+                      onFocus={(e) => e.currentTarget.select()}
                       data-testid="pm-editor-text"
                       aria-label="Title text"
                     />
+
+                    {fitNote && (
+                      <span style={fieldDescStyle(pal)} data-testid="pm-editor-fit-note">
+                        {fitNote}
+                      </span>
+                    )}
 
                     <Slider
                       label="Text size"
@@ -3081,6 +3142,21 @@ export function App() {
       {remixIncomplete && (
         <span style={fieldDescStyle(pal)} data-testid="pm-remix-hint">
           Choose a source image above to remix it.
+        </span>
+      )}
+
+      {/* 🔴 WHY IS GENERATE LIVE WITH AN EMPTY PROMPT? Because a format is
+          selected — but the only place that said so was "What gets sent",
+          below the fold in the single-column layout, so a cold-open viewer
+          could spend on a prompt they never saw (audit 2026-10-17). The line
+          sits with the button it explains, and only in the exact state that
+          needs explaining: signed in, prompt empty, formats selected, and
+          not already carrying the Remix hint above. */}
+      {!anon && !remixIncomplete && prompt.trim() === '' && selectedFormats.length > 0 && (
+        <span style={fieldDescStyle(pal)} data-testid="pm-generate-format-hint">
+          {selectedFormats.length === 1
+            ? `Prompt optional — the ${selectedFormats[0]!.label} format will be used on its own.`
+            : `Prompt optional — your ${selectedFormats.length} selected formats will be used on their own.`}
         </span>
       )}
 
@@ -3977,9 +4053,13 @@ function AccountPicker({
           would remove the only thing that said so. Two names, on purpose. */}
       <span style={fieldLabelStyle}>Buzz</span>
       {/* Kept short, but the "preference, not a guarantee" half stays: this is
-          the control that decides whose Buzz is debited. */}
+          the control that decides whose Buzz is debited. The earlier wording
+          ("the server picks the final pool") named a mechanism the viewer has
+          never seen defined — "pool" is the app's word, not theirs — so the
+          Auto behaviour is now stated in the viewer's terms instead (audit
+          2026-10-17). */}
       <span style={fieldDescStyle(pal)} id={ACCOUNT_DESC_ID}>
-        A preference — the server picks the final pool.
+        A preference, not a guarantee — Auto spends from whichever pool can cover it.
       </span>
       <div ref={wrapRef} style={accountWrapStyle}>
         <button
@@ -4160,6 +4240,12 @@ function shellStyle(pal: Palette): React.CSSProperties {
     // with. The cast is because `React.CSSProperties` has no index signature for
     // `--*`; React itself passes such keys through to `style.setProperty`.
     ['--yt-focus-ring' as string]: pal.brand,
+    // The editor's range-track colour, handed to `index.css` the same way and
+    // for the same reason: a stylesheet cannot read the palette, and a
+    // hardcoded hex here would be wrong in one of the two themes.
+    // `borderStrong` is the palette's "has to be seen rather than felt" border
+    // — strong enough to read as a track under the slider thumb in both.
+    ['--yt-range-track' as string]: pal.borderStrong,
   } as React.CSSProperties;
 }
 

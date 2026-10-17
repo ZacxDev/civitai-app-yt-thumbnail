@@ -117,6 +117,7 @@ export function FormatPicker({
                   disabled={disabled}
                   onClick={() => onEdit(fmt)}
                   aria-label={`Edit ${fmt.label}`}
+                  style={cardActionButtonStyle}
                 >
                   Edit
                 </Button>
@@ -128,6 +129,7 @@ export function FormatPicker({
                   onClick={() => onPublish(fmt)}
                   aria-label={`Publish ${fmt.label}`}
                   data-testid={`yt-format-publish-${fmt.id}`}
+                  style={cardActionButtonStyle}
                 >
                   Publish
                 </Button>
@@ -139,6 +141,7 @@ export function FormatPicker({
                   onClick={() => onDelete(fmt.id)}
                   aria-label={`Delete ${fmt.label}`}
                   data-testid={`yt-format-delete-${fmt.id}`}
+                  style={cardActionButtonStyle}
                 >
                   Delete
                 </Button>
@@ -448,11 +451,28 @@ const cardLabelStyle: React.CSSProperties = {
   whiteSpace: 'nowrap',
 };
 
+/**
+ * The custom card's Edit / Publish / Delete row. It was a wrapping flex row,
+ * so at card widths under ~200px the three actions stacked into three tall
+ * rows and the custom card grew far past its built-in neighbours (audit
+ * 2026-10-17). Three equal columns keep it ONE row at every card width the
+ * grid can produce; the buttons' labels are short enough to fit the
+ * narrowest (132px) card in three.
+ */
 const cardActionsStyle: React.CSSProperties = {
-  display: 'flex',
-  flexWrap: 'wrap',
+  display: 'grid',
+  gridTemplateColumns: '1fr 1fr 1fr',
   gap: 2,
   padding: '0 2px 2px',
+};
+
+/** Compact enough that "Publish" fits its third of the narrowest card. */
+const cardActionButtonStyle: React.CSSProperties = {
+  minWidth: 0,
+  paddingLeft: 2,
+  paddingRight: 2,
+  fontSize: 12,
+  whiteSpace: 'nowrap',
 };
 
 function editorStyle(pal: Palette): React.CSSProperties {

@@ -213,7 +213,10 @@ describe('the Buzz-account dropdown', () => {
     uninstall = installMockMoneyHost({ ...VIEWER });
     render(<App />);
     await screen.findByTestId('pm-account-trigger');
-    expect(screen.getByText(/the server picks the final pool/i)).toBeInTheDocument();
+    // The wording changed in the 2026-10-17 UX pass ("final pool" was app
+    // jargon); the CLAIM this test guards did not — a pick is a preference.
+    expect(screen.getByText(/a preference, not a guarantee/i)).toBeInTheDocument();
+    expect(screen.getByText(/whichever pool can cover it/i)).toBeInTheDocument();
   });
 });
 
