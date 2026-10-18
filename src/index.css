@@ -112,3 +112,9 @@ input[type='range']::-moz-range-track {
   border-radius: 2px;
   background: var(--yt-range-track, currentColor);
 }
+
+/* Room for the enhance button pinned inside the prompt input's corner. */
+.yt-prompt-textarea {
+  padding-right: 46px;
+  padding-bottom: 34px;
+}

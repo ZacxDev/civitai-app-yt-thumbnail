@@ -308,13 +308,15 @@ describe('🔴 the form is LIVE while a generation polls (change 6)', () => {
     // than a spot check, because the gate was threaded to each of them separately and
     // un-gating seven of eight is the plausible way to get this half-right.
     expect(screen.getByTestId('pm-generate')).toBeEnabled();
-    expect(screen.getByTestId('pm-quantity')).toBeEnabled();
     expect(screen.getByTestId('yt-format-new')).toBeEnabled();
     expect(screen.getByTestId('yt-board-toggle')).toBeEnabled();
-    expect(screen.getByTestId('pm-account-trigger')).toBeEnabled();
     expect(screen.getByLabelText(/prompt/i)).toBeEnabled();
-    // The mode switcher is a `role="tablist"` of `role="tab"` buttons.
-    for (const tab of screen.getAllByRole('tab')) expect(tab).toBeEnabled();
+    // The quantity selector, the Buzz pool picker and the mode switcher are
+    // not gated — they are GONE (operator, 2026-10-18: Generate only, quantity
+    // pinned at 1, spending always Auto). No `role="tab"` exists in the app.
+    expect(screen.queryByTestId('pm-quantity')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pm-account-trigger')).not.toBeInTheDocument();
+    expect(screen.queryAllByRole('tab')).toHaveLength(0);
     // The composed-prompt boxes — the money-path fields, one per selected format.
     const edits = screen.getAllByTestId((id) => id.startsWith('yt-prompt-preview-'));
     expect(edits.length).toBeGreaterThan(0);
@@ -376,12 +378,13 @@ describe('🔴 editing the form mid-flight cannot touch the batch already in fli
     expect(before.form.quantity).toBe(1);
     const formatsBefore = before.form.formats.map((f) => f.id);
 
-    // Now edit the form, hard: a different prompt, a different quantity, a different
-    // selection. Every one of these was impossible before this change.
+    // Now edit the form, hard: a different prompt and a different selection.
+    // (Quantity used to be the third leg; it is pinned at 1 now and there is
+    // no control left to move, which is itself part of what this pins — the
+    // record below still carries the click's quantity, 1.)
     await user.clear(screen.getByLabelText(/prompt/i));
     await user.type(screen.getByLabelText(/prompt/i), 'a BLUE motorcycle');
-    await user.selectOptions(screen.getByTestId('pm-quantity'), '4');
-    expect(screen.getByTestId('pm-quantity')).toHaveValue('4');
+    await user.click(screen.getByTestId('yt-format-cinematic'));
 
     // The record is byte-identical. Not "the prompt is unchanged" — the WHOLE record,
     // so a mutant that corrupted the formats or the checkpoint instead is also caught.
@@ -406,7 +409,7 @@ describe('🔴 editing the form mid-flight cannot touch the batch already in fli
 
     await user.clear(screen.getByLabelText(/prompt/i));
     await user.type(screen.getByLabelText(/prompt/i), 'something else entirely');
-    await user.selectOptions(screen.getByTestId('pm-quantity'), '3');
+    await user.click(screen.getByTestId('yt-format-cinematic'));
 
     // The workflow finishes, with the server's own price and image.
     pollFn.mockImplementation(async (id) =>
@@ -537,13 +540,15 @@ describe('🔴 editing the form mid-flight cannot touch the batch already in fli
     expect(rec.form.formats[0].prompt).not.toContain('BLUE motorcycle');
   });
 
-  it('switching mode txt2img -> remix mid-poll does NOT kill the polling batch', async () => {
+  it('there is NO mode switch to flip mid-poll — and the polling batch finishes anyway', async () => {
     /**
-     * 🔴 MUTATION-GRADED AGAINST THE EXACT LINE THIS CHANGE REMOVED. `switchMode` used
-     * to do `pollCancelRef.current.cancelled = true`, and the poll loop stopped on
-     * that flag — so with the mode toggle now live, a viewer lining up a remix while
-     * their batch generated would have frozen that batch's row as a skeleton with no
-     * price, forever. Restoring the flag makes the cost assertion below fail on '—'.
+     * This case used to flip Generate -> Remix mid-poll and assert the batch
+     * survived: `switchMode` was the caller that could set the batch's
+     * `cancelled` flag. The mode toggle is hidden now (Generate only,
+     * operator 2026-10-18), so that caller no longer exists — the hazard is
+     * removed structurally rather than guarded. What remains assertable, and
+     * still worth pinning: no Remix surface exists to reach for while a batch
+     * polls, and the batch completes with its price and picture.
      */
     submitFn.mockResolvedValue(snap({ workflowId: 'wf-a', status: 'processing' }));
     const user = userEvent.setup();
@@ -553,9 +558,8 @@ describe('🔴 editing the form mid-flight cannot touch the batch already in fli
     const pollsBefore = pollFn.mock.calls.length;
     expect(pollsBefore).toBeGreaterThan(0);
 
-    // Switch to Remix while the batch polls.
-    await user.click(screen.getByRole('tab', { name: /remix an image/i }));
-    await screen.findByTestId('pm-remix-hint');
+    expect(screen.queryByRole('tab', { name: /remix an image/i })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pm-remix-upload')).not.toBeInTheDocument();
 
     // The batch finishes anyway, and its row gets its price and its picture.
     pollFn.mockImplementation(async (id) =>
@@ -875,7 +879,9 @@ describe('🔴 a record written by the OLD shape still loads, renders and resume
 
     await user.click(screen.getByTestId('yt-history-resume'));
     await waitFor(() => expect(screen.getByLabelText(/prompt/i)).toHaveValue('a green tractor'));
-    expect(screen.getByTestId('pm-quantity')).toHaveValue('2');
+    // The legacy record carries quantity 2; it is NOT restored — quantity is
+    // pinned at 1 and the selector is hidden (operator, 2026-10-18).
+    expect(screen.queryByTestId('pm-quantity')).not.toBeInTheDocument();
     // Resume does not submit — unchanged, and worth re-stating on the legacy path.
     expect(submitFn).not.toHaveBeenCalled();
   });
@@ -1501,7 +1507,7 @@ describe('🔴 Reuse settings cannot re-open the submit window', () => {
     expect(screen.getByTestId('pm-generate')).toBeDisabled();
     // ...the form was NOT refilled behind the viewer's back...
     expect(screen.getByLabelText(/prompt/i)).toHaveValue('a red bicycle');
-    expect(screen.getByTestId('pm-quantity')).toHaveValue('1');
+    expect(screen.queryByTestId('pm-quantity')).not.toBeInTheDocument();
     // ...and the refusal is stated rather than being a dead button.
     expect(screen.getByTestId('yt-history-note')).toHaveTextContent(/still being placed/i);
     // No second order was placed.
@@ -1516,7 +1522,8 @@ describe('🔴 Reuse settings cannot re-open the submit window', () => {
     expect(resumable).toBeDefined();
     await user.click(within(resumable as HTMLElement).getByTestId('yt-history-resume'));
     await waitFor(() => expect(screen.getByLabelText(/prompt/i)).toHaveValue('a green tractor'));
-    expect(screen.getByTestId('pm-quantity')).toHaveValue('4');
+    // The record's quantity (4) is NOT restored — quantity is pinned at 1.
+    expect(screen.queryByTestId('pm-quantity')).not.toBeInTheDocument();
     // Still exactly one submit — Reuse never submits, before or after the gate.
     expect(submitFn).toHaveBeenCalledTimes(1);
   });

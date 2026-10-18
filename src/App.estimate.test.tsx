@@ -94,9 +94,9 @@ vi.mock('@civitai/blocks-react', () => ({
 
 const { App, ESTIMATE_DEBOUNCE_MS } = await import('./App.js');
 const { BUILTIN_FORMATS } = await import('./formats.js');
-const { QUANTITY_MAX, QUANTITY_MIN } = await import('./generation.js');
 
 const CINEMATIC = BUILTIN_FORMATS[1];
+const GAMING = BUILTIN_FORMATS[5];
 
 /**
  * Fixture prices, chosen so no assertion can pass by arithmetic accident.
@@ -203,20 +203,16 @@ describe('the live estimate — when it fires', () => {
     expect(requestConsent).not.toHaveBeenCalled();
   });
 
-  it('🔴 re-prices on a QUANTITY change, and the new price is the one shown', async () => {
-    const user = userEvent.setup();
+  it('🔴 quantity is PINNED at 1 — the priced body carries no quantity', async () => {
+    // The images-per-format selector is hidden (operator, 2026-10-18) and one
+    // image per format is the only quantity there is. `buildWorkflowBody`
+    // emits `params.quantity` only when > 1, so the pin reads as ABSENCE on
+    // every priced body — and the control itself is not in the DOM.
     render(<App />);
     await untilPriced(PRICE.mount);
-
-    estimateFn.mockResolvedValue(priced(PRICE.first));
-    await user.selectOptions(screen.getByTestId('pm-quantity'), '3');
-
-    await untilPriced(PRICE.first);
-    expect(estimateFn).toHaveBeenCalledTimes(2);
-    // The quantity actually reached the priced body — so this is a re-price OF the
-    // change, not a re-price that happened to coincide with it.
-    const body = estimateFn.mock.calls.at(-1)?.[0] as { params: { quantity: number } };
-    expect(body.params.quantity).toBe(3);
+    expect(screen.queryByTestId('pm-quantity')).not.toBeInTheDocument();
+    const body = estimateFn.mock.calls.at(-1)?.[0] as { params: { quantity?: number } };
+    expect(body.params.quantity).toBeUndefined();
   });
 
   it('🔴 re-prices on a FORMAT change, and asks once PER selected format', async () => {
@@ -316,9 +312,9 @@ describe('the live estimate — when it fires', () => {
     await new Promise((r) => setTimeout(r, ESTIMATE_DEBOUNCE_MS * 4));
     expect(estimateFn).not.toHaveBeenCalled();
 
-    // POSITIVE CONTROL, same render, same counter.
-    await user.selectOptions(screen.getByTestId('pm-quantity'), '2');
-    await waitFor(() => expect(estimateFn).toHaveBeenCalledTimes(1));
+    // POSITIVE CONTROL, same render, same counter: a FORMAT change re-prices.
+    await user.click(screen.getByTestId(`yt-format-${CINEMATIC.id}`));
+    await waitFor(() => expect(estimateFn).toHaveBeenCalled());
   });
 
   it('DEBOUNCES a burst of changes into ONE request', async () => {
@@ -327,24 +323,30 @@ describe('the live estimate — when it fires', () => {
      * is a rate limit on someone else's backend — a LoRA weight slider fires an
      * `onChange` per pixel of travel.
      *
-     * Asserted as "fewer than one per change" rather than exactly 1: the scheduler
-     * decides how much of the burst lands inside one window, and a case that demanded
-     * exactly 1 would be asserting the test runner's timing, not the app's.
+     * The burst is driven on the format cards now (the quantity dropdown this
+     * used to drive is hidden; quantity is pinned at 1). Asserted as "fewer
+     * than one preview pass per change" rather than an exact count: the final
+     * pass prices 2 selected formats, so exactly 2 calls is the debounced
+     * outcome and 5 changes would be 5 passes (8 calls) undebounced.
      */
     const user = userEvent.setup();
     render(<App />);
     await untilPriced(PRICE.mount);
     estimateFn.mockClear();
+    estimateFn.mockResolvedValue(priced(PRICE.first));
 
-    const select = screen.getByTestId('pm-quantity');
-    for (const n of ['2', '3', '4', '3', '2']) await user.selectOptions(select, n);
+    await user.click(screen.getByTestId(`yt-format-${CINEMATIC.id}`));
+    await user.click(screen.getByTestId(`yt-format-${GAMING.id}`));
+    await user.click(screen.getByTestId(`yt-format-${CINEMATIC.id}`));
+    await user.click(screen.getByTestId(`yt-format-${GAMING.id}`));
+    await user.click(screen.getByTestId(`yt-format-${CINEMATIC.id}`));
 
     await waitFor(() => expect(estimateFn).toHaveBeenCalled());
     await new Promise((r) => setTimeout(r, ESTIMATE_DEBOUNCE_MS * 4));
     expect(estimateFn.mock.calls.length).toBeLessThan(5);
-    // And the price that landed is for the value actually selected LAST.
-    const body = estimateFn.mock.calls.at(-1)?.[0] as { params: { quantity: number } };
-    expect(body.params.quantity).toBe(2);
+    // And the price that landed is for the selection actually left standing:
+    // Clickbait + Cinematic = 2 formats at PRICE.first each.
+    await untilPriced(PRICE.first * 2);
   });
 });
 
@@ -369,22 +371,25 @@ describe('the live estimate — no stale price survives a change', () => {
       () => new Promise<BlockWorkflowSnapshot>((resolve) => resolvers.push(resolve)),
     );
 
-    await user.selectOptions(screen.getByTestId('pm-quantity'), '4');
+    // Add a second format — two requests go out (one per format), both deferred.
+    await user.click(screen.getByTestId(`yt-format-${CINEMATIC.id}`));
 
     // The OLD price is gone immediately — not after the request settles.
     await waitFor(() =>
       expect(priceShown(screen.getByTestId('pm-generate'))).toBeNull(),
     );
-    // The Buzz picker publishes its own not-priced wording rather than a stale figure.
-    expect(priceShown(screen.getByTestId('pm-account-trigger-cost'))).toBeNull();
+    // There is no second price surface to carry a stale figure either: the Buzz
+    // picker that used to publish one is hidden (always Auto now).
+    expect(screen.queryByTestId('pm-account-trigger-cost')).not.toBeInTheDocument();
 
-    // POSITIVE CONTROL: the request really is in flight and really does repopulate, so
-    // the null above is a WINDOW and not a broken preview.
-    await waitFor(() => expect(resolvers).toHaveLength(1));
+    // POSITIVE CONTROL: the requests really are in flight and really do
+    // repopulate, so the null above is a WINDOW and not a broken preview.
+    await waitFor(() => expect(resolvers).toHaveLength(2));
     await act(async () => {
-      resolvers[0](priced(PRICE.second));
+      resolvers[0](priced(PRICE.third));
+      resolvers[1](priced(PRICE.third));
     });
-    await untilPriced(PRICE.second);
+    await untilPriced(PRICE.third * 2);
   });
 });
 
@@ -415,148 +420,55 @@ describe('the live estimate — out-of-order responses', () => {
       () => new Promise<BlockWorkflowSnapshot>((resolve) => resolvers.push(resolve)),
     );
 
-    // Request A (quantity 2) — in flight, unresolved.
-    await user.selectOptions(screen.getByTestId('pm-quantity'), '2');
-    await waitFor(() => expect(resolvers).toHaveLength(1));
-
-    // Request B (quantity 3) — also in flight. TWO open requests is the state the
-    // guard exists for.
-    await user.selectOptions(screen.getByTestId('pm-quantity'), '3');
+    // Pass A (2 formats) — two requests in flight, unresolved.
+    await user.click(screen.getByTestId(`yt-format-${CINEMATIC.id}`));
     await waitFor(() => expect(resolvers).toHaveLength(2));
 
-    // B (the NEWER request) answers first.
-    await act(async () => {
-      resolvers[1](priced(PRICE.second));
-    });
-    await untilPriced(PRICE.second);
+    // Pass B (3 formats) — three MORE requests in flight. Two open passes is
+    // the state the guard exists for.
+    await user.click(screen.getByTestId(`yt-format-${GAMING.id}`));
+    await waitFor(() => expect(resolvers).toHaveLength(5));
 
-    // ...and now A, the STALE one, answers. It must be discarded.
+    // B (the NEWER pass) answers first: 3 formats at PRICE.third.
+    await act(async () => {
+      resolvers[2](priced(PRICE.third));
+      resolvers[3](priced(PRICE.third));
+      resolvers[4](priced(PRICE.third));
+    });
+    await untilPriced(PRICE.third * 3);
+
+    // ...and now A, the STALE pass, answers. It must be discarded.
     await act(async () => {
       resolvers[0](priced(PRICE.first));
+      resolvers[1](priced(PRICE.first));
     });
     // Settle everything that could possibly still be pending before reading.
     await new Promise((r) => setTimeout(r, ESTIMATE_DEBOUNCE_MS * 4));
 
     const button = screen.getByTestId('pm-generate');
-    expect(priceShown(button)).toBe(String(PRICE.second));
-    expect(priceShown(button)).not.toBe(String(PRICE.first));
+    expect(priceShown(button)).toBe(String(PRICE.third * 3));
+    expect(priceShown(button)).not.toBe(String(PRICE.first * 2));
     expect(priceShown(button)).not.toBe(String(PRICE.mount));
-    // The Buzz picker went with it — one number, two controls.
-    expect(priceShown(screen.getByTestId('pm-account-trigger-cost'))).toBe(
-      String(PRICE.second),
-    );
   });
 });
 
-describe('the Generate button and the Buzz picker are ONE number', () => {
-  it('🔴 publish the SAME figure, and move TOGETHER when it changes', async () => {
-    /**
-     * 🔴 THE RELATIONSHIP IS WHAT IS PINNED, NOT EITHER SIDE. Asserting "the button
-     * says 137" and "the picker says 137" independently is two claims about a literal
-     * that both survive a mutant computing the picker's figure from a second, wrong
-     * source — as long as that source happens to agree on the fixture. What cannot
-     * survive is "whatever the button says, the picker says", checked at TWO different
-     * values, neither of which the assertion names.
-     */
+describe('the Generate button is the ONLY price surface', () => {
+  it('🔴 the price lives on the button alone, and moves when the form does', async () => {
+    // The Buzz picker used to publish a second copy of this figure and the pair
+    // had to agree; the picker is hidden now (always Auto, operator 2026-10-18),
+    // so the claim inverts: there is exactly ONE place the price can be read,
+    // and it still moves with the form.
     const user = userEvent.setup();
     render(<App />);
     await untilPriced(PRICE.mount);
 
-    const readPair = () => ({
-      button: priceShown(screen.getByTestId('pm-generate')),
-      picker: priceShown(screen.getByTestId('pm-account-trigger-cost')),
-    });
+    expect(priceShown(screen.getByTestId('pm-generate'))).toBe(String(PRICE.mount));
+    expect(screen.queryByTestId('pm-account-trigger')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pm-account-trigger-cost')).not.toBeInTheDocument();
 
-    const before = readPair();
-    expect(before.button).not.toBeNull();
-    expect(before.picker).toBe(before.button);
-
-    // Move the price and read the pair again. Two agreeing observations at two
-    // different values is the claim; the values themselves are incidental.
-    estimateFn.mockResolvedValue(priced(PRICE.second));
-    await user.selectOptions(screen.getByTestId('pm-quantity'), '4');
-    await untilPriced(PRICE.second);
-
-    const after = readPair();
-    expect(after.picker).toBe(after.button);
-    expect(after.button).not.toBe(before.button);
-  });
-
-  it('the Buzz control is LABELLED "Buzz" but still ANNOUNCED as the spend account', async () => {
-    /**
-     * Two names on purpose. A screen-reader user gets no layout to tell them this
-     * dropdown decides which wallet pays, so the accessible name has to keep saying
-     * so — reducing it to the visible word would remove the only thing that did.
-     */
-    render(<App />);
-    await untilPriced(PRICE.mount);
-
-    const trigger = screen.getByTestId('pm-account-trigger');
-    const label = trigger.getAttribute('aria-label') ?? '';
-    // The account AND the cost, which is what it read before the visible rename.
-    expect(label).toMatch(/spend from/i);
-    expect(label).toMatch(/auto/i);
-    expect(label).toContain(String(PRICE.mount));
-    // The visible label next to it is the short one.
-    expect(screen.getByText('Buzz')).toBeInTheDocument();
-  });
-});
-
-describe('the quantity dropdown drives the same clamp the pills did', () => {
-  it('🔴 an out-of-range value is CLAMPED before it reaches a body', async () => {
-    /**
-     * `clampQuantity` was applied on the way in AND out of the pill row; the dropdown
-     * has to keep doing both or a bad value reaches `params.quantity` and is charged
-     * for. Driven at the DOM level with a value the `<select>` does not offer, which
-     * is the only way to get an out-of-range value through a native control.
-     *
-     * 🔴 THE OPTION SET IS ASSERTED AGAINST BOTH CONSTANTS, not against a literal list.
-     * A hardcoded `['1','2','3','4']` here would be a third copy of the server cap —
-     * and so was the hardcoded FLOOR this used to carry (`i + 1`), which made the
-     * comment's claim half false and would not have moved if `QUANTITY_MIN` did.
-     */
-    const user = userEvent.setup();
-    render(<App />);
-    await untilPriced(PRICE.mount);
-
-    const select = screen.getByTestId('pm-quantity') as HTMLSelectElement;
-    expect([...select.options].map((o) => o.value)).toEqual(
-      Array.from({ length: QUANTITY_MAX - QUANTITY_MIN + 1 }, (_, i) => String(QUANTITY_MIN + i)),
-    );
-
-    // The highest offered value survives the clamp unchanged...
-    estimateFn.mockResolvedValue(priced(PRICE.first));
-    await user.selectOptions(select, String(QUANTITY_MAX));
-    await untilPriced(PRICE.first);
-    expect(
-      (estimateFn.mock.calls.at(-1)?.[0] as { params: { quantity: number } }).params.quantity,
-    ).toBe(QUANTITY_MAX);
-
-    // 🔴 NOW COME BACK DOWN FIRST. Forcing an over-cap value while the control ALREADY
-    // sits at the cap proves nothing: the clamp maps it to the value already held, no
-    // state changes, no request is made, and the assertion reads a STALE body that
-    // happens to be right. That is how this case passed for the wrong reason on its
-    // first run — `9` clamped to 4 with 4 already selected, and nothing moved. So
-    // select 2, then force 9 past the control and watch it land on the CAP.
     estimateFn.mockResolvedValue(priced(PRICE.third));
-    await user.selectOptions(select, '2');
-    await untilPriced(PRICE.third);
-
-    estimateFn.mockResolvedValue(priced(PRICE.second));
-    await act(async () => {
-      const option = document.createElement('option');
-      option.value = '9';
-      select.appendChild(option);
-      select.value = '9';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
-    // The price MOVED, which is what proves a new body was built at all...
-    await untilPriced(PRICE.second);
-    // ...and it carries the cap, not the 9.
-    expect(
-      (estimateFn.mock.calls.at(-1)?.[0] as { params: { quantity: number } }).params.quantity,
-    ).toBe(QUANTITY_MAX);
-    // The control itself shows the clamped value rather than the forced one.
-    expect(select.value).toBe(String(QUANTITY_MAX));
+    await user.click(screen.getByTestId(`yt-format-${CINEMATIC.id}`));
+    await untilPriced(PRICE.third * 2);
+    expect(priceShown(screen.getByTestId('pm-generate'))).toBe(String(PRICE.third * 2));
   });
 });
