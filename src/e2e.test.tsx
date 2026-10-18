@@ -112,7 +112,7 @@ describe('App money path (e2e)', () => {
     expect(screen.queryByText(/generation failed/i)).not.toBeInTheDocument();
   });
 
-  it('picking a pool -> accountType rides on the submit body; the funder note renders', async () => {
+  it('Auto resolves to the only sufficient pool (yellow) -> accountType rides on the submit body; the funder note renders', async () => {
     const user = userEvent.setup();
     const submittedBodies: Array<{ accountType?: string }> = [];
     uninstall = installMockMoneyHost({
@@ -120,7 +120,8 @@ describe('App money path (e2e)', () => {
       consentGranted: true,
       cost: 8,
       pollsUntilDone: 2,
-      // A yellow-only wallet -> the native primary-funder stamp reports `yellow`.
+      // A yellow-only wallet -> the Auto ladder (blue -> green -> yellow) lands
+      // on yellow, and the native primary-funder stamp reports `yellow`.
       buzzBalance: { blue: 0, green: 0, yellow: 100 },
       onOutbound: (m) => {
         if (m.type === 'SUBMIT_WORKFLOW') {
@@ -132,29 +133,18 @@ describe('App money path (e2e)', () => {
     render(<App />);
     await screen.findByTestId('pm-generate');
 
-    // Pick Yellow, then generate.
-    // 🔴 MARKUP SHAPE CHANGED, ASSERTIONS DID NOT. "Spend from" is a trigger + a
-    // popup menu now, so a pool has to be OPENED before it can be clicked, and
-    // re-opened before its `aria-checked` can be read — choosing closes the menu.
-    // The expectation itself is the one this test has always made.
-    await user.click(screen.getByTestId('pm-account-trigger'));
-    await user.click(screen.getByTestId('pm-account-yellow'));
-    await user.click(screen.getByTestId('pm-account-trigger'));
-    expect(screen.getByTestId('pm-account-yellow')).toHaveAttribute('aria-checked', 'true');
-    await user.keyboard('{Escape}');
+    // No pool is picked — there is no selector any more (operator, 2026-10-18:
+    // the Buzz type selector is hidden and spending is always Auto).
+    expect(screen.queryByTestId('pm-account-trigger')).not.toBeInTheDocument();
     await user.type(screen.getByLabelText(/prompt/i), 'a cat');
     await user.click(screen.getByTestId('pm-generate'));
 
     await screen.findByAltText(/generated result/i, {}, { timeout: 5000 });
 
-    // The picked pool is threaded into the submit body (the real proof of the
-    // pick wiring). The funder note reflects the wallet's primary funder — yellow
-    // here — which the mock host stamps natively from `buzzBalance`.
+    // The ladder's pick is threaded into the submit body (the real proof of the
+    // Auto wiring). The funder note reflects the wallet's primary funder —
+    // yellow here — which the mock host stamps natively from `buzzBalance`.
     expect(submittedBodies.at(-1)?.accountType).toBe('yellow');
-    // The funder reaches the HISTORY ROW now (see the case above). `yellow` here vs
-    // `blue` there is what makes this a claim about the pool rather than about a
-    // constant: the two cases differ only in the wallet, and they report different
-    // pools.
     expect(screen.queryByTestId('pm-spent')).not.toBeInTheDocument();
     const cost = await screen.findByTestId('yt-history-cost');
     await waitFor(() =>
@@ -199,21 +189,13 @@ describe('App money path (e2e)', () => {
 
     render(<App />);
     await screen.findByTestId('pm-generate');
-    // It starts on Auto — the cost is unknown until the estimate lands.
-    // (Menu open/close around each read: see the shape note on the Yellow test.)
-    await user.click(screen.getByTestId('pm-account-trigger'));
-    expect(screen.getByTestId('pm-account-auto')).toHaveAttribute('aria-checked', 'true');
-    await user.keyboard('{Escape}');
     await user.type(screen.getByLabelText(/prompt/i), 'a cat');
     await user.click(screen.getByTestId('pm-generate'));
 
     await screen.findByAltText(/generated result/i, {}, { timeout: 5000 });
-    // The wire carries the ladder's pick...
+    // The wire carries the ladder's pick — that is the whole claim now that
+    // there is no selector to show it on.
     expect(submittedBodies.at(-1)).toHaveProperty('accountType', 'blue');
-    // ...and the control SHOWS it. Submitting under a pool the picker still
-    // displays as "Auto" would misstate where the money came from.
-    await user.click(screen.getByTestId('pm-account-trigger'));
-    expect(screen.getByTestId('pm-account-blue')).toHaveAttribute('aria-checked', 'true');
   });
 
   it('falls back to Auto — and Auto omits accountType — when NO pool is sufficient', async () => {
@@ -243,17 +225,16 @@ describe('App money path (e2e)', () => {
     // Auto threads NO accountType — the host drains its own order, which beats
     // naming a pool that cannot cover the bill.
     expect(submittedBodies.at(-1)).not.toHaveProperty('accountType');
-    await user.click(screen.getByTestId('pm-account-trigger'));
-    expect(screen.getByTestId('pm-account-auto')).toHaveAttribute('aria-checked', 'true');
   });
 
-  it('a disallowed pool (server BAD_REQUEST) -> friendly note + reset to Auto', async () => {
+  it('a disallowed pool (server BAD_REQUEST) -> friendly note, stays on Auto', async () => {
     const user = userEvent.setup();
     uninstall = installMockMoneyHost({
       viewer: { id: 2, username: 'dev', status: 'active' },
       consentGranted: true,
       // Force the submit to fail; rejectAccount rewrites it into the domain-clamp
-      // rejection (since a pool was picked) so the App classifies it correctly.
+      // rejection (the Auto ladder threads a concrete pool on the body) so the
+      // App classifies it correctly.
       generation: { failNext: 1 },
       rejectAccount: true,
     });
@@ -261,33 +242,25 @@ describe('App money path (e2e)', () => {
     render(<App />);
     await screen.findByTestId('pm-generate');
 
-    await user.click(screen.getByTestId('pm-account-trigger'));
-    await user.click(screen.getByTestId('pm-account-green'));
     await user.type(screen.getByLabelText(/prompt/i), 'a cat');
     await user.click(screen.getByTestId('pm-generate'));
 
-    // The App surfaces a friendly "not available" note and falls back to Auto.
+    // The App surfaces a friendly "not available" note; spending stays Auto
+    // (there is no selector to reset — the note is the whole surface now).
     expect(await screen.findByTestId('pm-account-rejected')).toBeInTheDocument();
-    // The trigger publishes the current pool without opening anything, so the
-    // fallback is readable exactly where the old radio row published it.
-    await waitFor(() =>
-      expect(screen.getByTestId('pm-account-trigger-label')).toHaveTextContent('Auto'),
-    );
-    await user.click(screen.getByTestId('pm-account-trigger'));
-    expect(screen.getByTestId('pm-account-auto')).toHaveAttribute('aria-checked', 'true');
-    await user.keyboard('{Escape}');
+    expect(screen.getByTestId('pm-account-rejected')).toHaveTextContent(/switched back to Auto/i);
     // Not shown as a hard "generation failed" error, and no image.
     expect(screen.queryByText(/generation failed/i)).not.toBeInTheDocument();
     expect(screen.queryByAltText(/generated result/i)).not.toBeInTheDocument();
   });
 
-  it('the quantity dropdown -> params.quantity rides on the submit body', async () => {
+  it('quantity is pinned to 1 -> the submit body omits params.quantity', async () => {
     const user = userEvent.setup();
     const submittedBodies: Array<{ params?: { quantity?: number } }> = [];
     uninstall = installMockMoneyHost({
       viewer: { id: 2, username: 'dev', status: 'active' },
       consentGranted: true,
-      cost: 24,
+      cost: 8,
       pollsUntilDone: 2,
       onOutbound: (m) => {
         if (m.type === 'SUBMIT_WORKFLOW') {
@@ -299,40 +272,29 @@ describe('App money path (e2e)', () => {
     render(<App />);
     await screen.findByTestId('pm-generate');
 
-    // Pick 3 candidates, then generate. 🔴 MARKUP SHAPE CHANGED, THE CLAIM DID NOT:
-    // images-per-format is the pack's `<Select>` (a native `<select>`) instead of a
-    // row of `aria-checked` radio pills, so it is driven with `selectOptions` and read
-    // as a VALUE. What is asserted below is what this case has always asserted — the
-    // number on the wire.
-    await user.selectOptions(screen.getByTestId('pm-quantity'), '3');
-    expect(screen.getByTestId('pm-quantity')).toHaveValue('3');
+    // The selector is hidden (operator, 2026-10-18) and one image per format
+    // is the only quantity: `buildWorkflowBody` emits the field only when > 1,
+    // so the pin reads as ABSENCE on the wire.
+    expect(screen.queryByTestId('pm-quantity')).not.toBeInTheDocument();
     await user.type(screen.getByLabelText(/prompt/i), 'a cat');
     await user.click(screen.getByTestId('pm-generate'));
 
     await screen.findByAltText(/generated result/i, {}, { timeout: 5000 });
-    // The REAL proof: the clamped quantity reached the host on the submit body.
-    expect(submittedBodies.at(-1)?.params?.quantity).toBe(3);
-    // And every candidate from the snapshot landed in the gallery — which is now the
-    // unified results/history surface.
+    expect(submittedBodies.at(-1)?.params?.quantity).toBeUndefined();
     expect(screen.getAllByTestId('yt-history-img').length).toBeGreaterThan(0);
   });
 
-  it('Remix mode: the generationSource upload seeds the body as sourceImage', async () => {
+  it('Generate only: there is no Remix mode, and the body carries no sourceImage', async () => {
     const user = userEvent.setup();
-    const submittedBodies: Array<{
-      sourceImage?: { url: string; width: number; height: number };
-    }> = [];
+    const submittedBodies: Array<{ sourceImage?: unknown }> = [];
     uninstall = installMockMoneyHost({
       viewer: { id: 2, username: 'dev', status: 'active' },
       consentGranted: true,
-      cost: 12,
+      cost: 8,
       pollsUntilDone: 2,
       onOutbound: (m) => {
         if (m.type === 'SUBMIT_WORKFLOW') {
-          submittedBodies.push(
-            (m.payload as { body: { sourceImage?: { url: string; width: number; height: number } } })
-              .body,
-          );
+          submittedBodies.push((m.payload as { body: { sourceImage?: unknown } }).body);
         }
       },
     });
@@ -340,30 +302,16 @@ describe('App money path (e2e)', () => {
     render(<App />);
     await screen.findByTestId('pm-generate');
 
-    // Switch to Remix. Generate is disabled until a source image exists.
-    await user.click(screen.getByRole('tab', { name: /remix an image/i }));
-    expect(screen.getByTestId('pm-generate')).toBeDisabled();
-
-    // Choose a source image — the mock host returns its canned generationSource
-    // (a Civitai-hosted { url, width, height }).
-    await user.click(screen.getByTestId('pm-remix-upload'));
-    const preview = await screen.findByTestId('pm-remix-preview');
-    const src = preview.querySelector('img');
-    expect(src).not.toBeNull();
-    expect(src?.getAttribute('src')).toMatch(/^https:\/\/image\.civitai\.com\//);
-
-    // Generate is re-enabled; the submit body carries the sourceImage (img2img).
-    await user.type(screen.getByLabelText(/prompt/i), 'make it clickbait');
+    // The mode toggle is hidden and Remix is unsupported for now (operator,
+    // 2026-10-18): no tab, no upload control, and Generate is live with just
+    // a prompt — no source image is ever required or sent.
+    expect(screen.queryByRole('tab', { name: /remix an image/i })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pm-remix-upload')).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText(/prompt/i), 'a cat');
     await user.click(screen.getByTestId('pm-generate'));
     await screen.findByAltText(/generated result/i, {}, { timeout: 5000 });
 
-    const body = submittedBodies.at(-1);
-    expect(body?.sourceImage?.url).toMatch(/^https:\/\/image\.civitai\.com\//);
-    expect(body?.sourceImage?.width).toBeGreaterThan(0);
-    expect(body?.sourceImage?.height).toBeGreaterThan(0);
-    // The generate path must NOT have threaded a source image — the last body is
-    // the remix one, so the absence check is about the shape of THIS body.
-    expect(screen.queryByTestId('pm-remix-hint')).not.toBeInTheDocument();
+    expect(submittedBodies.at(-1)?.sourceImage).toBeUndefined();
   });
 
   it('a gallery image opens the editor view, and Back returns to the main view', async () => {

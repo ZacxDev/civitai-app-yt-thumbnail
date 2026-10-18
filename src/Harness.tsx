@@ -7,6 +7,7 @@ import {
 } from '@civitai/blocks-react/testing';
 
 import { DECLARED_SCOPES, mockBuzzBalance } from './mock-buzz.js';
+import { resetHarnessTransport } from './dev-transport.js';
 
 /**
  * Local dev mock host for the YT Thumbnail PAGE app.
@@ -39,11 +40,50 @@ import { DECLARED_SCOPES, mockBuzzBalance } from './mock-buzz.js';
  * entry (main.tsx) pre-initializes the transport with that origin allowlisted —
  * see `installHarnessTransport`. No real Buzz is spent (there is no orchestrator).
  */
+/**
+ * Dev-only chat-completion arming for the mock host. The stock mock prices a
+ * registered step and succeeds it, but has no text to give back, so an
+ * enhance run in the harness would end at the honest "didn't come back"
+ * note. `?stepText=<text>` arms that text: the next chat-completion submit
+ * arms it, and it is attached as `textOutputs` to that workflow's succeeded
+ * snapshot — the same field the real host releases the scanned reply on.
+ * The inbound attacher must be registered BEFORE the SDK transport's
+ * listener (it mutates the snapshot in place), hence the transport reset —
+ * the same ordering trick `installMockMoneyHost` uses in tests.
+ */
+let armedHarnessStepText: string | undefined;
+let stepTextAttacherInstalled = false;
+function installStepTextAttacher() {
+  window.addEventListener('message', (event: MessageEvent) => {
+    const data = event.data as
+      | { type?: string; payload?: { snapshot?: { status?: string; textOutputs?: string[] } } }
+      | null
+      | undefined;
+    if (!data || (data.type !== 'WORKFLOW_STATUS' && data.type !== 'WORKFLOW_SUBMITTED')) return;
+    const snap = data.payload?.snapshot;
+    if (snap?.status === 'succeeded' && armedHarnessStepText !== undefined) {
+      snap.textOutputs = [armedHarnessStepText];
+      armedHarnessStepText = undefined;
+    }
+  });
+  resetHarnessTransport();
+  stepTextAttacherInstalled = true;
+}
+
 export function Harness({ children }: { children: ReactNode }) {
   // Read the URL toggles ONCE; the scenario panel then owns the live options
   // (so a panel choice isn't wiped by a re-mount re-reading the URL).
   const initial = useRef<MockHostOptions | null>(null);
   if (initial.current === null) initial.current = readMockHostUrlOptions();
+
+  // `?stepText=` — see installStepTextAttacher. Read once, like the other
+  // URL knobs; installed during first render so the attacher precedes the
+  // transport (re-created by the reset) and the host (mounted by effect).
+  const stepText = useRef<string | null>(null);
+  if (stepText.current === null) {
+    stepText.current = new URLSearchParams(window.location.search).get('stepText') ?? '';
+    if (stepText.current !== '' && !stepTextAttacherInstalled) installStepTextAttacher();
+  }
 
   const [scenario, setScenario] = useState<MockHostOptions>(initial.current);
   const [scenarioKey, setScenarioKey] = useState(0);
@@ -76,6 +116,16 @@ export function Harness({ children }: { children: ReactNode }) {
         {...scenario}
         buzzBalance={buzzBalance}
         declaredScopes={DECLARED_SCOPES as string[]}
+        onOutbound={(msg) => {
+          // Arm the ?stepText= reply on a chat-completion submit.
+          if (msg.type !== 'SUBMIT_WORKFLOW' || stepText.current === '') return;
+          const body = (
+            msg.payload as { body?: { kind?: unknown; step?: unknown } } | undefined
+          )?.body;
+          if (body?.kind === 'step' && body?.step === 'chat-completion') {
+            armedHarnessStepText = stepText.current as string;
+          }
+        }}
       >
         {children}
       </SdkHarness>

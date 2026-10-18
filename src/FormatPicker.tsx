@@ -11,7 +11,8 @@ import {
 import type { Palette } from './palette.js';
 
 /**
- * The FORMAT picker — a multi-select grid of thumbnail looks.
+ * The FORMAT picker — a multi-select CAROUSEL of thumbnail looks (one
+ * horizontally scrolling row of fixed-width cards inside the Generate form).
  *
  * Every selected format becomes its own workflow at Generate time, so this
  * control is directly load-bearing on spend: selecting a third format is
@@ -58,7 +59,7 @@ export function FormatPicker({
 
   return (
     <div
-      style={gridStyle(minCardPx)}
+      style={gridStyle()}
       role="group"
       aria-label="Thumbnail formats"
       data-testid="yt-format-grid"
@@ -68,7 +69,7 @@ export function FormatPicker({
         const isOn = selected.has(fmt.id);
         const custom = isCustomId(fmt.id);
         return (
-          <div key={fmt.id} style={cardStyle(isOn, pal)} data-testid="yt-format-card">
+          <div key={fmt.id} style={cardStyle(isOn, pal, minCardPx)} data-testid="yt-format-card">
             <button
               type="button"
               role="checkbox"
@@ -351,21 +352,26 @@ export function PublishedBoard({
 // the same `data-theme` on the block root — they are not restyled here.
 // ---------------------------------------------------------------------------
 
-function gridStyle(minCardPx: number): React.CSSProperties {
+function gridStyle(): React.CSSProperties {
+  // A CAROUSEL (operator, 2026-10-18): the picker now lives inside the Generate
+  // form, so the cards run in one horizontally scrolling row at a fixed card
+  // width (`formatMinCardPx` from layout.ts) instead of a wrapping grid.
   return {
-    display: 'grid',
-    // `auto-fill` with a MINIMUM, not a fixed count — see `formatMinCardPx` in
-    // `layout.ts` for why the format grid is sized and the results grid counted.
-    gridTemplateColumns: `repeat(auto-fill, minmax(${minCardPx}px, 1fr))`,
+    display: 'flex',
+    flexDirection: 'row',
     gap: 8,
+    overflowX: 'auto',
+    paddingBottom: 4,
   };
 }
 
-function cardStyle(selected: boolean, pal: Palette): React.CSSProperties {
+function cardStyle(selected: boolean, pal: Palette, minCardPx = 160): React.CSSProperties {
   return {
     display: 'grid',
     gap: 4,
     padding: 4,
+    flex: '0 0 auto',
+    width: minCardPx,
     borderRadius: 10,
     border: `1px solid ${selected ? pal.brandTintBorder : pal.border}`,
     background: selected ? pal.brandTint : pal.surface,

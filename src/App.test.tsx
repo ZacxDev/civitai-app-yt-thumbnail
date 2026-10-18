@@ -1,5 +1,4 @@
 import { render, screen } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createMockHost } from '@civitai/blocks-react/testing';
@@ -74,8 +73,8 @@ describe('App (component)', () => {
   it('does NOT render a Buzz balance readout — the Civitai chrome already shows it', async () => {
     // A simulated wallet of 100 splits to yellow 80 / blue 20 / green 0 (mock-buzz),
     // handed to 0.18's native `buzzBalance` option (what useBuzzBalance reads).
-    // The balance IS read (see the next test — it annotates the account picker),
-    // but the app deliberately renders no balance panel/chips/total of its own.
+    // The balance IS read (it feeds the Auto pool default at submit time), but
+    // the app deliberately renders no balance panel/chips/total of its own.
     uninstall = installMockMoneyHost({
       viewer: { id: 2, username: 'dev', status: 'active' },
       buzzBalance: mockBuzzBalance(100),
@@ -91,68 +90,40 @@ describe('App (component)', () => {
     expect(screen.queryByText(/total .* buzz/i)).not.toBeInTheDocument();
   });
 
-  it('the balance IS consumed: the account picker annotates a 0-Buzz pool', async () => {
-    // The one legitimate consumer of useBuzzBalance in this scaffold — which
-    // account can fund this generation. yellow 80 / blue 20 / green 0, so ONLY
-    // green is annotated. (This is also the positive control proving the balance
-    // still reaches the app after the readout was removed.)
+  it('there is NO Buzz pool selector and NO quantity selector — spending is always Auto, one image per format', async () => {
+    // Operator, 2026-10-18: both selectors are hidden. The pool picker's whole
+    // surface (trigger, menu, per-pool rows) is gone, as is the quantity
+    // dropdown; what remains is the behaviour they defaulted to — Auto pool
+    // resolution at submit time and quantity 1 — pinned at the wire in
+    // e2e.test.tsx and App.estimate.test.tsx.
     uninstall = installMockMoneyHost({
       viewer: { id: 2, username: 'dev', status: 'active' },
       buzzBalance: mockBuzzBalance(100),
     });
-    const user = userEvent.setup();
     render(<App />);
 
-    // 🔴 MARKUP SHAPE CHANGED, ASSERTIONS DID NOT. The "Spend from" control is a
-    // trigger + a popup menu now, not an always-rendered radio row, so the pools
-    // have to be OPENED before they are in the DOM at all. Every expectation
-    // below is the one this test has always made.
-    await user.click(await screen.findByTestId('pm-account-trigger'));
-
-    // findByTitle waits for the balance to land, so this can't pass on the
-    // pre-balance frame.
-    const green = await screen.findByTitle(/0 Buzz in this account/i);
-    expect(green).toBe(screen.getByTestId('pm-account-green'));
-    expect(green).toHaveTextContent(/·\s*0/);
-    // The funded pools are NOT annotated.
-    expect(screen.getByTestId('pm-account-yellow')).not.toHaveAttribute('title');
-    expect(screen.getByTestId('pm-account-blue')).not.toHaveAttribute('title');
-  });
-
-  it('account picker defaults to Auto and offers all three pools', async () => {
-    uninstall = installMockMoneyHost({ viewer: { id: 2, username: 'dev', status: 'active' } });
-    const user = userEvent.setup();
-    render(<App />);
-
-    // The trigger names the current pool without opening anything — the half of
-    // this claim that no longer needs the menu.
-    expect(await screen.findByTestId('pm-account-trigger-label')).toHaveTextContent('Auto');
-
-    await user.click(screen.getByTestId('pm-account-trigger'));
-    const auto = await screen.findByTestId('pm-account-auto');
-    expect(auto).toHaveAttribute('aria-checked', 'true');
-    for (const pool of ['blue', 'green', 'yellow'] as const) {
-      expect(screen.getByTestId(`pm-account-${pool}`)).toHaveAttribute('aria-checked', 'false');
+    expect(await screen.findByTestId('pm-generate')).toBeInTheDocument();
+    expect(screen.queryByTestId('pm-account-trigger')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pm-account-menu')).not.toBeInTheDocument();
+    for (const pool of ['auto', 'blue', 'green', 'yellow'] as const) {
+      expect(screen.queryByTestId(`pm-account-${pool}`)).not.toBeInTheDocument();
     }
+    expect(screen.queryByTestId('pm-quantity')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('yt-spend-row')).not.toBeInTheDocument();
   });
 
-  it('a failed balance read degrades silently — app still generates, picker unannotated', async () => {
+  it('a failed balance read degrades silently — app still generates, no pool chrome appears', async () => {
     uninstall = installMockMoneyHost({
       viewer: { id: 2, username: 'dev', status: 'active' },
       balanceError: true,
     });
-    const user = userEvent.setup();
     render(<App />);
 
-    // The app still works — Generate + the full picker are present. With no
-    // balance there is nothing to annotate, and (since the readout is gone) the
-    // error surfaces NO user-visible balance chrome at all.
+    // The app still works. With no balance there is nothing to annotate, and
+    // (since the readout AND the picker are gone) the error surfaces NO
+    // user-visible balance chrome at all.
     expect(await screen.findByTestId('pm-generate')).toBeInTheDocument();
-    await user.click(screen.getByTestId('pm-account-trigger'));
-    expect(screen.getByTestId('pm-account-auto')).toBeInTheDocument();
-    for (const pool of ['blue', 'green', 'yellow'] as const) {
-      expect(screen.getByTestId(`pm-account-${pool}`)).not.toHaveAttribute('title');
-    }
+    expect(screen.queryByTestId('pm-account-trigger')).not.toBeInTheDocument();
     expect(screen.queryByTestId('pm-balance')).not.toBeInTheDocument();
     expect(screen.queryByText(/balance unavailable/i)).not.toBeInTheDocument();
   });

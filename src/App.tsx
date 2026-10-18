@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 
 import {
   useAppStorage,
@@ -10,7 +9,6 @@ import {
   useBlockToken,
   useBuzzBalance,
   useBuzzWorkflow,
-  useImageUpload,
   useRequestConsent,
   useRequestSignIn,
   useResourcePicker,
@@ -23,22 +21,19 @@ import {
   Button,
   Card,
   Group,
-  SegmentedControl,
-  Select,
+  Loader,
   Slider,
   Stack,
   Textarea,
   TextInput,
   injectBlocksStyles,
 } from '@civitai/blocks-react/ui';
-import type { AppWorkflow, BlockWorkflowSnapshot, BuzzAccountType } from '@civitai/app-sdk/blocks';
+import type { AppWorkflow, BlockWorkflowSnapshot, BuzzAccountType, WorkflowBody } from '@civitai/app-sdk/blocks';
 
 import {
-  ACCOUNT_CHOICES,
   PROMPT_MAX,
   QUANTITY_MAX,
   QUANTITY_MIN,
-  accountLabel,
   aggregateEstimate,
   clampQuantity,
   clearPromptEdit,
@@ -67,7 +62,6 @@ import {
   type FormatRun,
   type GenPhase,
   type PromptEdits,
-  type SourceImage,
 } from './generation.js';
 import {
   CUSTOM_FORMATS_KEY,
@@ -138,10 +132,11 @@ import {
   type HistoryEntry,
   type StoredRecord,
 } from './history.js';
+import { buildEnhanceBody, enhanceOutcomeFromSnapshot, type EnhanceOutcome } from './enhance.js';
 import { HistorySurface } from './History.js';
-import { BuzzBolt, Chevron } from './icons.js';
-import { FORMATS_RAIL_WIDTH, layoutForTier, type BlockLayout } from './layout.js';
-import { paletteFor, parseHex, type Palette } from './palette.js';
+import { SparklesIcon } from './icons.js';
+import { layoutForTier, type BlockLayout } from './layout.js';
+import { paletteFor, type Palette } from './palette.js';
 import { fieldDescStyle, fieldLabelStyle, fieldStyle, panelRowStyle } from './ui-styles.js';
 import { useUltrawide } from './useUltrawide.js';
 
@@ -152,23 +147,14 @@ import { useUltrawide } from './useUltrawide.js';
  *                 upload bridge and the generation is seeded from it. PAGE-ONLY
  *                 (a model-slot token rejects `sourceImage` fail-closed); this app
  *                 is a page app.
- * Both share the same estimate -> (lazy consent) -> submit -> poll driver, the
- * checkpoint/LoRA picks, and the Buzz account picker; only the body differs.
+ * Both share the same estimate -> (lazy consent) -> submit -> poll driver and
+ * the checkpoint/LoRA picks; only the body differs.
+ *
+ * 🔴 ONLY `generate` IS REACHABLE FROM THE UI (operator, 2026-10-18): the mode
+ * toggle is hidden and Remix is unsupported for now. The `remix` arm stays so
+ * records written by earlier versions still parse and price identically.
  */
 type GenMode = 'generate' | 'remix';
-
-/**
- * Which of the two co-equal output/picker surfaces is on screen below `xl`.
- *
- * At `xl`+ Thumbnails and Formats are two separate COLUMNS and this type is not
- * consulted; below it there is only one column, so they become tabs rather than a
- * stack — a stacked picker put the thumbnail grid and the format cards on two
- * different scroll positions on exactly the devices with the least scrollport.
- *
- * The values are the panel names a viewer reads on the tabs, so the state and the
- * label can never disagree about which panel is which.
- */
-type NarrowPanel = 'thumbnails' | 'formats';
 
 /**
  * One Generate click's identity, as an object whose REFERENCE is the identity.
@@ -278,10 +264,6 @@ export function App() {
   // Identical protocol in dev:harness (mock pick), dev:live (host-served
   // overlay), and on the real platform. A pick is DISCOVERY ONLY.
   const { open: openResourcePicker } = useResourcePicker();
-  // The host's image-upload bridge for img2img sources. `open()` resolves with
-  // the UNSCANNED private `{ url, width, height }` (Civitai-hosted by contract)
-  // or `null` when the user dismisses the modal.
-  const { open: openSourceUpload } = useImageUpload({ purpose: 'generationSource' });
   // The viewer's per-pool Buzz balance, read host-side (no scope needed). NOT
   // rendered as a balance readout — the surrounding Civitai chrome already shows
   // the viewer's balance, so an in-app copy is redundant. It is read for ONE
@@ -371,8 +353,27 @@ export function App() {
   // The app-owned palette for the theme the host reports (`brandDepth: "skin"`).
   const pal = paletteFor(theme);
 
-  const [mode, setMode] = useState<GenMode>('generate');
+  // Generate only (operator, 2026-10-18): the mode toggle is hidden and Remix
+  // is unsupported for now, so the mode is pinned — the GenMode machinery stays
+  // in generation.ts/history.ts for records written by earlier versions.
+  const [mode] = useState<GenMode>('generate');
   const [prompt, setPrompt] = useState('');
+
+  // --- Prompt enhancement (chat-completion step) ---
+  // The sparkle button in the prompt input. Priced and confirmed before it
+  // spends, like everything else in this app: click -> estimate -> an inline
+  // confirm carrying the price -> submit -> poll -> the rewrite REPLACES the
+  // prompt text (operator's standing enhance decision, Character Sheet Studio
+  // 2026-10-15). An empty prompt is never priced.
+  const [fxPhase, setFxPhase] = useState<'idle' | 'estimating' | 'confirming' | 'running'>('idle');
+  const [fxQuote, setFxQuote] = useState<number | null>(null);
+  /** The prompt text the quote was priced against — a changed prompt voids it. */
+  const [fxQuotedText, setFxQuotedText] = useState('');
+  const [fxNotice, setFxNotice] = useState<string | null>(null);
+  const [fxApplied, setFxApplied] = useState(false);
+  /** Set when Enhance is clicked before consent; the grant auto-resumes pricing. */
+  const fxConsentPendingRef = useRef(false);
+  const fxRunRef = useRef(0);
   /**
    * Per-format overrides of the composed prompt (see `generation.ts`'s
    * PromptEdits). Keyed by format id, session-only, never persisted.
@@ -388,8 +389,6 @@ export function App() {
   const [touched, setTouched] = useState(false);
   const [account, setAccount] = useState<AccountChoice>('auto');
   const [quantity, setQuantity] = useState(1);
-  const [sourceImage, setSourceImage] = useState<SourceImage | null>(null);
-  const [uploadBusy, setUploadBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // --- Formats ---
@@ -494,39 +493,6 @@ export function App() {
   const [historyBusyKey, setHistoryBusyKey] = useState<string | null>(null);
   const [saveNote, setSaveNote] = useState<string | null>(null);
 
-  /**
-   * Which of the two panels is on screen BELOW `xl`, where Thumbnails and Formats
-   * share one column and become tabs. Ignored at `xl`+, where both are visible at
-   * once in their own columns and no tab control is rendered at all.
-   *
-   * 🔴 IT STARTS ON FORMATS, NOT ON THUMBNAILS, AND THAT IS THE OPERATOR'S DECISION.
-   * A first-run viewer has no thumbnails: landing them on a selected-but-empty
-   * Thumbnails tab means their first screen is a tab that renders nothing, with the one
-   * surface they can actually act on hidden behind a tap. `showHistory` returns false
-   * for exactly that state (ready, zero rows), so the panel is not merely sparse — it is
-   * EMPTY. Formats is the surface a first-run viewer has something to do on.
-   *
-   * The swap back is the first-batch latch — the `useEffect` on `hasBatch`, next to
-   * `historyEntries`: the moment there is a first batch, Thumbnails becomes the selected
-   * tab, because from then on it holds the app's primary object. ONE-WAY, and it never
-   * overrides a manual choice. Read that effect's docblock before touching it: it records
-   * which of its guards mutation testing showed to be load-bearing and which are not.
-   *
-   * 🔴 DELIBERATELY NOT PERSISTED. Every other preference this app remembers is a
-   * property of the WORK (the prompt, the formats, the model); this is a property of
-   * the WINDOW, and `useAppStorage` is a postMessage round-trip to the host. Restoring
-   * "you were last looking at Formats" on a cold load would hide the thumbnails a
-   * returning viewer already paid for behind a tap, for a fact that stops being true
-   * the moment they widen the block past `xl`. The operator settled this as local
-   * state only.
-   */
-  const [narrowPanel, setNarrowPanel] = useState<NarrowPanel>('formats');
-  /**
-   * Has the viewer picked a tab THEMSELVES? Once they have, the first-batch latch below
-   * stops moving the selection — the same discipline `accountTouchedRef` applies to the
-   * Buzz pool. A format checkbox is not a tab choice; only the tablist sets this.
-   */
-  const panelTouchedRef = useRef(false);
 
   // --- The published board ---
   const [boardOpen, setBoardOpen] = useState(false);
@@ -1156,9 +1122,9 @@ export function App() {
       loras: lorasForCheckpoint(checkpoint.baseModel, loras),
       quantity: clampQuantity(quantity),
       account: acct,
-      sourceImage: mode === 'remix' ? sourceImage : null,
+      sourceImage: null,
     }),
-    [mode, prompt, promptEdits, checkpoint, loras, quantity, sourceImage],
+    [mode, prompt, promptEdits, checkpoint, loras, quantity],
   );
 
   /** ONE format's wire body, from the snapshot above. */
@@ -1427,6 +1393,131 @@ export function App() {
     classifyStorageError,
   ]);
 
+  // ---- PROMPT ENHANCEMENT ----
+  //
+  // Unlike Generate, Enhance HAS a separate confirm step: the Generate
+  // button carries its price permanently, while the enhance price only
+  // exists after an estimate, so the confirm strip under the prompt is
+  // where the viewer sees it before spending. Consent is the same lazy
+  // pattern as `proceed` — asked on the first click, auto-resumed on grant.
+
+  /** Submit one enhance body and poll it out; every failure is `none`. */
+  const runFxWorkflow = useCallback(
+    async (body: WorkflowBody): Promise<EnhanceOutcome> => {
+      const runId = ++fxRunRef.current;
+      try {
+        const snap = await submit(body, { idempotencyKey: `yt-enhance-${runId}` });
+        if (isTerminalStatus(snap.status)) {
+          return snap.status === 'succeeded'
+            ? enhanceOutcomeFromSnapshot(snap)
+            : { type: 'none' };
+        }
+        // A chat completion is seconds, not minutes, so this polls on a
+        // plain short interval rather than the generation backoff table —
+        // first poll immediately, then every 2s. Bounded at ~90s; past that
+        // the honest answer is `none` (the spend happened, the prompt stays
+        // as it was, the note says so).
+        for (let i = 0; i < 45; i++) {
+          if (i > 0) await new Promise((r) => setTimeout(r, 2000));
+          if (unmountedRef.current || fxRunRef.current !== runId) return { type: 'none' };
+          let s2: BlockWorkflowSnapshot;
+          try {
+            s2 = await pollRef.current(snap.workflowId);
+          } catch {
+            continue;
+          }
+          if (isTerminalStatus(s2.status)) {
+            return s2.status === 'succeeded'
+              ? enhanceOutcomeFromSnapshot(s2)
+              : { type: 'none' };
+          }
+        }
+        return { type: 'none' };
+      } catch {
+        return { type: 'none' };
+      }
+    },
+    [submit],
+  );
+
+  /** Price the enhancement for the CURRENT prompt; success opens the confirm. */
+  const priceEnhance = useCallback(async () => {
+    setFxPhase('estimating');
+    setFxNotice(null);
+    setFxQuote(null);
+    setFxApplied(false);
+    try {
+      const est = await estimate(buildEnhanceBody(prompt.trim()));
+      const cost = est.cost?.total;
+      if (est.status === 'failed' || est.error || typeof cost !== 'number') {
+        setFxNotice('Couldn’t price the enhancement — your prompt is unchanged.');
+        setFxPhase('idle');
+        return;
+      }
+      setFxQuote(cost);
+      setFxQuotedText(prompt);
+      setFxPhase('confirming');
+    } catch {
+      setFxNotice('Couldn’t price the enhancement — your prompt is unchanged.');
+      setFxPhase('idle');
+    }
+  }, [estimate, prompt]);
+  const priceEnhanceRef = useRef(priceEnhance);
+  priceEnhanceRef.current = priceEnhance;
+
+  /** The sparkle button: gates first (text, sign-in, consent), then pricing. */
+  const startEnhance = useCallback(() => {
+    setFxNotice(null);
+    setFxApplied(false);
+    if (prompt.trim() === '') {
+      setFxNotice('Write a prompt first, then enhance it.');
+      return;
+    }
+    if (!viewer) {
+      requestSignIn();
+      setFxNotice('You’re browsing as a guest — sign in to enhance prompts.');
+      return;
+    }
+    if (!granted) {
+      fxConsentPendingRef.current = true;
+      requestConsent({ scopes: ['ai:write:budgeted'] });
+      return;
+    }
+    void priceEnhanceRef.current();
+  }, [prompt, viewer, granted, requestSignIn, requestConsent]);
+
+  // Auto-resume enhancement pricing after a consent grant (mirrors Generate's).
+  useEffect(() => {
+    if (granted && fxConsentPendingRef.current) {
+      fxConsentPendingRef.current = false;
+      void priceEnhanceRef.current();
+    }
+  }, [granted]);
+
+  /** The confirm strip's Enhance button — the click that spends. */
+  const confirmEnhance = useCallback(async () => {
+    if (fxPhase !== 'confirming' || fxQuote == null) return;
+    // The quote priced a specific text; a prompt edited since then voids it.
+    if (prompt !== fxQuotedText) {
+      setFxQuote(null);
+      setFxPhase('idle');
+      setFxNotice('Your prompt changed — tap Enhance again for a fresh price.');
+      return;
+    }
+    setFxPhase('running');
+    const outcome = await runFxWorkflow(buildEnhanceBody(fxQuotedText.trim()));
+    setFxQuote(null);
+    setFxPhase('idle');
+    if (outcome.type === 'text') {
+      setPrompt(outcome.text);
+      setFxApplied(true);
+    } else if (outcome.type === 'withheld') {
+      setFxNotice(`The enhancement was withheld: ${outcome.reason} Your prompt is unchanged.`);
+    } else {
+      setFxNotice('The enhancement didn’t come back — your prompt is unchanged.');
+    }
+  }, [fxPhase, fxQuote, prompt, fxQuotedText, runFxWorkflow]);
+
   // The actual gate: sign-in -> consent -> generate. Wired straight to the
   // Generate button — the cost is already shown on the button, so there's no
   // separate confirm step (consent is the real, host-driven spend gate).
@@ -1506,7 +1597,7 @@ export function App() {
     loras: lorasForCheckpoint(checkpoint.baseModel, loras),
     quantity,
     mode,
-    sourceImageUrl: sourceImage?.url ?? null,
+    sourceImageUrl: null,
   });
 
   useEffect(() => {
@@ -1558,31 +1649,6 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, granted, priceSignature]);
 
-  /**
-   * Switch the generation path, and clear the run table so a stale failure never
-   * shows under the new mode. The remix source is intentionally kept: it is harmless
-   * in the other mode (generate never threads it).
-   *
-   * 🔴 THE MODE TOGGLE IS NOW LIVE DURING POLLING, SO THIS HAD TO STOP KILLING THE
-   * IN-FLIGHT BATCH. It used to set `cancelled`, which was both reachable only when
-   * nothing was in flight (the control was disabled through `polling`) and, as
-   * written, a kill switch for every running poll loop. With the control live, a
-   * viewer lining up a remix while their txt2img batch generates would have silently
-   * frozen that batch's history row as a skeleton with no price.
-   *
-   * What it does instead: ABORT only work not yet submitted (`cancelled`, honoured in
-   * `runGeneration`'s estimate pass), and RELEASE `runs` (`currentBatchRef = null`) so
-   * a still-polling batch's late snapshots cannot write a run table that no longer
-   * describes them. Their own history row is unaffected and keeps filling in.
-   */
-  const switchMode = useCallback((next: GenMode) => {
-    if (currentBatchRef.current) currentBatchRef.current.cancelled = true;
-    currentBatchRef.current = null;
-    consentPendingRef.current = false;
-    setMode(next);
-    setRuns([]);
-    setError(null);
-  }, []);
 
   // --- Formats: the viewer's own, persisted per-viewer ---
 
@@ -2029,47 +2095,6 @@ export function App() {
   const liveWorkflows = mergeLiveWorkflows(workflows, ownWorkflows);
   const historyEntries = joinHistory(historyRecords, liveWorkflows);
 
-  /**
-   * BELOW `xl`: hand the selected tab to Thumbnails the first time a batch exists.
-   *
-   * `narrowPanel` defaults to Formats because a first-run viewer's Thumbnails tab is EMPTY
-   * (see that state's docblock, and `showHistory`). The moment a batch exists the primary
-   * object is back, so the selection should follow it.
-   *
-   * 🔴 EXACTLY ONE GUARD HERE HAS AN OBSERVABLE EFFECT, AND IT IS `panelTouchedRef`. A
-   * viewer who picked a tab before the first batch arrived is not overridden — the same
-   * discipline `accountTouchedRef` applies to the Buzz pool. Mutation-measured: deleting it
-   * fails `a tab picked BEFORE the first batch is not overridden by it` in
-   * `responsive.test.tsx`, with that case's own message.
-   *
-   * 🔴 AND THE BOOLEAN DEPENDENCY IS *NOT* A SECOND GUARD, WHICH IS THE OPPOSITE OF WHAT
-   * TWO EARLIER DRAFTS OF THIS COMMENT CLAIMED. `hasBatch` is a boolean rather than
-   * `historyEntries.length`, so the effect runs once on the `false -> true` edge instead of
-   * once per batch — but keying it on the COUNT survives the whole suite (measured), because
-   * `panelTouchedRef` already suppresses every later firing: there is no route back to
-   * Formats after the first batch that does not set the touched flag. The boolean is kept
-   * because running an effect once is simpler than running it per batch, NOT because
-   * anything can see the difference. Said plainly so nobody reads it as protection.
-   *
-   * A third guard — a `sawFirstBatchRef` one-shot latch — was deleted after the same
-   * measurement: removing it, and keying on the count, both left every test green, and its
-   * only reachable case was non-empty -> empty -> non-empty (delete every row, then
-   * generate again), where moving the selection to Thumbnails is the right answer anyway.
-   *
-   * 🔴 IT FIRES AT SUBMIT, NOT AT COMPLETION, AND THAT IS RIGHT. `historyEntries` is the
-   * join of stored rows with live workflows, so the row (and its skeletons) exists as
-   * soon as the batch is submitted — which is the moment the viewer wants to be looking
-   * at it. It also fires for a RETURNING viewer whose stored rows arrive after mount,
-   * which is the same claim: there is something in Thumbnails now.
-   *
-   * No dependency on `narrowPanel`: this reads one ref and one boolean, so it cannot
-   * re-run because of the state it sets.
-   */
-  const hasBatch = historyEntries.length > 0;
-  useEffect(() => {
-    if (!hasBatch || panelTouchedRef.current) return;
-    setNarrowPanel('thumbnails');
-  }, [hasBatch]);
 
   /**
    * Prune storage rows no live workflow matches, so the halves cannot drift.
@@ -2304,18 +2329,13 @@ export function App() {
       setRuns([]);
       setError(null);
       setEditing(null);
-      setMode(f.mode);
       setPrompt(f.prompt);
       setPromptEdits({ ...f.promptEdits });
       setCheckpoint(f.checkpoint);
       setLoras([...f.loras]);
-      setQuantity(clampQuantity(f.quantity));
-      setSourceImage(f.sourceImage ?? null);
-      // A restored pool is the viewer's own past choice, so it must not be
-      // silently reassigned by the blue -> green -> yellow default on the next
-      // estimate — the same rule as a manual pick.
-      accountTouchedRef.current = true;
-      setAccount(f.account);
+      setQuantity(1); // quantity is pinned to 1 — the selector is hidden
+      // The Buzz pool is NOT restored: the selector is hidden and spending is
+      // always Auto now, so a past pick must not silently return.
       // Formats the viewer no longer has (a deleted custom one, a withdrawn
       // published one) are carried back in as session formats so the selection
       // resolves and the prompts recompose exactly as they did.
@@ -2459,17 +2479,6 @@ export function App() {
     }
   }, [openResourcePicker, checkpoint.baseModel]);
 
-  // Open the host's upload modal for a generationSource image (img2img seed).
-  // A dismissal (`null`) keeps the current source; Clear removes it.
-  const onChooseSource = useCallback(async () => {
-    setUploadBusy(true);
-    try {
-      const src = await openSourceUpload();
-      if (src) setSourceImage(src);
-    } finally {
-      setUploadBusy(false);
-    }
-  }, [openSourceUpload]);
 
   const onRemoveLora = (versionId: number) => setLoras((cur) => removeLora(cur, versionId));
   const onLoraWeight = (versionId: number, weight: number) =>
@@ -2504,8 +2513,6 @@ export function App() {
    * `currentBatchRef` and `applySnapshotToRun`.
    */
   const busy = isSubmittingPhase(phase);
-  const isRemix = mode === 'remix';
-  const remixIncomplete = isRemix && !sourceImage;
 
   // The Model row's CONTENT, hoisted so the two layouts below share one copy of
   // it. Only the container differs between the wide and narrow branches.
@@ -2798,64 +2805,6 @@ export function App() {
     </div>
   );
 
-  // Mode toggle: Generate (txt2img) ⇄ Remix (img2img). Switching swaps the source
-  // control + the body-builder while REUSING the one estimate -> consent ->
-  // submit -> poll driver + the shared checkpoint/LoRA/account controls.
-  const modeBlock = (
-    <>
-      <SegmentedControl
-        fullWidth
-        aria-label="Generation mode"
-        value={mode}
-        onChange={(v) => switchMode(v as GenMode)}
-        disabled={busy}
-        data={[
-          { value: 'generate', label: 'Generate' },
-          { value: 'remix', label: 'Remix an image' },
-        ]}
-      />
-
-      {isRemix && (
-        <div style={fieldStyle}>
-          <span style={fieldLabelStyle}>Source image</span>
-          {sourceImage ? (
-            <Group gap={8} align="center" data-testid="pm-remix-preview">
-              <img src={sourceImage.url} alt="Remix source" style={sourceThumbStyle(pal)} />
-              <Button
-                variant="light"
-                size="sm"
-                loading={uploadBusy}
-                onClick={() => void onChooseSource()}
-              >
-                Replace
-              </Button>
-              <Button
-                variant="subtle"
-                size="sm"
-                color="error"
-                onClick={() => setSourceImage(null)}
-                data-testid="pm-remix-clear"
-              >
-                Clear
-              </Button>
-            </Group>
-          ) : (
-            <span>
-              <Button
-                variant="light"
-                loading={uploadBusy}
-                onClick={() => void onChooseSource()}
-                data-testid="pm-remix-upload"
-              >
-                Choose an image
-              </Button>
-            </span>
-          )}
-        </div>
-      )}
-    </>
-  );
-
   // 🔴 The description deliberately does NOT claim a generation size, and the
   // reason has CHANGED SHAPE — read this before restoring one.
   //
@@ -2878,46 +2827,101 @@ export function App() {
   // though a 1536x864 source is already 16:9 and therefore loses nothing to the
   // crop: "cover-crop to 1280x720" describes what the canvas does, and the user
   // can still pick a 3:2 SD-family checkpoint where it genuinely crops.
+  const fxBusy = fxPhase === 'estimating' || fxPhase === 'running';
   const promptBlock = (
-    <Textarea
-      label="Prompt"
-      description="Describe the thumbnail."
-      placeholder="a serene mountain lake at golden hour, highly detailed"
-      value={prompt}
-      minRows={4}
-      maxLength={PROMPT_MAX}
+    <>
+      <div style={{ position: 'relative' }}>
+        <Textarea
+          label="Prompt"
+          description="Describe the thumbnail."
+          placeholder="a serene mountain lake at golden hour, highly detailed"
+          value={prompt}
+          minRows={4}
+          maxLength={PROMPT_MAX}
+          textareaClassName="yt-prompt-textarea"
       // 🔴 NOT `required` ANY MORE, AND THAT IS THE POINT. A selected format's
       // suffix is a complete prompt on its own, so `aria-required="true"` here
       // would tell a screen-reader user the field must be filled when it need
       // not be. `promptError` still fires for the state that IS empty.
-      error={promptError}
-      onChange={(e) => setPrompt(e.target.value)}
-      onBlur={() => setTouched(true)}
-    />
+          error={promptError}
+          onChange={(e) => {
+            setPrompt(e.target.value);
+            if (fxApplied) setFxApplied(false);
+          }}
+          onBlur={() => setTouched(true)}
+        />
+        {/* 🔴 THE ENHANCE BUTTON LIVES IN THE INPUT (operator, 2026-10-18):
+            bottom-right corner of the textarea, icon-only with title +
+            aria-label. Disabled on an empty prompt — there is nothing to
+            rewrite, and an empty field is never priced. */}
+        <button
+          type="button"
+          data-testid="pm-enhance"
+          title="Enhance"
+          aria-label="Enhance"
+          disabled={fxBusy || prompt.trim() === ''}
+          onClick={startEnhance}
+          style={enhanceButtonStyle(pal, fxBusy || prompt.trim() === '')}
+        >
+          {fxPhase === 'estimating' ? <Loader size="sm" /> : <SparklesIcon />}
+        </button>
+      </div>
+      {fxPhase === 'confirming' && fxQuote != null && (
+        <Alert
+          color="info"
+          data-testid="pm-enhance-confirm"
+          title={`Enhance this prompt · ${formatCost(fxQuote)} Buzz`}
+        >
+          <Group gap={8}>
+            <Button size="sm" data-testid="pm-enhance-run" onClick={() => void confirmEnhance()}>
+              Enhance
+            </Button>
+            <Button
+              size="sm"
+              variant="subtle"
+              data-testid="pm-enhance-cancel"
+              onClick={() => {
+                setFxPhase('idle');
+                setFxQuote(null);
+              }}
+            >
+              Cancel
+            </Button>
+          </Group>
+        </Alert>
+      )}
+      {fxPhase === 'running' && (
+        <Alert color="info" data-testid="pm-enhance-running">
+          Enhancing your prompt…
+        </Alert>
+      )}
+      {fxNotice != null && fxPhase !== 'confirming' && (
+        <Alert color="warning" data-testid="pm-enhance-note">
+          {fxNotice}
+        </Alert>
+      )}
+      {fxApplied && fxNotice == null && (
+        <Alert color="info" data-testid="pm-enhance-applied">
+          Prompt enhanced.
+        </Alert>
+      )}
+    </>
   );
 
   // FORMATS, IN TWO BLOCKS — the PICKER and everything the picker OPENS.
   //
-  // 🔴 THE SPLIT IS WHAT MAKES THE FORMATS RAIL SAFE, AND IT IS THE OPERATOR'S DECISION.
-  // At `xl`+ the picker is a 320px fixed column (`FORMATS_RAIL_WIDTH`), which leaves a
-  // 286px content box inside the rail's chrome. That is right for the picker — its cards
-  // have a 200px floor and a second card column would need 442px, so the rail is sized to
-  // exactly one column of cards and every extra pixel belongs to the thumbnail grid.
+  // 🔴 THE PICKER IS INSIDE THE FORM NOW (operator, 2026-10-18): a horizontal
+  // carousel of format cards between the prompt and the model, in both layouts.
+  // It used to be its own rail at `xl`+ and a tab below it; both are gone. The
+  // "+ New" / "Browse published" actions stay as two compact buttons in the
+  // picker's header row — the uncluttered end of the carousel — rather than
+  // as cards in the scroll row, where they would read as formats.
   //
-  // It is WRONG for everything below the picker. `ComposedPromptPreview` holds the REAL
-  // prompt strings `bodyFor` submits — the money path's editor — and `FormatEditor` holds
-  // a format being written; both are textareas, and a 286px textarea is not a surface you
-  // edit a prompt in. `PublishedBoard` is a browsable list of other people's formats.
-  // Those three went into the rail with the picker in the first revision of this change
-  // and all three were measurably worse for it: squeezed, and reachable only by scrolling
-  // the rail's own 100dvh-bounded scrollport, so "+ New" opened an editor far below the
-  // fold of a column the viewer was not looking at.
-  //
-  // So: `formatsPickerBlock` is the column, `formatsDetailBlock` is what it opens, and
-  // the detail block renders in the MAIN column at `xl`+ (beside the thumbnails, at full
-  // width) and inside the Formats tab panel below it. Both blocks are ONE binding each,
-  // rendered by both layouts — see `thumbnailsPanel` for why a second JSX copy is the
-  // shape that forks silently.
+  // 🔴 THE SPLIT FROM `formatsDetailBlock` SURVIVES, FOR THE OLD REASON. What
+  // the picker OPENS — `ComposedPromptPreview` (the REAL prompt strings
+  // `bodyFor` submits), `FormatEditor`, `PublishedBoard` — are full-width
+  // textarea/list surfaces. They render in the MAIN column at `xl`+ and
+  // directly under the form below it, never inside the form column itself.
   const formatsPickerBlock = (
     <div style={fieldStyle} data-testid="yt-format-picker">
       <Group justify="space-between" align="center" gap={8}>
@@ -2989,9 +2993,9 @@ export function App() {
     </div>
   );
 
-  // What the picker OPENS — see `formatsPickerBlock` for why these three are not in the
-  // formats rail. Rendered in the MAIN column at `xl`+ and inside the Formats tab panel
-  // below it, which is the one place a prompt textarea has the block's full width.
+  // What the picker OPENS — see `formatsPickerBlock` for why these three are
+  // not in the form. Rendered in the MAIN column at `xl`+ and directly under
+  // the form below it, which is where a prompt textarea has the full width.
   const formatsDetailBlock = (
     <div style={fieldStyle} data-testid="yt-format-detail">
       {/* 🔴 WHAT WILL ACTUALLY BE SENT, AND NOW ALSO WHERE YOU CHANGE IT. A
@@ -3073,36 +3077,6 @@ export function App() {
     </div>
   );
 
-  // Quantity — how many candidates per generation (server cap 4). Multiple
-  // candidates cost proportionally; the estimate reflects it.
-  //
-  // 🔴 A DROPDOWN, NOT A ROW OF PILLS, AND IT SHARES A LINE WITH THE BUZZ PICKER.
-  // Four pills plus a two-line cost disclosure took a whole band of the rail to
-  // express one small number. The pack's `Select` wraps a NATIVE `<select>` and
-  // therefore cannot render icons — irrelevant for the digits 1–4, and the reason
-  // the Buzz picker beside it is still a custom listbox.
-  //
-  // 🔴 THE OPTIONS ARE BUILT FROM `QUANTITY_MIN`/`QUANTITY_MAX`, and the value still
-  // goes through `clampQuantity` on the way in AND out. The literal `[1, 2, 3, 4]`
-  // this replaces was a second statement of the server cap that a change to
-  // QUANTITY_MAX would not have moved.
-  const quantityBlock = (
-    <div style={fieldStyle}>
-      <Select
-        label="Images per format"
-        /* 🔴 COST DISCLOSURE — kept deliberately while other copy was cut.
-           Quantity and format count MULTIPLY: this is images per format, per run,
-           and each one is charged. */
-        description="Each image costs Buzz."
-        value={String(clampQuantity(quantity))}
-        disabled={busy}
-        onChange={(v) => setQuantity(clampQuantity(Number(v)))}
-        options={QUANTITY_CHOICES.map((n) => ({ value: String(n), label: String(n) }))}
-        data-testid="pm-quantity"
-      />
-    </div>
-  );
-
   // Sign in / Generate, plus the three PRE-SPEND gates. These stay next to the
   // button that triggers them; post-spend reporting lives with the results.
   const submitBlock = (
@@ -3121,7 +3095,7 @@ export function App() {
         <Button
           fullWidth
           loading={busy}
-          disabled={!submittable || remixIncomplete}
+          disabled={!submittable}
           onClick={onGenerateClick}
           data-testid="pm-generate"
         >
@@ -3139,11 +3113,6 @@ export function App() {
         </Button>
       )}
 
-      {remixIncomplete && (
-        <span style={fieldDescStyle(pal)} data-testid="pm-remix-hint">
-          Choose a source image above to remix it.
-        </span>
-      )}
 
       {/* 🔴 WHY IS GENERATE LIVE WITH AN EMPTY PROMPT? Because a format is
           selected — but the only place that said so was "What gets sent",
@@ -3152,7 +3121,7 @@ export function App() {
           sits with the button it explains, and only in the exact state that
           needs explaining: signed in, prompt empty, formats selected, and
           not already carrying the Remix hint above. */}
-      {!anon && !remixIncomplete && prompt.trim() === '' && selectedFormats.length > 0 && (
+      {!anon && prompt.trim() === '' && selectedFormats.length > 0 && (
         <span style={fieldDescStyle(pal)} data-testid="pm-generate-format-hint">
           {selectedFormats.length === 1
             ? `Prompt optional — the ${selectedFormats[0]!.label} format will be used on its own.`
@@ -3293,33 +3262,21 @@ export function App() {
     />
   );
 
-  // The inputs, as ONE binding both layouts render.
+  // The inputs, as ONE binding both layouts render: prompt, the format
+  // carousel, model, LoRA, Generate. (The mode toggle, the quantity dropdown
+  // and the Buzz pool picker that used to sit in this fragment are hidden —
+  // Generate only, one image per format, spending always Auto; operator,
+  // 2026-10-18.)
   //
-  // 🔴 THIS USED TO BE TWO HALVES — `inputsBeforeFormats` / `inputsAfterFormats` — AND
-  // THE ONLY REASON FOR THE SPLIT IS GONE. The format picker sat BETWEEN them below
-  // `lg`, because it is an input that decides the bill and belonged next to the prompt
-  // rather than after the Generate button; at `lg`+ it moved to the main column, so the
-  // two halves were joined there. The picker is now a TAB below `xl` and its own COLUMN
-  // at `xl`+, which means it sits between them in neither layout, and a split with no
-  // remaining reason is two names a reader has to reconcile. Both layouts render the
-  // same block constants; only the containers differ.
-  //
-  // 🔴 WHERE THIS BLOCK SITS, IN BOTH LAYOUTS, AND WHAT PINS IT. Below `xl` it is
-  // rendered BEFORE the tab control, so the reading order is hero -> prompt -> model ->
-  // quantity/pool -> Generate -> the two output panels; the picker is inside the Formats
-  // panel and therefore AFTER the prompt. At `xl`+ it is the inputs rail, the FIRST child
-  // of the rail grid, so the prompt again precedes both the thumbnails column and the
-  // formats rail. One order, two containers.
-  //
-  // What pins it: `responsive.test.tsx` asserts the document order of the prompt against
-  // the thumbnail images at both tiers, and asserts the rail grid's three children as an
-  // ordered list. Nothing pins the order of the fields WITHIN this fragment — mode,
-  // prompt, model, LoRA, quantity/pool, submit are in source order and a reshuffle of
-  // them would fail no test. Said plainly rather than implied.
+  // 🔴 WHERE THIS BLOCK SITS. Below `xl` it is the top of the single column;
+  // at `xl`+ it is the rail, the FIRST child of the rail grid. Either way the
+  // reading order is hero -> prompt -> formats -> model -> Generate -> the
+  // detail block -> the thumbnails, and `responsive.test.tsx` pins the
+  // prompt-before-results half of that at both tiers.
   const inputs = (
     <>
-      {modeBlock}
       {promptBlock}
+      {formatsPickerBlock}
       {modelBlock}
       {/* 🔴 THE WHOLE FIELD IS GONE FOR A FAMILY WITH NO LoRAs. It used to render a
           permanently-disabled Add button plus a sentence explaining why — a control
@@ -3350,49 +3307,19 @@ export function App() {
           </span>
         )
       )}
-      {/* 🔴 TWO SMALL CONTROLS, ONE LINE — and it WRAPS rather than shrinking. Both
-          are `minWidth: 0` flex items with a floor: below that width they stack, so
-          the Buzz trigger never becomes a sliver of a truncated account name with a
-          price the viewer cannot read. A CSS grid with a fixed two-column template
-          could not do that without a second breakpoint rule. */}
-      <div style={spendRowStyle} data-testid="yt-spend-row">
-        <div style={spendCellStyle}>{quantityBlock}</div>
-        {!anon && (
-          <div style={spendCellStyle}>
-            <AccountPicker
-              value={account}
-              onChange={(v) => {
-                // A manual pick freezes the blue -> green -> yellow default: from
-                // here on the app never silently reassigns their pool.
-                accountTouchedRef.current = true;
-                setAccount(v);
-              }}
-              balance={balance}
-              disabled={busy}
-              cost={estimatedCost}
-              costPartial={estimatePartial}
-              portalTo={rootRef}
-              pal={pal}
-            />
-          </div>
-        )}
-      </div>
       {submitBlock}
     </>
   );
 
   // THUMBNAILS — the output surface, as ONE binding, rendered by both layouts.
   //
-  // 🔴 IT IS A BINDING RATHER THAN TWO COPIES BECAUSE THE PANELS MUST NOT FORK. At
-  // `xl`+ this is the LAST of the three columns — the only flexible track, after both
-  // rails; below `xl` it is one of two tab panels, and the ONLY difference between the
-  // two is the container. Two JSX copies of
-  // `{resultsBlock}{historyBlock}` would be a predicate open-coded twice — the shape
-  // `layout.ts`'s module docblock says is wrong at N−1 sites — and the failure would
-  // be silent: a block that stopped rendering the partial-failure alert on phones
-  // only. A FRAGMENT, not a wrapped div, so at `xl`+ its two children are still
-  // direct flex items of the same `Stack` and the gaps are unchanged (`Stack` is a
-  // plain flex container with a CSS `gap`).
+  // 🔴 A BINDING RATHER THAN TWO COPIES, SO THE SURFACE CANNOT FORK. At `xl`+
+  // it is the main column's second half (after `formatsDetailBlock`); below
+  // `xl` it is the single column's tail, under the form. Two JSX copies of
+  // `{resultsBlock}{historyBlock}` would be a predicate open-coded twice, and
+  // the failure would be silent: a block that stopped rendering the
+  // partial-failure alert on phones only. A FRAGMENT, not a wrapped div, so
+  // its children are still direct flex items of the enclosing `Stack`.
   const thumbnailsPanel = (
     <>
       {resultsBlock}
@@ -3409,10 +3336,9 @@ export function App() {
   // is the SIDE-BY-SIDE arrangement, not `position: sticky` — see `railStyle` for
   // why sticky is inert in a host-auto-sized iframe.
   //
-  // 🔴 `xl`, NOT `lg`, AND THE BOUNDARY MOVED FOR A MEASURED REASON. Three columns need
-  // 340 + 320 of fixed track and two 20px gaps before the thumbnail grid sees a pixel,
-  // which at `lg` left ONE tile per row where the tabbed layout renders three. See
-  // `shapeForTier` in `layout.ts`.
+  // 🔴 `xl`, NOT `lg`. Even at two tracks the rail takes 340px of fixed track
+  // before the thumbnail grid sees a pixel; at `lg` the single capped column
+  // renders more tiles. See `shapeForTier` in `layout.ts`.
   if (layout.rail) {
     return (
       <div {...rootProps}>
@@ -3427,38 +3353,10 @@ export function App() {
               >
                 <Stack gap={16}>{inputs}</Stack>
               </aside>
-              {/* 🔴 FORMATS GET THEIR OWN RAIL, WITH `railStyle` — the SAME function the
-                  inputs rail uses, not a copy of its chrome. Both are bounded, sticky,
-                  self-scrolling columns, and the height bound is the load-bearing half
-                  here too: the picker is about to grow from 6 formats to 12, so at one
-                  card column per row an unbounded sticky column would strand the tail
-                  of the LIST below the fold for the whole sticky range.
-                  One function means the two rails cannot drift into disagreeing about
-                  that. What is NO LONGER stranded here is everything the picker opens —
-                  that moved to the main column (`formatsDetailBlock`).
-                  🔴 THE SECOND GRID CHILD, BY THE OPERATOR'S DECISION. The two rails sit
-                  side by side and the thumbnails take the whole right of the grid; this
-                  column used to be third, after the thumbnails. It is still a FIXED px
-                  track — the position changed, the sizing did not. */}
-              <aside style={railStyle(pal)} data-testid="yt-formats-rail" aria-label="Formats">
-                <Stack gap={16}>{formatsPickerBlock}</Stack>
-              </aside>
-              {/* 🔴 THUMBNAILS TAKE WHAT IS LEFT — the only `fr` track in the grid, and
-                  the LAST of the three columns. The format PICKER used to sit UNDER this
-                  column, then beside it on the right; it is now the column immediately
-                  before it, and it is a FIXED px track so that every px the block gains
-                  goes to the thumbnail grid rather than being split with a surface
-                  that cannot spend it. The arithmetic is in `FORMATS_RAIL_WIDTH`.
-                  🔴 AND `formatsDetailBlock` IS HERE, NOT IN THE RAIL. The composed-prompt
-                  boxes, the format editor and the published board are full-width surfaces
-                  — the first two are prompt textareas on the money path — and the rail's
-                  content box is 286px. That is unchanged by the reorder: the rail is the
-                  same 320px it was. They sit AFTER the thumbnails so the app's primary
-                  object stays the first thing in this column; see `formatsPickerBlock`. */}
               <main style={mainColumnStyle} data-testid="yt-main">
                 <Stack gap={16}>
-                  {thumbnailsPanel}
                   {formatsDetailBlock}
+                  {thumbnailsPanel}
                 </Stack>
               </main>
             </div>
@@ -3468,39 +3366,14 @@ export function App() {
     );
   }
 
-  // Below `xl` everything is one column, and THIS IS THE ORDER, as the operator settled
-  // it: hero, then the controls, then the two output panels as tabs.
-  //
-  // 🔴 THE CONTROLS COME FIRST AND THAT REVERSES "RESULTS ABOVE THE CONTROLS". That
-  // earlier rule put the results at the top of the column because the app's primary
-  // object should be the first thing on screen, and it was right while the picker sat
-  // BETWEEN the two halves of the inputs. Tabs ended that: Thumbnails and Formats share
-  // one tab control, a tab control cannot be in two places, so whichever side of the
-  // inputs the tabs land on takes BOTH panels with it. Putting them above the inputs put
-  // the format PICKER above the prompt box — and the picker decides the bill, so reading
-  // "pick your formats" before "say what you want" inverts the sentence the form is. The
-  // operator chose prompt-then-formats, i.e. controls first. Below the rail tier the
-  // results are therefore BELOW the prompt, which `responsive.test.tsx` now pins as the
-  // order rather than its opposite. It agrees with the rail tier on the half this tab
-  // order is about — the inputs rail is the FIRST grid child there, so the prompt
-  // precedes both output surfaces in both layouts. It is NOT the same order beyond that:
-  // at the rail tier the formats column is the second grid child and the thumbnails the
-  // third, while the tabs here present Thumbnails first and Formats second. That is not a
-  // contradiction — a tab control shows one panel at a time, so its left-to-right order
-  // is a pick list rather than a reading order, and it does not even decide which panel a
-  // viewer meets first: `narrowPanel` starts on FORMATS whatever order the two tabs are
-  // listed in, with the first-batch latch moving it. Nothing about the tabs changed when
-  // the rail columns were reordered, and `responsive.test.tsx` pins the two claims
-  // separately: the prompt-before-results order in BOTH layouts, and the rail grid's
-  // three children as an ordered list.
-  //
-  // 🔴 AND THE TWO OUTPUT SURFACES ARE TABS HERE, NOT A STACK. At `xl`+ Thumbnails and
-  // Formats are two columns; below it there is one column, and stacking them put the
-  // grid and the picker at two different scroll positions on the devices with the least
-  // scrollport — the same "two scroll positions" problem the rail exists to solve at
-  // the wide end. `SegmentedControl` is the pack's `role="tablist"` primitive and is
-  // already this app's switcher idiom (the Generate / Remix toggle), so a viewer meets
-  // one control shape, not two.
+  // Below `xl` everything is one column, and THIS IS THE ORDER, as the
+  // operator settled it (2026-10-18): hero, the form (prompt, format
+  // carousel, model, Generate), what the picker opens, then the thumbnails.
+  // No tabs: with the picker inside the form there is nothing left to switch
+  // between, so every surface is mounted and visible in reading order, and a
+  // first batch needs no latch to move a selection — the results simply land
+  // under the form. `responsive.test.tsx` pins the absence of the tab control
+  // and the prompt-before-results order at these widths.
   return (
     <div {...rootProps}>
       <div style={contentStyle(layout)} {...contentProps(layout)}>
@@ -3508,76 +3381,8 @@ export function App() {
           <Stack gap={16}>
             {hero}
             {inputs}
-            <SegmentedControl
-              fullWidth
-              aria-label="Output panel"
-              value={narrowPanel}
-              onChange={(v) => {
-                // A manual pick freezes the FORMATS -> THUMBNAILS default: from here on
-                // the first-batch latch never moves the selection again. Same discipline
-                // as `accountTouchedRef`. Safe to set HERE because the latch bypasses
-                // `onChange` entirely — it calls `setNarrowPanel` directly — so the only
-                // thing that reaches this line is a viewer pressing a tab.
-                panelTouchedRef.current = true;
-                // 🔴 NOT `v as NarrowPanel`. The pack types `onChange` as
-                // `(value: string)`, so a cast launders any third string into the state —
-                // and `panelStyle` would then resolve `false` for BOTH panels and hide the
-                // entire output surface. Mapped instead, with Thumbnails as the total
-                // function's default: an unknown value shows the primary object, never
-                // nothing.
-                setNarrowPanel(v === 'formats' ? 'formats' : 'thumbnails');
-              }}
-              data-testid="yt-panel-tabs"
-              data={[
-                { value: 'thumbnails', label: 'Thumbnails' },
-                { value: 'formats', label: 'Formats' },
-              ]}
-            />
-            {/* 🔴 BOTH PANELS ARE MOUNTED; ONLY `display` SWITCHES — and that is the
-                decision, not an oversight. Three reasons, in order of weight:
-                  1. the inactive panel's STATE survives a tab switch. The formats panel
-                     holds a half-written custom format (`formatDraft`) and the fetched
-                     published board; unmounting it would discard a draft every time a
-                     viewer looked at their thumbnails. The thumbnails panel holds the
-                     in-flight batch's skeletons.
-                  2. `display: none` takes the panel out of the ACCESSIBILITY TREE as
-                     well as off the page, so a screen reader still hears exactly one
-                     panel — the behaviour conditional rendering would buy.
-                  3. the two panels' content is then identical to what the stacked
-                     layout rendered BY CONSTRUCTION, which is the requirement.
-                The cost is that both subtrees render on every pass below `xl`. They
-                already did, in the stacked layout this replaces.
-                🔴 WHAT IS MISSING AND WHY: `aria-controls` / `aria-labelledby` between
-                each tab and its panel. The pack's `SegmentedControl` takes its segments
-                as `{value, label, disabled}` and puts no caller-supplied id or
-                `aria-controls` on the buttons it renders, so the association cannot be
-                expressed from here. Each panel carries its own `aria-label` instead.
-                🔴 `tabIndex={0}` IS NOT DECORATION. A `role="tabpanel"` is expected to be
-                focusable: a keyboard user who tabs off the tablist must land ON the panel
-                they just selected, and without it focus skips the whole panel and lands on
-                the next interactive thing after it. It is NOT blocked by the pack's API the
-                way `aria-controls` is, so it is not in the paragraph above. The hidden
-                panel is `display: none`, which removes it from the tab order regardless —
-                so this adds one stop, not two. */}
-            <div
-              role="tabpanel"
-              tabIndex={0}
-              aria-label="Thumbnails"
-              data-testid="yt-panel-thumbnails"
-              style={panelStyle(narrowPanel === 'thumbnails')}
-            >
-              {thumbnailsPanel}
-            </div>
-            <div
-              role="tabpanel"
-              tabIndex={0}
-              aria-label="Formats"
-              data-testid="yt-panel-formats"
-              style={panelStyle(narrowPanel === 'formats')}
-            >
-              {formatsPickerBlock}
-              {formatsDetailBlock}
-            </div>
+            {formatsDetailBlock}
+            {thumbnailsPanel}
           </Stack>
         </Card>
       </div>
@@ -3818,356 +3623,7 @@ function ComposedPromptPreview({
 // a second pool→colour lookup is exactly the drift this repo's audits keep finding.
 // One component, two call sites — see `icons.tsx` for the provenance of the colours.
 
-/** The menu's element id, shared by `aria-controls` and the popup itself. */
-const ACCOUNT_MENU_ID = 'yt-account-menu';
-/** The description the trigger points `aria-describedby` at. */
-const ACCOUNT_DESC_ID = 'yt-account-desc';
 
-/**
- * Choose which Buzz pool funds the generation — a trigger showing the current
- * pool + this click's price, and a popup listing every pool with its balance.
- *
- * 🔴 WHY A HAND-BUILT MENU AND NOT THE PACK'S `Select`. `@civitai/blocks-react`'s
- * `Select` wraps a NATIVE `<select>`: its `SelectOption.label` is typed
- * `React.ReactNode`, but it renders into an `<option>`, and no browser renders an
- * SVG or an `<img>` inside one. A per-type Buzz bolt is the whole point of this
- * control, so the pack's Select structurally cannot deliver it. Buttons can.
- *
- * 🔴 THE SEMANTICS ARE UNCHANGED FROM THE RADIO ROW THIS REPLACES. `'auto'` still
- * omits `accountType` from the submit body ENTIRELY (see `buildWorkflowBody`); a
- * pick is still only a PREFERENCE that the server clamps, may fall back from, and
- * can reject outright; zero-balance pools are still SELECTABLE and merely
- * annotated. Only the presentation moved.
- *
- * A11Y MODEL: `aria-haspopup="menu"` + `aria-expanded` + `aria-controls` on the
- * trigger; `role="menu"` labelled "Pay with" on the popup; `role="menuitemradio"`
- * + `aria-checked` on each pool — deliberately the menu-radio role rather than
- * listbox/`aria-selected`, because "exactly one of these is chosen" is what
- * `aria-checked` says and it is the same state the radio row published. Keyboard:
- * ArrowDown/ArrowUp open the closed trigger onto the first/last pool; inside the
- * menu Arrow keys move (wrapping), Home/End jump, Enter/Space choose, Escape
- * closes and returns focus to the trigger, Tab closes. A pointer press outside the
- * control dismisses it.
- *
- * 🔴 THE POPUP IS PORTALLED OUT OF THE RAIL, AND THAT IS A BUG FIX, NOT A STYLE
- * CHOICE. It used to be `position: absolute` inside the field, i.e. a DESCENDANT
- * of `yt-rail`, which carries `overflowY: 'auto'` because it is a `position:
- * sticky` column capped at `calc(100dvh - 48px)` — a tall control list has to
- * scroll inside it. MEASURED in headless chromium at 1400x1000: the rail's box
- * bottom was 780 and the open menu ran to 863, so the last 83px was CLIPPED and
- * `document.elementFromPoint` at the centre of `pm-account-green` and
- * `pm-account-yellow` returned the rail, not the option. Two of the four Buzz
- * pools could not be clicked. `z-index` cannot fix it: the clip comes from an
- * ancestor's overflow, not from stacking.
- *
- * 🔴 WHY A PORTAL RATHER THAN A FLIP-UP. Flipping the menu above the trigger
- * keeps it inside the same scroll container, so it trades a clip at the bottom
- * for a clip at the top the moment the trigger sits near the rail's top edge —
- * and since the rail SCROLLS, the trigger's distance from either edge is not
- * constant, so no static direction is correct. Rendering into the block root
- * instead makes the menu a NON-DESCENDANT of every inner scroll container, which
- * is a structural property rather than an arithmetic one: there is no geometry
- * for a flip calculation to get wrong.
- *
- * Positioned `fixed` off `getBoundingClientRect()` of the trigger, recomputed on
- * scroll (CAPTURE phase, so the rail's own scroll is seen — scroll does not
- * bubble) and on resize. It flips ABOVE the trigger only when the viewport has no
- * room below, which is a viewport question with no clipping ancestor involved.
- *
- * It portals into the BLOCK ROOT, not `document.body`: the root carries
- * `data-theme` and `--yt-focus-ring`, and `theme-guard.test.tsx`'s Guard B walks
- * downward from it, so staying inside keeps both the pack's theming and that
- * contrast walk applicable. `rootRef` is `null` only before the first commit, and
- * the menu cannot be open then; it falls back to in-place rendering rather than
- * dropping the popup.
- */
-function AccountPicker({
-  value,
-  onChange,
-  balance,
-  disabled,
-  cost,
-  costPartial,
-  portalTo,
-  pal,
-}: {
-  value: AccountChoice;
-  onChange: (v: AccountChoice) => void;
-  balance: { blue: number; green: number; yellow: number } | null;
-  disabled: boolean;
-  /** This click's summed estimate, or `null` while nothing has been priced. */
-  cost: number | null;
-  /** True when only SOME formats priced — the figure is a floor, not the bill. */
-  costPartial: boolean;
-  /** The block root the popup renders into — see the docblock's portal note. */
-  portalTo: React.RefObject<HTMLDivElement | null>;
-  pal: Palette;
-}) {
-  const [open, setOpen] = useState(false);
-  const selectedIndex = Math.max(0, ACCOUNT_CHOICES.indexOf(value));
-  const [activeIndex, setActiveIndex] = useState(selectedIndex);
-  const [menuBox, setMenuBox] = useState<MenuBox | null>(null);
-  const wrapRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
-
-  // Dismiss on a pointer press anywhere outside the control.
-  //
-  // 🔴 BOTH HALVES, BECAUSE THE PORTAL SPLIT THEM. The popup is no longer a DOM
-  // descendant of `wrapRef`, so a `wrapRef.contains(target)` test alone would
-  // read a press ON AN OPTION as "outside" and close the menu before the click
-  // landed — the option would be unclickable for a second, subtler reason than
-  // the clipping this portal fixes. `mousedown` rather than `click` so a genuine
-  // outside press is not swallowed by the dismissal.
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: Event) => {
-      const t = e.target as Node;
-      if (wrapRef.current?.contains(t)) return;
-      if (menuRef.current?.contains(t)) return;
-      setOpen(false);
-    };
-    document.addEventListener('mousedown', onDown);
-    return () => document.removeEventListener('mousedown', onDown);
-  }, [open]);
-
-  // Keep the fixed popup pinned to the trigger. The CAPTURE phase is load-bearing:
-  // a `scroll` event does not bubble, so a listener on `document` in the bubble
-  // phase never hears the RAIL scrolling — only the window.
-  useEffect(() => {
-    if (!open) return;
-    const place = () => setMenuBox(measureMenuBox(triggerRef.current, menuRef.current));
-    place();
-    window.addEventListener('scroll', place, true);
-    window.addEventListener('resize', place);
-    return () => {
-      window.removeEventListener('scroll', place, true);
-      window.removeEventListener('resize', place);
-    };
-  }, [open]);
-
-  // Focus follows the active item while the menu is open, so the roving focus IS
-  // the keyboard position rather than a second piece of state that can disagree.
-  useEffect(() => {
-    if (!open) return;
-    itemRefs.current[activeIndex]?.focus();
-  }, [open, activeIndex]);
-
-  // A picker that goes disabled mid-generation must not leave a popup behind.
-  useEffect(() => {
-    if (disabled) setOpen(false);
-  }, [disabled]);
-
-  const openAt = (index: number) => {
-    setActiveIndex(index);
-    // Seed the position from the trigger BEFORE the popup paints, so its first
-    // frame is already against the control. The effect above then re-places it
-    // with the menu's measured height, which is what the flip decision needs.
-    setMenuBox(measureMenuBox(triggerRef.current, null));
-    setOpen(true);
-  };
-  const close = () => {
-    setOpen(false);
-    triggerRef.current?.focus();
-  };
-  const choose = (choice: AccountChoice) => {
-    onChange(choice);
-    setOpen(false);
-    triggerRef.current?.focus();
-  };
-
-  const last = ACCOUNT_CHOICES.length - 1;
-  const costText =
-    cost != null ? `${costPartial ? 'from ' : ''}${formatCost(cost)} Buzz` : 'Not priced yet';
-
-  const menu = (
-    <div
-      ref={menuRef}
-      id={ACCOUNT_MENU_ID}
-      role="menu"
-      aria-label="Pay with"
-      data-testid="pm-account-menu"
-      style={accountMenuStyle(menuBox, pal)}
-      onKeyDown={(e) => {
-        if (e.key === 'Escape') {
-          e.preventDefault();
-          close();
-        } else if (e.key === 'Tab') {
-          setOpen(false);
-        } else if (e.key === 'ArrowDown') {
-          e.preventDefault();
-          setActiveIndex((i) => (i + 1) % ACCOUNT_CHOICES.length);
-        } else if (e.key === 'ArrowUp') {
-          e.preventDefault();
-          setActiveIndex((i) => (i + last) % ACCOUNT_CHOICES.length);
-        } else if (e.key === 'Home') {
-          e.preventDefault();
-          setActiveIndex(0);
-        } else if (e.key === 'End') {
-          e.preventDefault();
-          setActiveIndex(last);
-        }
-      }}
-    >
-      {ACCOUNT_CHOICES.map((choice, i) => {
-        const selected = value === choice;
-        const have = choice === 'auto' || balance == null ? null : balance[choice];
-        const zero = have === 0;
-        return (
-          <button
-            key={choice}
-            ref={(el) => {
-              itemRefs.current[i] = el;
-            }}
-            type="button"
-            role="menuitemradio"
-            aria-checked={selected}
-            tabIndex={i === activeIndex ? 0 : -1}
-            onClick={() => choose(choice)}
-            data-testid={`pm-account-${choice}`}
-            style={accountItemStyle(selected, pal)}
-            title={zero ? 'You have 0 Buzz in this account' : undefined}
-          >
-            <BuzzBolt choice={choice} pal={pal} testId={`pm-account-icon-${choice}`} />
-            <span>{accountLabel(choice)}</span>
-            {/* Each pool WITH ITS BALANCE, as the native "Pay with" menu lists
-                them. `auto` has no pool of its own, so it says what it does
-                instead. */}
-            <span style={accountBalanceStyle(pal)}>
-              {choice === 'auto' ? 'Host decides' : have == null ? '' : `· ${formatCost(have)}`}
-            </span>
-            {selected && <span aria-hidden="true">✓</span>}
-          </button>
-        );
-      })}
-    </div>
-  );
-
-  return (
-    <div style={fieldStyle}>
-      {/* 🔴 THE VISIBLE LABEL IS "Buzz"; THE ACCESSIBLE NAME IS NOT. The trigger's
-          `aria-label` below still reads "Spend from <account>, <cost>" — a
-          screen-reader user gets no layout to tell them this dropdown is about
-          which wallet pays, so shortening the accessible name to the bare word
-          would remove the only thing that said so. Two names, on purpose. */}
-      <span style={fieldLabelStyle}>Buzz</span>
-      {/* Kept short, but the "preference, not a guarantee" half stays: this is
-          the control that decides whose Buzz is debited. The earlier wording
-          ("the server picks the final pool") named a mechanism the viewer has
-          never seen defined — "pool" is the app's word, not theirs — so the
-          Auto behaviour is now stated in the viewer's terms instead (audit
-          2026-10-17). */}
-      <span style={fieldDescStyle(pal)} id={ACCOUNT_DESC_ID}>
-        A preference, not a guarantee — Auto spends from whichever pool can cover it.
-      </span>
-      <div ref={wrapRef} style={accountWrapStyle}>
-        <button
-          ref={triggerRef}
-          type="button"
-          disabled={disabled}
-          aria-haspopup="menu"
-          aria-expanded={open}
-          aria-controls={open ? ACCOUNT_MENU_ID : undefined}
-          aria-label={`Spend from ${accountLabel(value)}, ${costText}`}
-          aria-describedby={ACCOUNT_DESC_ID}
-          data-testid="pm-account-trigger"
-          onClick={() => (open ? setOpen(false) : openAt(selectedIndex))}
-          onKeyDown={(e) => {
-            if (e.key === 'ArrowDown') {
-              e.preventDefault();
-              openAt(open ? activeIndex : selectedIndex);
-            } else if (e.key === 'ArrowUp') {
-              e.preventDefault();
-              openAt(open ? activeIndex : last);
-            }
-          }}
-          style={accountTriggerStyle(disabled, pal)}
-        >
-          <BuzzBolt choice={value} pal={pal} testId="pm-account-trigger-icon" />
-          <span data-testid="pm-account-trigger-label">{accountLabel(value)}</span>
-          {/* The price, as the native control shows it. It is the SAME summed
-              estimate the Generate button quotes — read off `runs`, never
-              recomputed here — so the two can never disagree. */}
-          <span style={accountCostStyle(pal)} data-testid="pm-account-trigger-cost">
-            {costText}
-          </span>
-          <Chevron pal={pal} />
-        </button>
-
-        {/* 🔴 RENDERED OUT OF THE RAIL. `createPortal` moves the popup's DOM node
-            under the block root while leaving it where it is in the REACT tree —
-            so `onKeyDown` above and the handlers below still work exactly as
-            written, but no scroll container between the field and the root can
-            clip it. The `wrapRef` fallback covers the one frame before the root
-            ref is attached, when the menu cannot be open anyway. */}
-        {open && (portalTo.current ? createPortal(menu, portalTo.current) : menu)}
-      </div>
-    </div>
-  );
-}
-
-/** Where the fixed popup sits: viewport coordinates + the trigger's width. */
-export interface MenuBox {
-  top: number;
-  left: number;
-  width: number;
-}
-
-/** The gap between the trigger and the popup, on whichever side it opens. */
-export const MENU_GAP = 4;
-
-/**
- * Place the popup against the trigger, in VIEWPORT coordinates.
- *
- * 🔴 THE ONLY GEOMETRY THIS CONTROL DOES, AND IT IS DELIBERATELY NOT A CLIPPING
- * CALCULATION. The clip the portal fixes was an ANCESTOR-OVERFLOW problem, which
- * this function cannot reintroduce: a `position: fixed` node under the block root
- * has no scrolling ancestor between it and the viewport. What is computed here is
- * only "is there room below the trigger before the VIEWPORT ends" — if not, and
- * there is room above, the menu sits above instead. Both answers are re-derived
- * on every scroll and resize, so a rail scrolled to a different offset gets a
- * fresh answer rather than a stale one.
- *
- * 🔴 PURE, AND TAKING NUMBERS RATHER THAN ELEMENTS, SO THE FLIP CAN BE TESTED.
- * jsdom reports every rect as 0×0, so a version of this that read the DOM itself
- * could only ever be exercised in a browser. Handing it a rect, a height and a
- * viewport makes the decision assertable with literal numbers; the component does
- * the measuring.
- *
- * `menuHeight` is 0 on the FIRST placement (the popup has not been measured yet),
- * which deliberately reads as "don't flip": the first frame opens downward and
- * the effect's second pass corrects it. `null` for a missing trigger leaves the
- * popup at its default corner rather than at a fabricated position.
- */
-export function menuBoxFor(
-  trigger: { top: number; bottom: number; left: number; width: number } | null,
-  menuHeight: number,
-  viewportHeight: number,
-): MenuBox | null {
-  if (!trigger) return null;
-  const roomBelow = viewportHeight - trigger.bottom - MENU_GAP;
-  const roomAbove = trigger.top - MENU_GAP;
-  const flipUp = menuHeight > 0 && roomBelow < menuHeight && roomAbove > menuHeight;
-  return {
-    top: flipUp ? trigger.top - MENU_GAP - menuHeight : trigger.bottom + MENU_GAP,
-    left: trigger.left,
-    width: trigger.width,
-  };
-}
-
-/** Measure the live trigger + popup and hand them to {@link menuBoxFor}. */
-function measureMenuBox(
-  triggerEl: HTMLButtonElement | null,
-  menuEl: HTMLDivElement | null,
-): MenuBox | null {
-  if (!triggerEl) return null;
-  return menuBoxFor(
-    triggerEl.getBoundingClientRect(),
-    menuEl ? menuEl.getBoundingClientRect().height : 0,
-    window.innerHeight,
-  );
-}
 
 // 🔴 `SpentAccountNote` IS GONE WITH THE `pm-spent` ALERT THAT WAS ITS ONLY CALLER.
 // It rendered " from your Yellow account" only when every run that reported a pool
@@ -4299,77 +3755,65 @@ function contentProps(layout: BlockLayout) {
 const fillStyle: React.CSSProperties = { width: '100%' };
 
 /**
- * THREE columns at the `rail` tier: inputs rail | formats rail | thumbnails.
+ * The prompt input's enhance button: a 30px square pinned to the textarea's
+ * bottom-right inner corner (the textarea carries matching right/bottom
+ * padding via `.yt-prompt-textarea`, so text never runs under it).
+ */
+function enhanceButtonStyle(pal: Palette, disabled: boolean): React.CSSProperties {
+  return {
+    position: 'absolute',
+    right: 8,
+    bottom: 8,
+    width: 30,
+    height: 30,
+    display: 'grid',
+    placeItems: 'center',
+    borderRadius: 8,
+    border: `1px solid ${pal.borderStrong}`,
+    background: pal.surfaceRaised,
+    color: pal.text,
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    opacity: disabled ? 0.45 : 1,
+    padding: 0,
+  };
+}
+
+/**
+ * TWO tracks at the `rail` tier: the form rail, then the thumbnails.
  *
- * 🔴 THE TWO RAILS ARE ADJACENT AND THE THUMBNAILS ARE LAST — THE OPERATOR'S ORDER.
- * It used to be inputs | thumbnails | formats, with the thumbnails between the two
- * rails. Nothing about the WIDTHS changed with the reorder: CSS grid track order does
- * not affect track sizing, so the main column is the same width it was and every number
- * in `FORMATS_RAIL_WIDTH`'s arithmetic still holds. What changed is only which track
- * each surface sits in.
+ * 🔴 EXACTLY ONE TRACK IS FIXED AND EXACTLY ONE IS FLEXIBLE, AND THAT IS THE
+ * WHOLE RULE. The form rail is a fixed px length; the single
+ * `minmax(0, 1fr)` means the thumbnail grid gets the block's width MINUS the
+ * rail and the gap, and absorbs every pixel the block gains. A second fixed
+ * track (the formats rail this used to carry) took 320px + a gap back out of
+ * the grid at every width; a second `1fr` would split what is left 50/50.
+ * Both cost the grid a tile per row at 1440px — measured in
+ * `responsive.test.tsx`'s tile-count cases.
  *
- * 🔴 EXACTLY ONE TRACK IS FLEXIBLE, AND THAT IS THE WHOLE RULE. Both rails are fixed
- * px; the single `minmax(0, 1fr)` means the thumbnail grid gets the block's width
- * MINUS the two rails and the two gaps, and absorbs every pixel the block gains. A
- * second `1fr` — the obvious way to add a formats column — splits the remaining area
- * 50/50 and drops the grid from 2 tiles to 1 at a 1440px block; `FORMATS_RAIL_WIDTH` in
- * `layout.ts` carries the arithmetic and the reason the formats column's appetite is
- * bounded while the grid's is not.
+ * The `minmax(0, …)` rather than a bare `1fr` is the usual grid-overflow
+ * guard: a `1fr` track's implicit minimum is `auto`, so a wide child (a long
+ * prompt, an image row) would push the track past its share and squeeze the
+ * rail.
  *
- * 🔴 AND WITH BOTH FIXED TRACKS NOW ADJACENT, THE TWO px WIDTHS BEING DISTINCT MATTERS
- * MORE, NOT LESS. `340px 320px …` and `320px 340px …` are both well-formed, so a swap
- * of the two rails' widths is a silent defect; it is caught because the numbers differ
- * on purpose (`FORMATS_RAIL_WIDTH`'s docblock) and `responsive.test.tsx` pins the
- * formats width as the SECOND track specifically.
- *
- * The `minmax(0, …)` rather than a bare `1fr` is the usual grid-overflow guard: a
- * `1fr` track's implicit minimum is `auto`, so a wide child (a long prompt, an image
- * row) would push the track past its share and squeeze the rails.
- *
- * Only `railWidth` varies by tier (it widens at ultrawide); the formats rail is one
- * value everywhere, for the reason its own docblock gives.
+ * Only `railWidth` varies by tier (it widens at ultrawide).
  */
 function railGridStyle(layout: BlockLayout): React.CSSProperties {
   return {
     display: 'grid',
-    gridTemplateColumns: `${layout.railWidth}px ${FORMATS_RAIL_WIDTH}px minmax(0, 1fr)`,
+    gridTemplateColumns: `${layout.railWidth}px minmax(0, 1fr)`,
     gap: 20,
     alignItems: 'start',
   };
 }
 
-/**
- * One of the two tab panels below `xl`: a grid when it is the selected tab, gone when
- * it is not.
- *
- * `display: grid` with the same `gap: 16` the enclosing `Stack` uses, so wrapping the
- * thumbnails panel's two children in a container does not change the spacing the
- * stacked layout had — the panels are a different CONTAINER for the same content, and
- * that has to include the gaps.
- *
- * `display: 'none'` rather than the `hidden` attribute or a `visibility`/clip recipe:
- * it is the one spelling that removes the panel from BOTH the page and the
- * accessibility tree, and it is assertable in jsdom (`toBeVisible()` reads it), which
- * `hidden` plus a UA stylesheet rule is not.
- */
-function panelStyle(active: boolean): React.CSSProperties {
-  return { display: active ? 'grid' : 'none', gap: 16 };
-}
 
 /**
- * A persistent rail. BOTH of them: the inputs rail and the formats rail — the first and
- * second columns of the rail grid, side by side on the left of the thumbnails — are
- * painted by this one function.
+ * The persistent form rail — the first of the rail grid's two tracks.
  *
- * 🔴 ONE FUNCTION, NOT A SECOND COPY OF THE CHROME. The two rails want the identical
- * contract — sticky, inset from the frame's top by one `SHELL_PADDING`, height-bounded
- * to the frame, scrolling their OWN overflow, and sitting on `railBg` inside a
- * `borderStrong` border. A copy would be free to drift, and the thing it would drift on
- * is the height bound, which is the half that keeps each rail's tail reachable. The
- * paragraphs below are written about the inputs rail because that is the rail whose
- * tail is the **Generate** button; they apply unchanged to the formats rail, whose tail
- * is the composed-prompt boxes, the format editor and the published board, and which is
- * about to get twice as many format cards above them.
+ * Its contract: sticky, inset from the frame's top by one `SHELL_PADDING`,
+ * height-bounded to the frame, scrolling its OWN overflow, and sitting on
+ * `railBg` inside a `borderStrong` border. The height bound is the half that
+ * keeps the rail's tail — the **Generate** button — reachable.
  *
  * The persistent controls rail.
  *
@@ -4407,13 +3851,13 @@ function panelStyle(active: boolean): React.CSSProperties {
  * 🔴 THE HEIGHT BOUND IS WHAT KEEPS THE SPEND BUTTON ON SCREEN, AND WITHOUT IT
  * STICKY MADE THINGS WORSE. An unbounded sticky rail taller than the scrollport
  * cannot scroll its own overflow: the viewer sees its top, the frame's scroll moves
- * the MAIN column, and the rail's tail — quantity, spend-from, **Generate**, and the
+ * the MAIN column, and the rail's tail — **Generate**, and the
  * `needs-consent` / `insufficient` / `account-rejected` alerts that gate the spend —
  * stays below the fold for the whole sticky range. That inverts the rail's purpose,
  * because the control that debits the viewer's Buzz is the one thing that must be
- * reachable from wherever the prompt is. At `xl`+ the rail carries mode toggle →
- * prompt → model → up to `MAX_LORAS` LoRA rows → quantity → spend-from → Generate →
- * alerts, so it exceeds a 1280x800 laptop's ~740px of scrollport well before the
+ * reachable from wherever the prompt is. At `xl`+ the rail carries prompt →
+ * format carousel → model → up to `MAX_LORAS` LoRA rows → Generate → alerts,
+ * so it exceeds a 1280x800 laptop's ~740px of scrollport well before the
  * LoRA cap. `maxHeight` + `overflowY: auto` give the rail its OWN scrollport, so its
  * tail is always one scroll away inside the rail rather than unreachable.
  *
@@ -4583,15 +4027,6 @@ function editorSplitStyle(layout: BlockLayout): React.CSSProperties {
 }
 const editorControlsStyle: React.CSSProperties = { display: 'grid', gap: 12, minWidth: 0 };
 
-function sourceThumbStyle(pal: Palette): React.CSSProperties {
-  return {
-    width: 96,
-    height: 54,
-    objectFit: 'cover',
-    borderRadius: 6,
-    border: `1px solid ${pal.border}`,
-  };
-}
 
 function currentModelStyle(pal: Palette): React.CSSProperties {
   return {
@@ -4669,82 +4104,8 @@ function previewCountStyle(pal: Palette): React.CSSProperties {
  * AND the price. `minWidth: 0` on the cells is what lets the pack's controls shrink
  * to their share at all rather than forcing the row wider than the rail.
  */
-const spendRowStyle: React.CSSProperties = {
-  display: 'flex',
-  flexWrap: 'wrap',
-  gap: 12,
-  alignItems: 'flex-start',
-};
-const spendCellStyle: React.CSSProperties = { flex: '1 1 180px', minWidth: 0 };
 
 // The Buzz-account menu: a trigger + an absolutely positioned popup.
-const accountWrapStyle: React.CSSProperties = { position: 'relative', marginTop: 4 };
-function accountTriggerStyle(disabled: boolean, pal: Palette): React.CSSProperties {
-  return {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    width: '100%',
-    padding: '8px 12px',
-    borderRadius: 8,
-    border: `1px solid ${pal.border}`,
-    background: pal.surface,
-    color: pal.text,
-    fontSize: 13,
-    fontWeight: 600,
-    textAlign: 'left',
-    cursor: disabled ? 'not-allowed' : 'pointer',
-    opacity: disabled ? 0.6 : 1,
-  };
-}
-function accountCostStyle(pal: Palette): React.CSSProperties {
-  return { marginLeft: 'auto', fontSize: 12, fontWeight: 500, color: pal.textDim };
-}
-function accountMenuStyle(box: MenuBox | null, pal: Palette): React.CSSProperties {
-  return {
-    // 🔴 `fixed`, NOT `absolute`. Absolute positioning resolves against the
-    // nearest positioned ancestor and is still CLIPPED by any scrolling ancestor
-    // in between — which is exactly how the rail cut Green and Yellow off. Fixed,
-    // under the block root, has no such ancestor. `box` carries viewport
-    // coordinates from `menuBoxFor`; `null` only for the frame before the trigger
-    // has been measured.
-    position: 'fixed',
-    zIndex: 20,
-    top: box?.top ?? 0,
-    left: box?.left ?? 0,
-    width: box?.width,
-    display: 'grid',
-    gap: 2,
-    padding: 4,
-    borderRadius: 8,
-    border: `1px solid ${pal.borderStrong}`,
-    background: pal.surface,
-    boxShadow: `0 8px 24px ${withAlpha(pal.page, 0.55)}`,
-  };
-}
-function accountItemStyle(selected: boolean, pal: Palette): React.CSSProperties {
-  return {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    width: '100%',
-    padding: '8px 10px',
-    borderRadius: 6,
-    // 🔴 THE SELECTED STATE IS NOT CARRIED BY COLOUR ALONE. `aria-checked`, the
-    // heavier weight and the ✓ all say it too — the tint is the fourth signal,
-    // not the only one.
-    border: `1px solid ${selected ? pal.brandTintBorder : 'transparent'}`,
-    background: selected ? pal.brandTint : pal.surfaceRaised,
-    color: pal.text,
-    fontSize: 13,
-    fontWeight: selected ? 700 : 500,
-    textAlign: 'left',
-    cursor: 'pointer',
-  };
-}
-function accountBalanceStyle(pal: Palette): React.CSSProperties {
-  return { marginLeft: 'auto', fontSize: 12, fontWeight: 500, color: pal.textDim };
-}
 
 // Color inputs (editor) — native, themed minimally.
 const colorLabelStyle: React.CSSProperties = { display: 'grid', gap: 2 };
@@ -4783,13 +4144,3 @@ const loraAddWrapStyle: React.CSSProperties = {
   marginTop: 4,
 };
 
-/**
- * `#RRGGBB` + alpha → `rgba(...)`, so a scrim can be derived FROM a palette token
- * instead of being a second hardcoded colour beside it. Kept here rather than in
- * `palette.ts` because the palette is the set of solid colours the theme defines;
- * this is one surface's compositing choice.
- */
-function withAlpha(hex: string, alpha: number): string {
-  const [r, g, b] = parseHex(hex);
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-}

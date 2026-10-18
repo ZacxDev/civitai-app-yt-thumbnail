@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { resolveBlockTier, type BlockSizeTier } from '@civitai/blocks-react';
 
-import { FORMATS_RAIL_WIDTH, ULTRAWIDE_MIN, layoutForTier, type BlockLayout } from './layout.js';
+import { ULTRAWIDE_MIN, layoutForTier, type BlockLayout } from './layout.js';
 
 // The width→shape decision, at literal values.
 //
@@ -218,7 +218,6 @@ describe('layoutForTier', () => {
       // The formats rail's width is a layout output too, and `responsive.test.tsx`
       // names it in a `gridTemplateColumns` literal — so a fixture equal to it could
       // not see a mutant that hardcoded it.
-      FORMATS_RAIL_WIDTH,
     ]);
     for (const width of [...Object.values(INSIDE), INSIDE_ULTRAWIDE]) {
       expect(forbidden.has(width)).toBe(false);
@@ -407,96 +406,6 @@ describe('layoutForTier', () => {
         expect(layoutForTier(tier).maxWidth).not.toBe(640);
       }
     });
-  });
-
-  // =========================================================================
-  // THE FORMATS RAIL'S WIDTH — a FIXED length, and the numbers it may not be.
-  //
-  // 🔴 WHAT THIS FILE CAN AND CANNOT CLAIM ABOUT IT. This module is pure, so what is
-  // assertable here is the VALUE: that it is a fixed length, inside the band the
-  // operator set, and distinct from the two widths the OTHER rail can be. That it
-  // reaches the DOM as a px track rather than a fraction of the main column — the
-  // actual defect — is a claim about `railGridStyle`, and it lives in
-  // `responsive.test.tsx` next to the emitted `gridTemplateColumns`.
-  // =========================================================================
-  describe('FORMATS_RAIL_WIDTH', () => {
-    /** Every width `layoutForTier` can hand the INPUTS rail, over the whole ladder. */
-    const railWidths = new Set(
-      [
-        ...(['base', 'xs', 'sm', 'md', 'lg', 'xl'] as const).map((t) => layoutForTier(t, false)),
-        layoutForTier('xl', true),
-      ].map((l) => l.railWidth),
-    );
-
-    it('is a fixed, positive, whole number of px', () => {
-      // A fixed LENGTH is the whole design decision — see the constant's docblock for
-      // the tile arithmetic. A string ('30%', '1fr') or a fraction would be the defect
-      // wearing the constant's name, and `railGridStyle` interpolates it followed by
-      // 'px', so a non-integer would emit a subpixel track.
-      expect(typeof FORMATS_RAIL_WIDTH).toBe('number');
-      expect(Number.isInteger(FORMATS_RAIL_WIDTH)).toBe(true);
-      expect(FORMATS_RAIL_WIDTH).toBeGreaterThan(0);
-    });
-
-    it('sits inside the 320–360px band the operator set', () => {
-      // Pinned in BOTH directions. Too narrow and the 200px format card at this tier
-      // cannot fit beside 34px of rail chrome (16+16 padding, 1+1 border); too wide and
-      // it is taking px from the thumbnail grid for a column it cannot use.
-      expect(FORMATS_RAIL_WIDTH).toBeGreaterThanOrEqual(320);
-      expect(FORMATS_RAIL_WIDTH).toBeLessThanOrEqual(360);
-    });
-
-    it('clears one format card at its floor, plus the rail’s own chrome', () => {
-      // The lower bound as a DERIVATION rather than a second literal: the card floor at
-      // the rail tiers comes off the layout, and `railStyle`'s padding + border is 34px.
-      // Without this the band above is two numbers somebody chose.
-      //
-      // 🔴 THE UPPER HALF OF THIS CASE WAS DELETED, NOT MOVED. It asserted that the rail
-      // does not clear a SECOND card column — `< floor * 2 + 8 + RAIL_CHROME`, i.e. < 482
-      // — which cannot fail while the band case above caps the constant at 360. A bound
-      // dominated by a tighter bound in the same file reads as a constraint and provides
-      // none. The ARGUMENT it carried (extra width buys the picker nothing, so it belongs
-      // to the thumbnail grid) is not lost: it is the whole of `FORMATS_RAIL_WIDTH`'s
-      // docblock, and the tile-count cases in `responsive.test.tsx` are what measure it.
-      //
-      // The floor is read off `xl` — the narrowest RAIL tier. It used to read `lg` too,
-      // which stopped being a rail tier when the operator moved the rail up.
-      const RAIL_CHROME = 16 * 2 + 1 * 2;
-      const floor = Math.max(
-        layoutForTier('xl').formatMinCardPx,
-        layoutForTier('xl', true).formatMinCardPx,
-      );
-      expect(FORMATS_RAIL_WIDTH).toBeGreaterThan(floor + RAIL_CHROME);
-      // The control: `floor` really is the rail tiers' card floor and not, say, 0 — the
-      // bound above would pass against anything small.
-      expect(floor).toBeGreaterThan(layoutForTier('md').formatMinCardPx);
-    });
-
-    it('is DISTINCT from every width the inputs rail can be', () => {
-      // 🔴 THE MUTANT THIS EXISTS FOR: the two rails' widths swapped in
-      // `railGridStyle`. `responsive.test.tsx` asserts the whole track list as one
-      // string, and pins `FORMATS_RAIL_WIDTH` as the SECOND track besides — but BOTH of
-      // those are only visible while the two numbers differ; if they were ever made
-      // equal, both would silently stop discriminating.
-      //
-      // 🔴 AND THE SWAP GOT CHEAPER TO WRITE WHEN THE COLUMNS WERE REORDERED. The two
-      // fixed tracks are now ADJACENT (`railWidth`px `FORMATS_RAIL_WIDTH`px then the one
-      // `fr`), so transposing them is a well-formed three-track list that no structural
-      // check can see — only the inequality this case pins stands between that mutant and
-      // a green suite.
-      expect(railWidths.has(FORMATS_RAIL_WIDTH)).toBe(false);
-      // The control: the set really is the inputs rail's widths and is not empty.
-      expect(railWidths.has(0)).toBe(true);
-      expect(railWidths.size).toBeGreaterThan(1);
-    });
-
-    // 🔴 `is NOT a per-tier field` WAS DELETED HERE. It asserted
-    // `not.toHaveProperty('formatsRailWidth')` on three layouts — a guard on one SPELLING
-    // of the hazard, which `formatsRail`, `formatsWidth` or `railWidthRight` all walk
-    // while being the same change. The structural claim is already made where it can be
-    // made properly: `expectedRailTracks` in `responsive.test.tsx` builds the expected
-    // track list from `layoutForTier(...).railWidth` and the module-level constant, so a
-    // per-tier formats width can only reach the DOM by disagreeing with that string.
   });
 
   // =========================================================================
