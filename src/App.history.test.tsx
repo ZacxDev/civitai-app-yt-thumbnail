@@ -290,10 +290,11 @@ describe('history — an EXPIRED generation', () => {
       expect(screen.getByLabelText(/prompt/i)).toHaveValue('a red bicycle'),
     );
     expect(screen.getByTestId('pm-model-label')).toHaveTextContent('ChatGPT Images');
-    // quantity 2, the value the record carries — distinct from the app's default 1,
-    // so this cannot pass by coincidence. Read off the <select>'s VALUE now that the
-    // control is a dropdown rather than a row of `aria-checked` pills.
-    expect(screen.getByTestId('pm-quantity')).toHaveValue('2');
+    // The record carries quantity 2, but quantity is NOT restored: the selector
+    // is hidden and quantity is pinned to 1 (operator, 2026-10-18). The control
+    // itself is absent, and the body-level pin (a resumed submit sends
+    // quantity 1) lives with the wire tests.
+    expect(screen.queryByTestId('pm-quantity')).not.toBeInTheDocument();
   });
 
   it('🔴 RESUME DOES NOT SUBMIT — no submit, no Buzz', async () => {
@@ -517,7 +518,6 @@ describe('🔴 the record WRITTEN at submit time', () => {
 
     await user.click(await screen.findByTestId(`yt-format-${CINEMATIC.id}`));
     await user.type(screen.getByLabelText(/prompt/i), 'a cat on a skateboard');
-    await user.selectOptions(screen.getByTestId('pm-quantity'), '3');
     await user.click(screen.getByTestId('pm-generate'));
 
     await waitFor(() => expect(submitWorkflow).toHaveBeenCalledTimes(2));
@@ -547,9 +547,10 @@ describe('🔴 the record WRITTEN at submit time', () => {
     expect(resumed[0].params.prompt).not.toBe(resumed[1].params.prompt);
     expect(resumed.some((b) => b.params.prompt.includes(CLICKBAIT.suffix))).toBe(true);
     expect(resumed.some((b) => b.params.prompt.includes(CINEMATIC.suffix))).toBe(true);
-    // quantity 3 was chosen above — distinct from the default, so it cannot pass
-    // by coincidence.
-    for (const b of resumed) expect(b.params.quantity).toBe(3);
+    // Quantity is pinned to 1 now (the selector is hidden, operator
+    // 2026-10-18), and `buildWorkflowBody` emits `params.quantity` ONLY when
+    // > 1 — so one image per format reads as the field's ABSENCE on the body.
+    for (const b of resumed) expect(b.params.quantity).toBeUndefined();
   });
 
   it('never writes a record when nothing submitted — an unjoinable row', async () => {

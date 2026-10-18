@@ -130,6 +130,32 @@ export function DownloadIcon() {
   );
 }
 
+/**
+ * Sparkles: a four-point star with a small companion — prompt enhancement.
+ * The control it labels is icon-only inside the prompt input, so the shape
+ * has to read as "AI rewrite" at 16px: the big star does that on its own.
+ */
+export function SparklesIcon() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+      style={iconStyle}
+    >
+      <path d="M11 4l1.7 4.6L17.5 10l-4.8 1.4L11 16l-1.7-4.6L4.5 10l4.8-1.4L11 4z" />
+      <path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15z" />
+    </svg>
+  );
+}
+
 /** Add text: a capital T on a baseline — the canvas editor, not a download. */
 export function AddTextIcon() {
   return (

@@ -433,21 +433,22 @@ describe('the Generate gate', () => {
 
   it('the NEGATIVE control: the gate can still go disabled', async () => {
     // 🔴 WITHOUT THIS, "not disabled" is indistinguishable from a button that is
-    // never disabled for any reason. Remix mode with no source image is the
-    // other clause of the same expression, so it exercises the SAME attribute.
-    //
-    // 🔴 AND IT IS NOT THE "no prompt AND no format" CASE, WHICH IS UNREACHABLE
-    // THROUGH THIS UI: `reconcileSelection` guarantees at least one format is
-    // always selected and every format's suffix is non-blank by construction, so
-    // the zero-formats state cannot be built by clicking. That half of the gate
-    // is pinned directly on the predicate in `multiworkflow.test.ts`
-    // ('🔴 NOTHING at all is NOT submittable'), which is the only place it can be.
+    // never disabled for any reason. This used to drive the Remix clause (no
+    // source image); Remix is hidden now (Generate only, operator 2026-10-18),
+    // so the control drives the SURVIVING clause instead: emptying the one
+    // selected format's composed prompt makes `promptsReadyToSubmit` false.
+    // The editing describe above pins the same path end-to-end; this case keeps
+    // the gate describe self-contained.
     uninstall = installMockMoneyHost({ ...VIEWER });
-    const user = userEvent.setup();
     render(<App />);
-    await screen.findByTestId('pm-generate');
+    const generate = await screen.findByTestId('pm-generate');
+    expect((generate as HTMLButtonElement).disabled).toBe(false);
 
-    await user.click(screen.getByRole('tab', { name: /remix an image/i }));
-    expect((screen.getByTestId('pm-generate') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByTestId(`yt-prompt-preview-${CLICKBAIT.id}`), {
+      target: { value: '' },
+    });
+    await waitFor(() =>
+      expect((screen.getByTestId('pm-generate') as HTMLButtonElement).disabled).toBe(true),
+    );
   });
 });

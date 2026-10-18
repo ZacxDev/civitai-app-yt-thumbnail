@@ -368,11 +368,15 @@ describe('GUARD A — no colour literal reaches an app surface', () => {
     ).toEqual(['#2A313D']);
   });
 
-  it('`withAlpha` is the only exemption, and it is still a real function', () => {
-    // The exemption is a name, so it has to be a name that exists — otherwise a
-    // rename silently widens it to nothing and Guard A starts flagging the helper.
-    const src = readFileSync('src/App.tsx', 'utf8');
-    expect(src).toContain(`function ${LITERAL_ALLOWED_IN}(`);
+  it('`withAlpha` is the only exemption, and no surface currently leans on it', () => {
+    // The exemption is a name; its only user was the Buzz-account menu's scrim,
+    // removed with the pool selector (operator, 2026-10-18: spending is always
+    // Auto, the selector is hidden). The exemption stands VACANT: this pins that
+    // nothing in App.tsx is being excused by it today — every literal the guard
+    // finds there is a finding, so a future colour cannot slip in under a stale
+    // carve-out.
+    const src = stripComments(readFileSync('src/App.tsx', 'utf8'), 'src/App.tsx');
+    expect(colourLiterals(src)).toEqual(findingsIn(src));
   });
 });
 
