@@ -12,18 +12,22 @@
 //
 // Three tiers, deliberately distinct:
 //   BUILT-IN   — shipped in the bundle, always available, never editable.
-//   CUSTOM     — the viewer's own, PRIVATE BY DEFAULT, persisted per-viewer via
-//                `useAppStorage`. Never visible to anyone else.
+//   CUSTOM     — the viewer's own, PRIVATE BY DEFAULT, persisted per-viewer in
+//                the document store's private `kv` collection
+//                (`./kv-store.ts`). Never visible to anyone else.
 //   PUBLISHED  — a custom format the viewer explicitly pushed to the app-wide
-//                `useSharedStorage` board, where other viewers can find it.
+//                board, the document store's shared `formats` collection
+//                (`./board-store.ts`), where other viewers can find it.
 //
-// 🔴 THE MODERATION SPLIT IS LOAD-BEARING. `useSharedStorage`'s `title`/`body`
-// are MODERATED, user-visible text; `data` is UNMODERATED opaque app state. A
-// published format's suffix is injected into OTHER viewers' PAID generations in
-// a contentRating:"g" app, so it MUST ride in `body` where the content belt can
-// see it. Putting it in `data` would route user-authored prompt text around
-// moderation entirely. `sharedValueForFormat` is the single place that decision
-// lives, and `formats.test.ts` pins it.
+// 🔴 MODERATION. A published format's suffix is injected into OTHER viewers'
+// PAID generations in a contentRating:"g" app, so it MUST pass the content
+// belt. The legacy shared feed moderated only `title`/`body` (so the suffix had
+// to ride in `body`); the document store scans EVERY string leaf and object key
+// of every shared write, in enforce mode, and refuses a hit `content_rejected`.
+// So the board document is plain `{ v, label, suffix }` — there is no
+// unmoderated channel left to route text around. `boardDocForFormat` is the
+// single place the shape lives, and `board-store.test.ts` pins that the store
+// refuses a blocked suffix.
 
 /** A selectable thumbnail format: a named prompt suffix + its preview art. */
 export interface Format {
@@ -262,13 +266,14 @@ export function resolveFormats(
 }
 
 // ---------------------------------------------------------------------------
-// Custom formats — the viewer's own, private, persisted via `useAppStorage`.
+// Custom formats — the viewer's own, private, persisted in the private `kv` collection.
 // ---------------------------------------------------------------------------
 
 /**
- * The `useAppStorage` key holding this viewer's custom formats. Versioned in the
+ * The `kv` document key holding this viewer's custom formats. Versioned in the
  * key itself so a future incompatible shape can land beside the old one rather
- * than silently mis-parsing it.
+ * than silently mis-parsing it. 🔴 It is also the LEGACY KV key verbatim — the
+ * cutover copy writes the viewer's formats under it; never rename it.
  */
 export const CUSTOM_FORMATS_KEY = 'formats:custom:v1';
 
@@ -284,7 +289,7 @@ export const LABEL_MAX = 40;
 export const SUFFIX_MAX = 400;
 /**
  * How many custom formats one viewer may keep. The whole list lives in ONE
- * storage value, and the host rejects a value over 64KB; 40 × (40 + 400) chars
+ * document, and the store rejects a document over 64 KiB; 40 × (40 + 400) chars
  * is ~18KB worst case, a comfortable margin under that cap.
  */
 export const MAX_CUSTOM_FORMATS = 40;
@@ -397,7 +402,7 @@ export function customFormatsFull(list: readonly CustomFormat[]): boolean {
 }
 
 /**
- * Parse whatever `useAppStorage().get()` returned into a clean CustomFormat[].
+ * Parse whatever the `kv` document held into a clean CustomFormat[].
  *
  * TOTAL AND DEFENSIVE ON PURPOSE. The stored value is JSON this app wrote, but
  * it round-trips through a host datastore and can be an older shape, a partial
@@ -437,9 +442,10 @@ export function parseCustomFormats(raw: unknown): CustomFormat[] {
 }
 
 /**
- * The exact value handed to `useAppStorage().set()`. A plain array — no wrapper
- * object — so {@link parseCustomFormats} round-trips it, and so the stored bytes
- * stay minimal against the 64KB per-value cap.
+ * The exact value stored under {@link CUSTOM_FORMATS_KEY}. A plain array — the
+ * legacy shape, which the copy carries over inside `{ value }` — so
+ * {@link parseCustomFormats} round-trips it, and so the stored bytes stay
+ * minimal against the 64 KiB document cap.
  */
 export function serializeCustomFormats(list: readonly CustomFormat[]): CustomFormat[] {
   return list.map((f) => ({ id: f.id, label: f.label, suffix: f.suffix }));
@@ -451,87 +457,81 @@ export function customToFormat(f: CustomFormat): Format {
 }
 
 // ---------------------------------------------------------------------------
-// Published formats — the app-wide `useSharedStorage` board.
+// Published formats — the app-wide board (the shared `formats` collection).
 // ---------------------------------------------------------------------------
 
-/** Id prefix for a published format, keyed by the host-minted shared key. */
+/** Id prefix for a published format, keyed by the store-minted document key. */
 export const PUBLISHED_ID_PREFIX = 'shared:';
 
 /** A format someone published, plus its board metadata. */
 export interface PublishedFormat extends Format {
   source: 'published';
-  /** Host-minted shared-storage key — the handle for vote/unvote/report. */
+  /** Store-minted document key — the handle for vote/unvote/report. */
   sharedKey: string;
-  /** Live vote total. */
+  /** Live vote total (the `vote` mark's count). */
   votes: number;
-  /** Whether THIS viewer already up-voted it (hydrated, never guessed). */
+  /** Whether THIS viewer already up-voted it (the store's `viewer.marks`, never guessed). */
   viewerVoted: boolean;
-  /** Contributing viewer's id — lets the UI mark "yours". */
-  authorUserId: number;
+  /** Whether THIS viewer published it (`author.isViewer`; the store discloses no user id). */
+  authoredByViewer: boolean;
+}
+
+/** A board document's data. `v` versions the shape. */
+export interface BoardDocument extends Record<string, unknown> {
+  v: 1;
+  label: string;
+  suffix: string;
 }
 
 /**
- * Build the `useSharedStorage().append()` / `.update()` value for a format.
+ * Build the board document for a format. THE one place its shape lives.
  *
- * 🔴 THE SUFFIX GOES IN `body`, NEVER IN `data`. `title` and `body` are the
- * MODERATED, user-visible text; `data` is UNMODERATED opaque app state. This
- * suffix is prompt text that will be injected into OTHER viewers' PAID
- * generations inside a contentRating:"g" app — it has to pass the content belt.
- * `data` carries only the non-text structure (a schema version), which is
- * exactly what an unmoderated channel is for.
+ * Every field is moderated by the store on write (see the header), so the
+ * suffix rides in plain `data` — and a hit comes back `content_rejected`.
  *
  * This function MAPS; it does not gate. The publish path calls
  * {@link validateCustomFormat} first — publishing is a WRITE, so the `#` rule
  * applies to it exactly as it applies to a save, and for a sharper reason: a
  * published suffix is spent by people who never typed it.
  */
-export function sharedValueForFormat(fmt: { label: string; suffix: string }): {
-  title: string;
-  body: string;
-  data: { v: 1 };
-} {
+export function boardDocForFormat(fmt: { label: string; suffix: string }): BoardDocument {
   return {
-    title: fmt.label.trim().slice(0, LABEL_MAX),
-    body: fmt.suffix.trim().slice(0, SUFFIX_MAX),
-    data: { v: 1 },
+    v: 1,
+    label: fmt.label.trim().slice(0, LABEL_MAX),
+    suffix: fmt.suffix.trim().slice(0, SUFFIX_MAX),
   };
 }
 
 /**
- * Minimal structural shape of a `useSharedStorage().list()` item — declared
- * locally rather than imported so this module stays pure TS with no SDK types
- * to satisfy in tests.
+ * Minimal structural shape of one board item (`./board-store.ts`'s
+ * `toSharedItem`) — declared here rather than importing SDK types so this
+ * module stays pure TS.
  */
 export interface SharedItemLike {
   key: string;
-  authorUserId: number;
-  value: { title?: unknown; body?: unknown; data?: unknown };
-  count: number;
+  data: { v?: unknown; label?: unknown; suffix?: unknown };
+  votes: number;
   viewerVoted?: boolean;
+  authoredByViewer?: boolean;
 }
 
 /**
- * Turn one shared-board item into a PublishedFormat, or `null` when it cannot
- * be used as a format.
- *
- * 🔴 The suffix is read from `body` ONLY. An entry whose `body` is missing or
- * blank is REJECTED rather than falling back to `data` — a fallback would make
- * the unmoderated channel a usable path for prompt text, quietly undoing the
- * reason the suffix lives in `body` at all. `data` is never read for text here.
+ * Turn one board item into a PublishedFormat, or `null` when it cannot be used
+ * as a format (a missing or blank label or suffix).
  */
 export function formatFromSharedItem(item: SharedItemLike): PublishedFormat | null {
-  const title = typeof item.value?.title === 'string' ? item.value.title.trim() : '';
-  const body = typeof item.value?.body === 'string' ? item.value.body.trim() : '';
-  if (title === '' || body === '') return null;
+  const label = typeof item.data?.label === 'string' ? item.data.label.trim() : '';
+  const suffix = typeof item.data?.suffix === 'string' ? item.data.suffix.trim() : '';
+  if (label === '' || suffix === '') return null;
   return {
     id: `${PUBLISHED_ID_PREFIX}${item.key}`,
-    label: title.slice(0, LABEL_MAX),
-    suffix: body.slice(0, SUFFIX_MAX),
+    label: label.slice(0, LABEL_MAX),
+    suffix: suffix.slice(0, SUFFIX_MAX),
     source: 'published',
     sharedKey: item.key,
-    votes: Number.isFinite(item.count) ? item.count : 0,
+    votes: Number.isFinite(item.votes) ? item.votes : 0,
     viewerVoted: item.viewerVoted === true,
-    authorUserId: item.authorUserId,
+    authoredByViewer: item.authoredByViewer === true,
   };
 }
 

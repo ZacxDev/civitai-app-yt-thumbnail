@@ -24,7 +24,7 @@ import {
   reconcileSelection,
   resolveFormats,
   serializeCustomFormats,
-  sharedValueForFormat,
+  boardDocForFormat,
   suffixWildcardReason,
   toggleFormat,
   upsertCustomFormat,
@@ -289,7 +289,7 @@ describe('built-in formats', () => {
       hasPreviewArt(customToFormat({ id: 'custom:1', label: 'Mine', suffix: 'my look' })),
     ).toBe(false);
     const [published] = formatsFromSharedItems([
-      { key: 'k1', authorUserId: 1, value: { title: 'Theirs', body: 'their look' }, count: 0 },
+      { key: 'k1', data: { label: 'Theirs', suffix: 'their look' }, votes: 0 },
     ]);
     expect(hasPreviewArt(published)).toBe(false);
   });
@@ -646,43 +646,36 @@ describe('custom format persistence round-trip', () => {
   });
 });
 
-describe('🔴 the shared-storage moderation split', () => {
+describe('the published-format board document', () => {
   /**
-   * The single most consequential assertion in this file. `title`/`body` are
-   * MODERATED user-visible text; `data` is UNMODERATED app state. A published
-   * format's suffix is prompt text injected into OTHER viewers' PAID
-   * generations in a contentRating:"g" app, so it MUST travel in `body`.
-   *
-   * These are STATE assertions, not word assertions: they check WHICH FIELD
-   * carries the text, so no rewording of a suffix can walk past them.
+   * The board is the document store's shared `formats` collection. The store
+   * moderates EVERY string leaf of a shared write (the legacy feed moderated
+   * only `title`/`body`, which is why the suffix used to ride in `body`), so the
+   * document is plain `{ v, label, suffix }` — and that the store REFUSES a
+   * blocked suffix is pinned against the SDK's contract fake in
+   * `board-store.test.ts`, which is the behaviour that matters.
    */
 
-  it('puts the suffix in `body`, NEVER in `data`', () => {
-    const value = sharedValueForFormat(draft);
-    expect(value.body).toBe(draft.suffix);
-    expect(value.title).toBe(draft.label);
-    // `data` must carry NO user-authored text at all.
-    expect(value.data).toEqual({ v: 1 });
-    expect(JSON.stringify(value.data)).not.toContain('vhs');
-    expect(JSON.stringify(value.data)).not.toContain('camcorder');
+  it('maps a format to exactly `{ v: 1, label, suffix }`', () => {
+    expect(boardDocForFormat(draft)).toEqual({ v: 1, label: draft.label, suffix: draft.suffix });
   });
 
   it('trims and clamps the published fields to the same bounds as a custom format', () => {
-    const value = sharedValueForFormat({
+    const doc = boardDocForFormat({
       label: `  ${'L'.repeat(LABEL_MAX + 9)}  `,
       suffix: `  ${'S'.repeat(SUFFIX_MAX + 30)}  `,
     });
-    expect(value.title).toHaveLength(LABEL_MAX);
-    expect(value.body).toHaveLength(SUFFIX_MAX);
+    expect(doc.label).toHaveLength(LABEL_MAX);
+    expect(doc.suffix).toHaveLength(SUFFIX_MAX);
   });
 
-  it('reads a published format back OUT of `body`', () => {
+  it('reads a published format back out of the document', () => {
     const item: SharedItemLike = {
       key: 'shared_42',
-      authorUserId: 991,
-      value: { title: 'Retro VHS', body: 'analog vhs grain, chromatic aberration' },
-      count: 17,
+      data: { v: 1, label: 'Retro VHS', suffix: 'analog vhs grain, chromatic aberration' },
+      votes: 17,
       viewerVoted: true,
+      authoredByViewer: true,
     };
     expect(formatFromSharedItem(item)).toEqual({
       id: `${PUBLISHED_ID_PREFIX}shared_42`,
@@ -692,45 +685,30 @@ describe('🔴 the shared-storage moderation split', () => {
       sharedKey: 'shared_42',
       votes: 17,
       viewerVoted: true,
-      authorUserId: 991,
+      authoredByViewer: true,
     });
   });
 
-  it('🔴 REJECTS an entry whose suffix is only in `data` — no unmoderated fallback', () => {
-    // If this ever returned a format, `data` would become a working channel for
-    // prompt text that never passed the content belt. Rejecting is the point.
-    const smuggled: SharedItemLike = {
-      key: 'shared_43',
-      authorUserId: 992,
-      value: { title: 'Looks innocent', data: { suffix: 'text that bypassed moderation' } },
-      count: 0,
-    };
-    expect(formatFromSharedItem(smuggled)).toBeNull();
+  it('rejects a document with a blank or missing label or suffix', () => {
+    const base = { key: 'shared_44', votes: 1 };
+    expect(formatFromSharedItem({ ...base, data: { label: 'T', suffix: '   ' } })).toBeNull();
+    expect(formatFromSharedItem({ ...base, data: { label: '  ', suffix: 'B' } })).toBeNull();
+    expect(formatFromSharedItem({ ...base, data: { label: 'T' } })).toBeNull();
+    expect(formatFromSharedItem({ ...base, data: { label: 'T', suffix: 42 } })).toBeNull();
   });
 
-  it('rejects an entry with a blank body or a blank title', () => {
-    const base = { key: 'shared_44', authorUserId: 993, count: 1 };
-    expect(formatFromSharedItem({ ...base, value: { title: 'T', body: '   ' } })).toBeNull();
-    expect(formatFromSharedItem({ ...base, value: { title: '  ', body: 'B' } })).toBeNull();
-  });
-
-  it('defaults viewerVoted to false and a non-finite count to 0 on an older host', () => {
-    const item: SharedItemLike = {
-      key: 'shared_45',
-      authorUserId: 994,
-      value: { title: 'Old host', body: 'some look' },
-      count: Number.NaN,
-    };
-    const got = formatFromSharedItem(item);
+  it('defaults viewerVoted / authoredByViewer to false and a non-finite count to 0', () => {
+    const got = formatFromSharedItem({ key: 'shared_45', data: { label: 'Old', suffix: 'some look' }, votes: Number.NaN });
     expect(got?.viewerVoted).toBe(false);
+    expect(got?.authoredByViewer).toBe(false);
     expect(got?.votes).toBe(0);
   });
 
-  it('maps a page, silently dropping entries that are not usable formats', () => {
+  it('maps a page, silently dropping documents that are not usable formats', () => {
     const items: SharedItemLike[] = [
-      { key: 'k1', authorUserId: 1, value: { title: 'Good', body: 'good look' }, count: 3 },
-      { key: 'k2', authorUserId: 2, value: { title: 'Bad', data: { suffix: 'nope' } }, count: 9 },
-      { key: 'k3', authorUserId: 3, value: { title: 'Also good', body: 'other look' }, count: 5 },
+      { key: 'k1', data: { label: 'Good', suffix: 'good look' }, votes: 3 },
+      { key: 'k2', data: { label: 'Bad' }, votes: 9 },
+      { key: 'k3', data: { label: 'Also good', suffix: 'other look' }, votes: 5 },
     ];
     expect(formatsFromSharedItems(items).map((f) => f.sharedKey)).toEqual(['k1', 'k3']);
   });
@@ -740,7 +718,7 @@ describe('the picker catalogue', () => {
   it('groups built-ins, then custom, then published — in that order', () => {
     const custom: CustomFormat[] = [{ id: 'custom:31', label: 'Mine', suffix: 'my look' }];
     const published = formatsFromSharedItems([
-      { key: 'k9', authorUserId: 4, value: { title: 'Theirs', body: 'their look' }, count: 2 },
+      { key: 'k9', data: { label: 'Theirs', suffix: 'their look' }, votes: 2 },
     ]);
     const got = allFormats(custom, published);
     expect(got).toHaveLength(BUILTIN_FORMATS.length + 2);

@@ -69,26 +69,24 @@ vi.mock('@civitai/blocks-react', () => ({
     refetch: vi.fn(),
     cancel: vi.fn(),
   }),
-  useAppStorage: () => ({
+}));
+
+// Since 0.2.0 storage is the document store, reached through the app's own
+// hook seam (`./app-storage.ts`) — NOT through @civitai/blocks-react, whose
+// legacy `useAppStorage`/`useSharedStorage` the app no longer calls.
+vi.mock('./app-storage.js', () => ({
+  useKvStorage: () => ({
     get: vi.fn().mockResolvedValue(null),
     set: vi.fn().mockResolvedValue({ ok: true }),
     delete: vi.fn().mockResolvedValue({ ok: true, deleted: true }),
-    list: vi.fn().mockResolvedValue({ keys: [] }),
-    getQuota: vi
-      .fn()
-      .mockResolvedValue({ usedBytes: 0, rowCount: 0, limitBytes: 5e7, limitRows: 1e6 }),
+    list: vi.fn().mockResolvedValue({ entries: [] }),
   }),
-  useSharedStorage: () => ({
-    list: vi.fn().mockResolvedValue({ items: [] }),
-    get: vi.fn().mockResolvedValue(null),
-    report: vi.fn().mockResolvedValue(undefined),
-    getCount: vi.fn().mockResolvedValue(0),
-    getCounts: vi.fn().mockResolvedValue({}),
-    append: vi.fn().mockResolvedValue({ key: 'shared_1' }),
-    update: vi.fn().mockResolvedValue(undefined),
+  useBoardStore: () => ({
+    list: vi.fn().mockResolvedValue([]),
+    publish: vi.fn().mockResolvedValue({ key: 'shared_1' }),
     vote: vi.fn().mockResolvedValue(1),
     unvote: vi.fn().mockResolvedValue(0),
-    withdraw: vi.fn().mockResolvedValue({ ok: true, deleted: true }),
+    report: vi.fn().mockResolvedValue(undefined),
   }),
 }));
 
