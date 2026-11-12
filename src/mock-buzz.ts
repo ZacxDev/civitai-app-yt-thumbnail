@@ -39,8 +39,10 @@ import { resetHarnessTransport } from './dev-transport.js';
 /**
  * The scopes `block.manifest.json` DECLARES, which is what the mock host gates
  * storage on from @civitai/blocks-react 0.62.0 onward (`declaredScopes`, default
- * EMPTY — every `useAppStorage()` / `useSharedStorage()` call is refused without
- * it, exactly as the real host refuses an undeclared scope with a 403).
+ * EMPTY — every legacy storage call is refused without it, exactly as the real
+ * host refuses an undeclared scope with a 403). Since 0.2.0 the app's storage is
+ * the document store (REST), which the mock host does not serve at all: tests
+ * and the harness install an in-memory `createFakeStorage` instead.
  *
  * 🔴 READ FROM THE MANIFEST, never re-spelled as a literal here. The manifest is
  * the list the real host is handed at approve time, so sourcing both from one

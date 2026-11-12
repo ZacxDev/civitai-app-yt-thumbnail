@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
-  useAppStorage,
   useAppWorkflows,
   useBlockBreakpoint,
   useBlockContext,
@@ -13,7 +12,6 @@ import {
   useRequestSignIn,
   useResourcePicker,
   useSaveImage,
-  useSharedStorage,
 } from '@civitai/blocks-react';
 import {
   Alert,
@@ -44,8 +42,10 @@ import {
   hasBudgetedScope,
   imageUrlsFrom,
   initRuns,
+  isEcosystemUnavailable,
   isSubmittingPhase,
   isPartialFailure,
+  modelUnavailableMessage,
   isPromptEdited,
   overallPhase,
   patchRun,
@@ -75,7 +75,6 @@ import {
   reconcileSelection,
   resolveFormats,
   serializeCustomFormats,
-  sharedValueForFormat,
   toggleFormat,
   upsertCustomFormat,
   validateCustomFormat,
@@ -84,6 +83,9 @@ import {
   type PublishedFormat,
 } from './formats.js';
 import { FormatEditor, FormatPicker, PublishedBoard } from './FormatPicker.js';
+import { useBoardStore, useKvStorage } from './app-storage.js';
+import { PUBLISH_SCOPE } from './board-store.js';
+import { classifyStorageError as classifyStoreRefusal, publishRefusalMessage } from './storage-errors.js';
 import {
   DEFAULT_CHECKPOINT,
   LORA_STRENGTH_MAX,
@@ -271,15 +273,18 @@ export function App() {
   // "Spend from" picker below. It NEVER blocks generation (a missing/errored
   // balance still lets the user generate; the server is the real gate).
   const { balance, refetch: refetchBalance } = useBuzzBalance();
-  // Per-(block, viewer) private KV. Holds ONLY this viewer's own formats.
+  // The viewer's PRIVATE records: the document store's `kv` collection
+  // (`./kv-store.ts` — the legacy KV keys verbatim, data `{ value }`). Holds
+  // this viewer's own formats and the stored half of history.
   // 🔴 There is no localStorage fallback and there cannot be one: the block's
   // iframe sandbox is `allow-scripts allow-forms` with no `allow-same-origin`
   // (the platform forces that for an unverified block), so the document has an
   // OPAQUE origin and `localStorage` throws on access. Host-mediated storage is
   // the only persistence available here.
-  const storage = useAppStorage();
-  // The app-wide, votable, MODERATED board of published formats.
-  const shared = useSharedStorage();
+  const storage = useKvStorage();
+  // The app-wide, votable, MODERATED board of published formats: the shared
+  // `formats` collection (`./board-store.ts`).
+  const shared = useBoardStore();
   // 🔴 THE ONLY WAY A PAID OUTPUT CAN BE SAVED. This block's iframe is sandboxed
   // WITHOUT `allow-downloads` and cannot ask for it (an unverified block is
   // refused the token at submit — see manifest.test.ts), so an `<a download>`
@@ -292,7 +297,7 @@ export function App() {
   // THE LIVE HALF OF HISTORY. Token-bound + tag-forced host-side: this app's own
   // generations for this viewer, newest-first. It carries status/images/cost and
   // a `cancel`, and DELIBERATELY carries no prompts or params — which is why the
-  // other half lives in `useAppStorage`. See history.ts for the join.
+  // other half lives in the private `kv` collection. See history.ts for the join.
   const {
     workflows,
     loading: historyLoading,
@@ -392,8 +397,8 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
 
   // --- Formats ---
-  // The viewer's own formats, hydrated from `useAppStorage` on mount. Empty for
-  // an anonymous viewer (storage resolves null for them) — see `storageState`.
+  // The viewer's own formats, hydrated from the private `kv` collection on mount.
+  // Empty for an anonymous viewer (never read for them) — see `storageState`.
   const [customFormats, setCustomFormats] = useState<CustomFormat[]>([]);
   // Published formats the viewer has pulled in from the shared board.
   const [addedPublished, setAddedPublished] = useState<PublishedFormat[]>([]);
@@ -411,7 +416,7 @@ export function App() {
   const [storageNote, setStorageNote] = useState<string | null>(null);
 
   // --- Thumbnail history ---
-  // The STORED half: batch records read back from useAppStorage, newest-first
+  // The STORED half: batch records read back from the private `kv`, newest-first
   // (the key encodes an inverted timestamp precisely so the listing IS that
   // order — see history.ts historyKey).
   const [historyRecords, setHistoryRecords] = useState<StoredRecord[]>([]);
@@ -599,6 +604,41 @@ export function App() {
    */
   const [loraNote, setLoraNote] = useState<string | null>(null);
 
+  /**
+   * The platform refused the SELECTED checkpoint's ecosystem ("Ecosystem is
+   * currently unavailable" — see `isEcosystemUnavailable`). Keyed on the version id
+   * it was said about, so it can only ever be shown next to THAT model: picking a
+   * different checkpoint makes it stale at once, with no effect needed to clear it.
+   *
+   * 🔴 THE SELECTION IS NEVER CHANGED. The model stays selected and this note says
+   * why it cannot generate and what to do; swapping in a model the viewer did not
+   * choose would be a silent edit to what they are about to pay for.
+   */
+  const [modelUnavailable, setModelUnavailable] = useState<{
+    versionId: number;
+    message: string;
+  } | null>(null);
+
+  /**
+   * Record that the platform refused `model`'s ecosystem. THE one place the note is
+   * SET — the preview, the estimate pass and the submit fallback all call this, so
+   * the keying (versionId) and the wording (`modelUnavailableMessage`) cannot drift
+   * between them. `nothingCharged` is the caller's claim; see that function.
+   */
+  const noteModelUnavailable = useCallback(
+    (
+      model: { versionId: number; label: string; baseModel: string },
+      raw: string | null | undefined,
+      opts: { nothingCharged?: boolean } = {},
+    ) => {
+      setModelUnavailable({
+        versionId: model.versionId,
+        message: modelUnavailableMessage(model, raw, opts),
+      });
+    },
+    [],
+  );
+
   // --- Editor state ---
   // The gallery image being edited (its URL) + the overlay spec. The overlay
   // persists across images so a tweak carries over; the loaded <img> element and
@@ -668,10 +708,10 @@ export function App() {
   /**
    * 🔴 THE STORAGE HANDLE, HELD IN A REF SO NOTHING DEPENDS ON ITS IDENTITY.
    *
-   * `useAppStorage()` documents itself as "stable across renders", and the
-   * shipped hook is. That promise is NOT a property of the seam, only of one
-   * implementation of it: a mocked host (`useAppStorage: () => ({ … })`, which is
-   * how three suites here wire it) hands back a FRESH object on every render, and
+   * `useKvStorage()` (`./app-storage.ts`) is stable across renders, as the legacy
+   * `useAppStorage()` was. That promise is NOT a property of the seam, only of one
+   * implementation of it: a mocked seam (`useKvStorage: () => ({ … })`, which is
+   * how the hook-boundary suites here wire it) hands back a FRESH object on every render, and
    * so could any future host build.
    *
    * An effect that lists `storage` in its dependency array then re-runs on every
@@ -778,9 +818,9 @@ export function App() {
   }, [phase, refetchBalance]);
 
   // --- Load the viewer's own formats ---
-  // 🔴 ANONYMOUS VIEWERS GET NO PERSISTENCE. `useAppStorage().get()` resolves
-  // `null` for them and `set()` REJECTS, so there is nothing to load and nothing
-  // we could save. That is surfaced explicitly (a sign-in line under the picker)
+  // 🔴 ANONYMOUS VIEWERS GET NO PERSISTENCE. The document store refuses every
+  // private read and write for them (`sign_in_required`), so there is nothing to
+  // load and nothing we could save — and nothing is even asked of the store. That is surfaced explicitly (a sign-in line under the picker)
   // rather than left to look like a bug: silently showing an empty, unsaveable
   // editor is how a viewer loses work they thought they had.
   useEffect(() => {
@@ -886,28 +926,18 @@ export function App() {
   }, [editorImage, overlay]);
 
   /**
-   * Classify a storage rejection. `useAppStorage` rejects an anonymous write and
-   * a scope-denied call with the host's free-text error, and those are DIFFERENT
-   * problems with different fixes — "sign in" versus "grant this app storage
-   * access" — so they must not collapse into one "couldn't save".
-   *
-   * 🔴 THIS IS A SUBSTRING HEURISTIC OVER FREE TEXT and it is labelled as one.
-   * There is no structured error code on this bridge, so the honest fallback is
-   * `'error'` — a generic, still-actionable message — rather than guessing.
+   * Classify a storage rejection by the store's structured `code`
+   * (`./storage-errors.ts`): signed out, not permitted here, or anything else —
+   * different problems with different fixes ("sign in" versus "this app doesn't
+   * have storage access"), so they must not collapse into one "couldn't save".
    * Defined HERE, above `runGeneration`, because that callback lists it as a
    * dependency: a `const` referenced in a dependency array declared later in the
    * body is a TDZ ReferenceError at first render, not a lint nit.
    */
-  const classifyStorageError = useCallback((err: unknown): 'anon' | 'denied' | 'error' => {
-    const msg = (err instanceof Error ? err.message : String(err ?? '')).toLowerCase();
-    if (msg.includes('anon') || msg.includes('sign in') || msg.includes('not signed in')) {
-      return 'anon';
-    }
-    if (msg.includes('scope') || msg.includes('forbidden') || msg.includes('denied')) {
-      return 'denied';
-    }
-    return 'error';
-  }, []);
+  const classifyStorageError = useCallback(
+    (err: unknown): 'anon' | 'denied' | 'error' => classifyStoreRefusal(err),
+    [],
+  );
 
   // The server rejected the picked pool for this app's content-rating domain.
   // Surface a friendly note and fall back to Auto so the retry just works.
@@ -1198,16 +1228,36 @@ export function App() {
     // A THROWN estimate is not fatal (the server re-prices at submit anyway), so
     // it leaves the run priceless but still viable. A RETURNED failure is
     // classified: it terminates that one run.
+    //
+    // 🔴 EXCEPT A GATED-ECOSYSTEM REFUSAL, returned OR thrown. The estimate runs the
+    // same server validation as submit, so "Ecosystem is currently unavailable" here
+    // is a certain answer about the submit, not a pricing hiccup — and it is about
+    // the CHECKPOINT, which every format shares. Swallowing it (as the 0.2.0 code
+    // did) sent N submits that were each refused with the raw validation string,
+    // shown once per format ("Clickbait: Validation failed: ecosystem: …").
     const estimates = await Promise.all(
       formats.map(async (fmt) => {
         try {
           const est = await estimate(bodyFor(fmt, account));
           if (est.status === 'failed' || est.error) {
-            return { fmt, cost: null, phase: phaseForError(est.error), error: est.error ?? null };
+            return {
+              fmt,
+              cost: null,
+              phase: phaseForError(est.error),
+              error: est.error ?? null,
+              ecosystemRefusal: isEcosystemUnavailable(est.error) ? (est.error ?? null) : null,
+            };
           }
-          return { fmt, cost: est.cost?.total ?? null, phase: null, error: null };
-        } catch {
-          return { fmt, cost: null, phase: null, error: null };
+          return { fmt, cost: est.cost?.total ?? null, phase: null, error: null, ecosystemRefusal: null };
+        } catch (err) {
+          const reason = submitErrorReason(err, '');
+          return {
+            fmt,
+            cost: null,
+            phase: null,
+            error: null,
+            ecosystemRefusal: isEcosystemUnavailable(reason) ? reason : null,
+          };
         }
       }),
     );
@@ -1219,6 +1269,17 @@ export function App() {
     // other way out. Compare `runPollLoop`, which deliberately ignores both but one:
     // past this point money has been spent and the snapshots must still be collected.
     if (tok.cancelled || unmountedRef.current) return;
+
+    // A refused ECOSYSTEM is a property of the click's checkpoint, like a disallowed
+    // pool: stop before ANY submit, say so once next to the model, keep the model
+    // selected. Nothing has been submitted, so nothing was charged.
+    const ecosystemRefusal = estimates.find((e) => e.ecosystemRefusal != null)?.ecosystemRefusal;
+    if (ecosystemRefusal != null) {
+      noteModelUnavailable(checkpoint, ecosystemRefusal);
+      setRuns([]);
+      return;
+    }
+    setModelUnavailable(null);
 
     let priced = initRuns(formats).map((r) => ({ ...r, phase: 'estimating' as GenPhase }));
     for (const e of estimates) {
@@ -1276,9 +1337,22 @@ export function App() {
         } catch (err) {
           // NOT `err.message` — under blocks-react ^0.44 that is a generic
           // template and the server's reason rides on `.snapshot.error`.
-          const msg = submitErrorReason(err);
-          const failPhase = phaseForError(msg);
+          const raw = submitErrorReason(err);
+          const failPhase = phaseForError(raw);
           if (tok.cancelled || unmountedRef.current) return null;
+          // The estimate pass normally catches a gated ecosystem first; this is the
+          // fallback for a gate that closed between estimate and submit. Never show
+          // the raw `Validation failed: ecosystem: …` string.
+          //
+          // 🔴 NO "Nothing was charged." HERE: the submits run in parallel, so another
+          // format of this click may already have been accepted (and charged) when
+          // this one is refused. The row carries a short pointer; the model-row note
+          // carries the explanation once.
+          let msg = raw;
+          if (isEcosystemUnavailable(raw)) {
+            noteModelUnavailable(checkpoint, raw, { nothingCharged: false });
+            msg = 'This model is unavailable right now — see the note under Model.';
+          }
           setRuns((cur) => patchRun(cur, fmt.id, { phase: failPhase, error: msg }));
           if (failPhase === 'account-rejected') handleAccountRejected();
           return null;
@@ -1382,6 +1456,10 @@ export function App() {
     balance,
     selectedFormatIds,
     availableFormats,
+    // Only for the model-unavailable note's wording; the bodies still come from
+    // `formSnapshot`/`bodyFor` alone.
+    checkpoint,
+    noteModelUnavailable,
     formSnapshot,
     bodyFor,
     estimate,
@@ -1581,8 +1659,8 @@ export function App() {
    * per render — any of the three in a dependency array turns this into a request
    * per render. The trigger is `priceSignature`; these are just the values it needs.
    */
-  const previewRef = useRef({ formats: selectedFormats, account, bodyFor, estimate });
-  previewRef.current = { formats: selectedFormats, account, bodyFor, estimate };
+  const previewRef = useRef({ formats: selectedFormats, account, bodyFor, estimate, checkpoint });
+  previewRef.current = { formats: selectedFormats, account, bodyFor, estimate, checkpoint };
 
   // WHAT COUNTS AS A PRICE CHANGE — one pure function, see `estimateSignature`.
   //
@@ -1616,7 +1694,13 @@ export function App() {
     setPreviewRuns(initRuns(previewRef.current.formats));
 
     const timer = setTimeout(() => {
-      const { formats, account: acct, bodyFor: body, estimate: price } = previewRef.current;
+      const {
+        formats,
+        account: acct,
+        bodyFor: body,
+        estimate: price,
+        checkpoint: model,
+      } = previewRef.current;
       if (formats.length === 0) return;
       void (async () => {
         // A throw and a returned failure are treated ALIKE here, and both leave the
@@ -1624,18 +1708,36 @@ export function App() {
         // even annotate a Generate click. The server re-prices at submit regardless,
         // and `runGeneration` does its own estimate pass — so the worst a broken
         // preview can do is show no number.
+        //
+        // 🔴 ONE THING IS READ OFF A FAILURE: a gated-ecosystem refusal. It is about
+        // the MODEL, not the click, so it is reported next to the model row BEFORE
+        // the viewer commits to anything — the model stays selected and the note
+        // says why it cannot generate. Any other failure still just leaves no price.
+        let refusal: string | null = null;
         const costs = await Promise.all(
           formats.map(async (fmt) => {
             try {
               const est = await price(body(fmt, acct));
-              if (est.status === 'failed' || est.error) return null;
+              if (est.status === 'failed' || est.error) {
+                if (isEcosystemUnavailable(est.error)) refusal = est.error ?? null;
+                return null;
+              }
               return est.cost?.total ?? null;
-            } catch {
+            } catch (err) {
+              const reason = submitErrorReason(err, '');
+              if (isEcosystemUnavailable(reason)) refusal = reason;
               return null;
             }
           }),
         );
         if (seq !== previewSeqRef.current) return;
+        if (refusal != null) {
+          noteModelUnavailable(model, refusal);
+        } else if (costs.some((c) => c != null)) {
+          // A priced estimate for this model is positive evidence the gate is open
+          // again — only then is an earlier note about THIS model withdrawn.
+          setModelUnavailable((cur) => (cur && cur.versionId === model.versionId ? null : cur));
+        }
         let next = initRuns(formats);
         formats.forEach((fmt, i) => {
           next = patchRun(next, fmt.id, { estimatedCost: costs[i] });
@@ -1740,9 +1842,8 @@ export function App() {
   /**
    * Publish one of the viewer's formats to the app-wide board.
    *
-   * 🔴 The value comes from `sharedValueForFormat`, which is the ONE place that
-   * decides the suffix travels in the MODERATED `body` field. Do not inline a
-   * literal object here — that decision must stay in one tested function.
+   * 🔴 The document comes from `boardDocForFormat` (via `shared.publish`), which
+   * is the ONE place its shape lives. Do not inline a literal object here.
    *
    * 🔴 AND IT IS VALIDATED FIRST, with the SAME predicate the save path uses.
    * Publishing is a write, and the suffix it writes is injected into OTHER
@@ -1762,19 +1863,27 @@ export function App() {
       setFormatBusyId(fmt.id);
       setStorageNote(null);
       try {
-        await shared.append(sharedValueForFormat(fmt));
-        setStorageNote(`Published “${fmt.label}”. It is reviewed before others see it.`);
+        await shared.publish(fmt);
+        // The store moderates a shared write BEFORE it lands (a hit is refused
+        // `content_rejected`), so a published format is on the board at once.
+        setStorageNote(`Published “${fmt.label}” to the board.`);
       } catch (err) {
+        // Creating a shared document needs the consent-gated publish scope. Ask
+        // the host; the viewer presses Publish again once they approve.
+        if ((err as { code?: unknown } | null)?.code === 'consent_required') {
+          requestConsent({ scopes: [PUBLISH_SCOPE] });
+        }
         setStorageNote(
-          err instanceof Error && err.message
-            ? `Couldn't publish: ${err.message}`
-            : "Couldn't publish that format.",
+          publishRefusalMessage(err) ??
+            (err instanceof Error && err.message
+              ? `Couldn't publish: ${err.message}`
+              : "Couldn't publish that format."),
         );
       } finally {
         setFormatBusyId(null);
       }
     },
-    [shared],
+    [shared, requestConsent],
   );
 
   // --- The published board ---
@@ -1783,8 +1892,7 @@ export function App() {
     setBoardLoading(true);
     setBoardError(null);
     try {
-      const res = await shared.list({ limit: 25 });
-      setBoardItems(formatsFromSharedItems(res.items));
+      setBoardItems(formatsFromSharedItems(await shared.list()));
     } catch (err) {
       setBoardError(
         err instanceof Error && err.message
@@ -1839,8 +1947,8 @@ export function App() {
     async (fmt: PublishedFormat) => {
       setBoardBusyKey(fmt.sharedKey);
       try {
-        // `viewerVoted` is HYDRATED from the host, never guessed, so this
-        // toggles correctly on the first click after a reload.
+        // `viewerVoted` is HYDRATED from the store (`viewer.marks`), never
+        // guessed, so this toggles correctly on the first click after a reload.
         const count = fmt.viewerVoted
           ? await shared.unvote(fmt.sharedKey)
           : await shared.vote(fmt.sharedKey);
@@ -1865,7 +1973,8 @@ export function App() {
     async (fmt: PublishedFormat) => {
       setBoardBusyKey(fmt.sharedKey);
       try {
-        await shared.report(fmt.sharedKey, 'Reported from the YT Thumbnail format board.');
+        // The built-in `report` mark: permanent, and it carries no free-text reason.
+        await shared.report(fmt.sharedKey);
         setBoardError(null);
         setStorageNote(`Reported “${fmt.label}” for review.`);
       } catch {
@@ -1880,11 +1989,11 @@ export function App() {
   // --- Thumbnail history: the stored half, the join, and the prune ---
 
   /**
-   * Load the stored half of history: one `list()` for the keys (cheap — keys and
-   * `updatedAt` only), then a `get()` per key for the values.
+   * Load the stored half of history: one `list()` of the private `kv` collection
+   * under `gen:v1:`, which returns whole documents (keys AND values).
    *
    * The listing is already newest-first because the key encodes an INVERTED
-   * timestamp; there is no sort option on `list()` and there does not need to be.
+   * timestamp and the list is in key order (`./kv-store.ts`).
    * Rows that don't parse are dropped rather than rendered half-formed.
    *
    * 🔴 IT IS A MERGE, NOT A REPLACEMENT, AND THAT IS A MONEY RULE. The rule is about
@@ -1933,16 +2042,10 @@ export function App() {
     setHistoryState('loading');
     try {
       const store = storageRef.current;
-      const { keys } = await store.list({ prefix: HISTORY_PREFIX, limit: HISTORY_PAGE_SIZE });
-      const loaded = await Promise.all(
-        keys.map(async (k) => {
-          try {
-            return { key: k.key, record: parseRecord(await store.get(k.key)) };
-          } catch {
-            return { key: k.key, record: null };
-          }
-        }),
-      );
+      // ONE read: a document-store page carries whole documents (the legacy list
+      // returned keys only, and each value cost a `get`).
+      const { entries } = await store.list({ prefix: HISTORY_PREFIX, limit: HISTORY_PAGE_SIZE });
+      const loaded = entries.map((e) => ({ key: e.key, record: parseRecord(e.value) }));
       const stored = loaded.filter((e): e is StoredRecord => e.record !== null);
       // Retry the writes that never landed. A success drops the record from the
       // unsaved map (storage owns it now); a failure leaves it there.
@@ -2972,8 +3075,8 @@ export function App() {
         minCardPx={layout.formatMinCardPx}
       />
 
-      {/* 🔴 The anonymous path, said out loud. `useAppStorage` resolves null on
-          read and REJECTS every write for an anonymous viewer, so a "New format"
+      {/* 🔴 The anonymous path, said out loud. The document store REFUSES every
+          private read and write for an anonymous viewer, so a "New format"
           button that looked enabled would simply eat their work. */}
       {storageState === 'anon' && (
         <span style={fieldDescStyle(pal)} data-testid="yt-storage-anon">
@@ -3073,6 +3176,17 @@ export function App() {
         >
           {modelRow}
         </Group>
+      )}
+      {/* Only ever shown for the model it was said about (keyed on versionId), so
+          picking another checkpoint retires it with no effect needed. */}
+      {modelUnavailable && modelUnavailable.versionId === checkpoint.versionId && (
+        <Alert
+          color="warning"
+          title="This model is unavailable right now"
+          data-testid="pm-model-unavailable"
+        >
+          {modelUnavailable.message}
+        </Alert>
       )}
     </div>
   );

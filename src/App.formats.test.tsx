@@ -2,6 +2,8 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { StorageError } from '@civitai/sdk';
+
 import type { BlockWorkflowSnapshot } from '@civitai/app-sdk/blocks';
 
 import { BUILTIN_FORMATS, CUSTOM_FORMATS_KEY, hasPreviewArt } from './formats.js';
@@ -50,8 +52,9 @@ const pollFn = vi.fn<(id: string) => Promise<BlockWorkflowSnapshot>>();
 const storageGet = vi.fn<(key: string) => Promise<unknown>>();
 const storageSet = vi.fn<(key: string, value: unknown) => Promise<{ ok: true }>>();
 const sharedAppend = vi.fn<(value: unknown) => Promise<{ key: string }>>();
-const sharedList = vi.fn<(opts?: unknown) => Promise<{ items: unknown[] }>>();
-const sharedReport = vi.fn<(key: string, reason?: string) => Promise<void>>();
+const sharedList = vi.fn<() => Promise<unknown[]>>();
+const sharedReport = vi.fn<(key: string) => Promise<void>>();
+const requestConsentFn = vi.fn();
 const sharedVote = vi.fn<(key: string) => Promise<number>>();
 
 /** Flipped per-test to exercise the anonymous path. */
@@ -72,7 +75,7 @@ vi.mock('@civitai/blocks-react', () => ({
   // ladder into these assertions; `null` keeps the ladder on Auto so these tests
   // are about formats and storage only. The ladder has its own tests.
   useBuzzBalance: () => ({ balance: null, loading: false, error: null, refetch: vi.fn() }),
-  useRequestConsent: () => ({ requestConsent: vi.fn() }),
+  useRequestConsent: () => ({ requestConsent: requestConsentFn }),
   useRequestSignIn: () => ({ requestSignIn: vi.fn() }),
   useResourcePicker: () => ({ open: vi.fn().mockResolvedValue(null) }),
   useImageUpload: () => ({ open: vi.fn().mockResolvedValue(null) }),
@@ -91,28 +94,30 @@ vi.mock('@civitai/blocks-react', () => ({
     cancel: vi.fn().mockResolvedValue(undefined),
   }),
   useSaveImage: () => ({ saveImage: vi.fn().mockResolvedValue(undefined) }),
-  useAppStorage: () => ({
+}));
+
+// Since 0.2.0 storage is the document store, reached through the app's own
+// hook seam (`./app-storage.ts`) — NOT through @civitai/blocks-react, whose
+// legacy `useAppStorage`/`useSharedStorage` the app no longer calls.
+vi.mock('./app-storage.js', () => ({
+  useKvStorage: () => ({
     get: storageGet,
     set: storageSet,
     delete: vi.fn().mockResolvedValue({ ok: true, deleted: true }),
-    list: vi.fn().mockResolvedValue({ keys: [] }),
-    getQuota: vi
-      .fn()
-      .mockResolvedValue({ usedBytes: 0, rowCount: 0, limitBytes: 5e7, limitRows: 1e6 }),
+    list: vi.fn().mockResolvedValue({ entries: [] }),
   }),
-  useSharedStorage: () => ({
+  useBoardStore: () => ({
     list: sharedList,
-    get: vi.fn().mockResolvedValue(null),
-    report: sharedReport,
-    getCount: vi.fn().mockResolvedValue(0),
-    getCounts: vi.fn().mockResolvedValue({}),
-    append: sharedAppend,
-    update: vi.fn().mockResolvedValue(undefined),
+    publish: sharedAppend,
     vote: sharedVote,
     unvote: vi.fn().mockResolvedValue(0),
-    withdraw: vi.fn().mockResolvedValue({ ok: true, deleted: true }),
+    report: sharedReport,
   }),
 }));
+
+/** A document-store refusal exactly as `@civitai/sdk` raises one: branch-on-`code`. */
+const refusal = (status: number, code: string, message: string) =>
+  new StorageError(status, code, message, { code, message, error: message });
 
 const { App } = await import('./App.js');
 
@@ -186,7 +191,8 @@ beforeEach(() => {
   storageGet.mockReset().mockResolvedValue(null);
   storageSet.mockReset().mockResolvedValue({ ok: true });
   sharedAppend.mockReset().mockResolvedValue({ key: 'shared_1' });
-  sharedList.mockReset().mockResolvedValue({ items: [] });
+  sharedList.mockReset().mockResolvedValue([]);
+  requestConsentFn.mockReset();
   sharedReport.mockReset().mockResolvedValue(undefined);
   sharedVote.mockReset().mockResolvedValue(1);
 });
@@ -580,10 +586,10 @@ describe('private custom formats (useAppStorage)', () => {
   });
 
   it('🔴 REVERTS the list when the host rejects the write (quota / size / anon)', async () => {
-    // The real host rejects a value over 64KB, a write that would cross the
-    // per-app quota, and every anonymous write. The MOCK host enforces none of
-    // that, which is why this is driven from the hook.
-    storageSet.mockRejectedValue(new Error('PAYLOAD_TOO_LARGE'));
+    // The store refuses a document over 64 KiB (`too_large`), a write over the
+    // quota, and every anonymous write. Driven from the storage seam so the
+    // App's revert is what is under test.
+    storageSet.mockRejectedValue(refusal(413, 'too_large', 'document exceeds 65536 bytes'));
     const user = userEvent.setup();
     render(<App />);
     await clickFormatControl(user, 'yt-format-new');
@@ -592,7 +598,7 @@ describe('private custom formats (useAppStorage)', () => {
     await user.click(screen.getByTestId('yt-format-save'));
 
     // The failure is REPORTED...
-    expect(await screen.findByTestId('yt-storage-note')).toHaveTextContent(/PAYLOAD_TOO_LARGE/);
+    expect(await screen.findByTestId('yt-storage-note')).toHaveTextContent(/exceeds 65536 bytes/);
     // ...and the format is NOT left on screen as if it had saved.
     await waitFor(() =>
       expect(screen.queryByText('Too Big')).not.toBeInTheDocument(),
@@ -620,8 +626,8 @@ describe('private custom formats (useAppStorage)', () => {
 
 // ---------------------------------------------------------------------------
 
-describe('🔴 publishing puts the suffix in the MODERATED field', () => {
-  it('appends `{title, body}` with the suffix in `body` and NO user text in `data`', async () => {
+describe('🔴 publishing a format to the board', () => {
+  it('publishes exactly the label and suffix — the store moderates every field of it', async () => {
     storageGet.mockResolvedValue([
       { id: 'custom:9', label: 'Retro VHS', suffix: 'analog vhs grain, 1987 camcorder' },
     ]);
@@ -630,21 +636,32 @@ describe('🔴 publishing puts the suffix in the MODERATED field', () => {
     await clickFormatControl(user, 'yt-format-publish-custom:9');
 
     await waitFor(() => expect(sharedAppend).toHaveBeenCalledTimes(1));
-    const value = sharedAppend.mock.calls[0][0] as {
-      title: string;
-      body: string;
-      data: unknown;
-    };
-    // The suffix is prompt text that will be injected into OTHER viewers' PAID
-    // generations in a contentRating:"g" app. It MUST be in `body`, which the
-    // content belt reads — `data` is UNMODERATED.
-    expect(value.body).toBe('analog vhs grain, 1987 camcorder');
-    expect(value.title).toBe('Retro VHS');
-    // A STATE assertion, not a word assertion: no user-authored text of any kind
-    // may ride in `data`, whatever it says.
-    expect(JSON.stringify(value.data)).not.toContain('vhs');
-    expect(JSON.stringify(value.data)).not.toContain('camcorder');
-    expect(JSON.stringify(value.data)).not.toContain('Retro');
+    // The suffix is prompt text injected into OTHER viewers' PAID generations; the
+    // document store scans every string of a shared write (see board-store.test.ts
+    // for the refusal), so the publish carries the format itself, nothing more.
+    const published = sharedAppend.mock.calls[0][0] as { label: string; suffix: string };
+    expect(published.label).toBe('Retro VHS');
+    expect(published.suffix).toBe('analog vhs grain, 1987 camcorder');
+    expect(await screen.findByTestId('yt-storage-note')).toHaveTextContent('Published “Retro VHS” to the board.');
+  });
+
+  it('a publish refused for consent asks for apps:storage:publish and says to press Publish again', async () => {
+    storageGet.mockResolvedValue([{ id: 'custom:9', label: 'Retro VHS', suffix: 'analog vhs grain' }]);
+    sharedAppend.mockRejectedValue(refusal(403, 'consent_required', 'consent required'));
+    const user = userEvent.setup();
+    render(<App />);
+    await clickFormatControl(user, 'yt-format-publish-custom:9');
+    expect(await screen.findByTestId('yt-storage-note')).toHaveTextContent(/permission first.*Publish again/);
+    expect(requestConsentFn).toHaveBeenCalledWith({ scopes: ['apps:storage:publish'] });
+  });
+
+  it('a publish the content check refused says so in viewer copy, not server prose', async () => {
+    storageGet.mockResolvedValue([{ id: 'custom:9', label: 'Retro VHS', suffix: 'analog vhs grain' }]);
+    sharedAppend.mockRejectedValue(refusal(422, 'content_rejected', 'blocked'));
+    const user = userEvent.setup();
+    render(<App />);
+    await clickFormatControl(user, 'yt-format-publish-custom:9');
+    expect(await screen.findByTestId('yt-storage-note')).toHaveTextContent(/content check rejected/);
   });
 
   it('🔴 REFUSES to publish a suffix carrying the wildcard `#` — it would spend OTHER people’s Buzz', async () => {
@@ -658,7 +675,7 @@ describe('🔴 publishing puts the suffix in the MODERATED field', () => {
     // (it may predate the rule — see formats.test.ts "checked on SAVE and NOT on
     // LOAD"). So this viewer genuinely has a `#` format in their picker with a live
     // Publish button, and the ONLY thing that can see whether it reaches the board
-    // is the argument to `shared.append`. The mock host would accept it happily.
+    // is the argument to `shared.publish`. The mock host would accept it happily.
     storageGet.mockResolvedValue([
       { id: 'custom:hash', label: 'Neon Hex', suffix: 'neon glow #FF49BD rim light' },
       // The control for the `not.toHaveBeenCalled()` below — see the note there.
@@ -683,7 +700,7 @@ describe('🔴 publishing puts the suffix in the MODERATED field', () => {
     // instrument.
     await user.click(screen.getByTestId('yt-format-publish-custom:clean'));
     await waitFor(() => expect(sharedAppend).toHaveBeenCalledTimes(1));
-    expect((sharedAppend.mock.calls[0][0] as { body: string }).body).toBe('plain rim light');
+    expect((sharedAppend.mock.calls[0][0] as { suffix: string }).suffix).toBe('plain rim light');
   });
 });
 
@@ -691,17 +708,14 @@ describe('🔴 publishing puts the suffix in the MODERATED field', () => {
 
 describe('the published board', () => {
   it('lists published formats and can pull one into the picker', async () => {
-    sharedList.mockResolvedValue({
-      items: [
-        {
-          key: 'shared_7',
-          authorUserId: 99,
-          value: { title: 'Neon Noir', body: 'wet streets, neon reflections' },
-          count: 12,
-          viewerVoted: false,
-        },
-      ],
-    });
+    sharedList.mockResolvedValue([
+      {
+        key: 'shared_7',
+        data: { v: 1, label: 'Neon Noir', suffix: 'wet streets, neon reflections' },
+        votes: 12,
+        viewerVoted: false,
+      },
+    ]);
     const user = userEvent.setup();
     render(<App />);
     await clickFormatControl(user, 'yt-board-toggle');
@@ -715,38 +729,19 @@ describe('the published board', () => {
     expect(await screen.findByTestId('yt-format-shared:shared_7')).toHaveTextContent('Neon Noir');
   });
 
-  it('🔴 DROPS a published entry whose text is only in the unmoderated `data`', async () => {
-    sharedList.mockResolvedValue({
-      items: [
-        {
-          key: 'shared_8',
-          authorUserId: 98,
-          value: { title: 'Smuggled', data: { suffix: 'text that bypassed moderation' } },
-          count: 3,
-        },
-      ],
-    });
+  it('drops a board document that is not a usable format (no suffix)', async () => {
+    sharedList.mockResolvedValue([{ key: 'shared_8', data: { v: 1, label: 'Half' }, votes: 3 }]);
     const user = userEvent.setup();
     render(<App />);
     await clickFormatControl(user, 'yt-board-toggle');
-
-    // Rendering it would make `data` a working channel for unmoderated prompt
-    // text — the exact thing putting the suffix in `body` exists to prevent.
     expect(await screen.findByTestId('yt-published-empty')).toBeInTheDocument();
-    expect(screen.queryByText('Smuggled')).not.toBeInTheDocument();
+    expect(screen.queryByText('Half')).not.toBeInTheDocument();
   });
 
-  it('reports a published format through the shared-storage abuse seam', async () => {
-    sharedList.mockResolvedValue({
-      items: [
-        {
-          key: 'shared_9',
-          authorUserId: 97,
-          value: { title: 'Bad One', body: 'something objectionable' },
-          count: 0,
-        },
-      ],
-    });
+  it('reports a published format through the built-in `report` mark', async () => {
+    sharedList.mockResolvedValue([
+      { key: 'shared_9', data: { v: 1, label: 'Bad One', suffix: 'something objectionable' }, votes: 0 },
+    ]);
     const user = userEvent.setup();
     render(<App />);
     await clickFormatControl(user, 'yt-board-toggle');
@@ -757,19 +752,16 @@ describe('the published board', () => {
   });
 
   it('votes using the HYDRATED viewerVoted state, not a guess', async () => {
-    sharedList.mockResolvedValue({
-      items: [
-        {
-          key: 'shared_10',
-          authorUserId: 96,
-          value: { title: 'Already Voted', body: 'a look' },
-          count: 5,
-          // The viewer ALREADY voted. A block that guessed `false` here would
-          // send `vote` and appear to do nothing (it is idempotent).
-          viewerVoted: true,
-        },
-      ],
-    });
+    sharedList.mockResolvedValue([
+      {
+        key: 'shared_10',
+        data: { v: 1, label: 'Already Voted', suffix: 'a look' },
+        votes: 5,
+        // The viewer ALREADY voted. A block that guessed `false` here would
+        // send `vote` and appear to do nothing (it is idempotent).
+        viewerVoted: true,
+      },
+    ]);
     const user = userEvent.setup();
     render(<App />);
     await clickFormatControl(user, 'yt-board-toggle');

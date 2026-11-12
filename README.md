@@ -208,19 +208,24 @@ Three tiers:
   or not at all, and the `sourceWorkflowId` is checked **by shape** with
   `costBuzz > 0` required, because co-presence alone let a fabricated id through.
 - **Custom** — the viewer's own, **private by default**, persisted per-viewer
-  via `useAppStorage` under `formats:custom:v1`. Anonymous viewers get no
-  persistence at all (`get` resolves `null`, `set` rejects) and are told so
-  rather than handed an editor that silently eats their work.
+  in the App Blocks document store's private collection `kv` under
+  `formats:custom:v1` (data `{ value }`; the legacy KV key, which the cutover
+  copy carries over). Anonymous viewers get no persistence at all (the store
+  refuses them `sign_in_required`) and are told so rather than handed an editor
+  that silently eats their work. The stored half of history lives in the same
+  collection under `gen:v1:…`.
 - **Published** — a custom format the viewer explicitly pushed to the app-wide
-  `useSharedStorage` board, where others can browse, use, up-vote and report it.
+  board, the shared collection `formats` (`write: "own"`, mark `vote`), where
+  others can browse, use, up-vote and report it (the built-in `report` mark).
+  Publishing needs the consent-gated `apps:storage:publish`; reading, voting and
+  reporting need only `apps:storage`.
 
-🔴 **A published format's suffix travels in `body`, never in `data`.**
-`title`/`body` are the *moderated*, user-visible text; `data` is *unmoderated*
-app state. The suffix is prompt text that gets injected into other viewers'
-**paid** generations in a `contentRating: "g"` app, so it has to pass the content
-belt. `sharedValueForFormat` is the one place that decision lives, and reading a
-published format back deliberately has **no** `data` fallback — an entry whose
-text is only in `data` is dropped.
+🔴 **A published format's suffix must pass the content belt.** It is prompt text
+that gets injected into other viewers' **paid** generations in a
+`contentRating: "g"` app. The document store moderates every string of a shared
+write and refuses a hit (`content_rejected`), so the board document is plain
+`{ v, label, suffix }` (`boardDocForFormat`); `board-store.test.ts` pins that a
+blocked suffix is refused.
 
 Selection carries an invariant: **at least one format is always selected**, so
 Generate can never submit zero workflows and report success having spent
@@ -698,6 +703,14 @@ The two reads use **different credentials** — by design, and security-critical
 > via your personal key through the proxy) still works. The balance resolves in
 > **`dev:harness`** (synthetic, wired to the `balance` scenario) and on the **real
 > platform** (the civitai host answers `GET_BUZZ_BALANCE` natively).
+
+> **Storage is NOT on the bridge since 0.2.0.** Formats, history and the
+> published board live in the App Blocks **document store** (REST under
+> `/api/v1/blocks/storage/*` via `@civitai/sdk`), so the App-Storage KV
+> protocol above is unused. In `dev:harness` it is an in-memory
+> `createFakeStorage` (session-only). In `dev:live` the calls go through the
+> `/api` proxy with your dev token, which the store serves only once an
+> approved version declares the collections.
 
 ### Scenarios (exercise the money / error / storage UX for free)
 

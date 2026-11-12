@@ -2,6 +2,8 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { StorageError } from '@civitai/sdk';
+
 import type { AppWorkflow } from '@civitai/app-sdk/blocks';
 
 /**
@@ -134,28 +136,30 @@ vi.mock('@civitai/blocks-react', () => ({
     refetch: refetchWorkflows,
     cancel: vi.fn(),
   }),
-  useAppStorage: () => ({
+}));
+
+// Since 0.2.0 storage is the document store, reached through the app's own
+// hook seam (`./app-storage.ts`) — NOT through @civitai/blocks-react, whose
+// legacy `useAppStorage`/`useSharedStorage` the app no longer calls.
+vi.mock('./app-storage.js', () => ({
+  useKvStorage: () => ({
     get: storageGet,
     set: storageSet,
     delete: storageDelete,
     list: storageList,
-    getQuota: vi
-      .fn()
-      .mockResolvedValue({ usedBytes: 0, rowCount: 0, limitBytes: 5e7, limitRows: 1e6 }),
   }),
-  useSharedStorage: () => ({
-    list: vi.fn().mockResolvedValue({ items: [] }),
-    get: vi.fn().mockResolvedValue(null),
-    report: vi.fn().mockResolvedValue(undefined),
-    getCount: vi.fn().mockResolvedValue(0),
-    getCounts: vi.fn().mockResolvedValue({}),
-    append: vi.fn().mockResolvedValue({ key: 'shared_1' }),
-    update: vi.fn().mockResolvedValue(undefined),
+  useBoardStore: () => ({
+    list: vi.fn().mockResolvedValue([]),
+    publish: vi.fn().mockResolvedValue({ key: 'shared_1' }),
     vote: vi.fn().mockResolvedValue(1),
     unvote: vi.fn().mockResolvedValue(0),
-    withdraw: vi.fn().mockResolvedValue({ ok: true, deleted: true }),
+    report: vi.fn().mockResolvedValue(undefined),
   }),
 }));
+
+/** A document-store refusal exactly as `@civitai/sdk` raises one: branch-on-`code`. */
+const refusal = (status: number, code: string, message: string) =>
+  new StorageError(status, code, message, { code, message, error: message });
 
 const { App } = await import('./App.js');
 const { IMAGE_MIN_PX } = await import('./ui-styles.js');
@@ -165,7 +169,7 @@ const RECORD_KEY = historyKey(RECORD.createdAt, RECORD.batchId);
 
 function stockStorage(records: Array<{ key: string; value: unknown }>) {
   storageList.mockResolvedValue({
-    keys: records.map((r) => ({ key: r.key, updatedAt: new Date() })),
+    entries: records.map((r) => ({ key: r.key, value: r.value, updatedAt: new Date() })),
   });
   storageGet.mockImplementation(async (key: string) => {
     if (key === 'formats:custom:v1') return null;
@@ -274,7 +278,7 @@ describe('the history surface — when it exists at all', () => {
     // INVARIANT GUARD. The apps:storage scopes have never been consented in
     // production, so this is a realistic FIRST RUN and the fix it names — grant the
     // app storage — is not discoverable from a blank space.
-    storageList.mockRejectedValue(new Error('FORBIDDEN: missing scope apps:storage:read'));
+    storageList.mockRejectedValue(refusal(403, 'insufficient_scope', 'This app is not permitted to use storage here.'));
     const user = userEvent.setup();
     render(<App />);
 

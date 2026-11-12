@@ -159,8 +159,8 @@ export function HistorySurface({
  * 🔴 EVERY NON-READY STATE IS EXPLICIT, because each has a DIFFERENT fix and three
  * of them would otherwise render as the same empty grid:
  *
- *   'anon'    `useAppWorkflows` ERRORS for an anonymous viewer and `useAppStorage`
- *             REJECTS their writes, so there is no history and there never could
+ *   'anon'    `useAppWorkflows` ERRORS for an anonymous viewer and the document
+ *             store REFUSES their writes, so there is no history and there never could
  *             be one. That is a sign-in prompt, not an empty list — an
  *             empty-looking grid here reads as "you have no generations", which
  *             is a false statement about someone who may have plenty.

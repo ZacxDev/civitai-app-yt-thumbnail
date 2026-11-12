@@ -2,6 +2,8 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { StorageError } from '@civitai/sdk';
+
 import type { AppWorkflow } from '@civitai/app-sdk/blocks';
 
 /**
@@ -117,37 +119,42 @@ vi.mock('@civitai/blocks-react', () => ({
     refetch: vi.fn(),
     cancel: cancelWorkflow,
   }),
-  useAppStorage: () => ({
+}));
+
+// Since 0.2.0 storage is the document store, reached through the app's own
+// hook seam (`./app-storage.ts`) — NOT through @civitai/blocks-react, whose
+// legacy `useAppStorage`/`useSharedStorage` the app no longer calls.
+vi.mock('./app-storage.js', () => ({
+  useKvStorage: () => ({
     get: storageGet,
     set: storageSet,
     delete: storageDelete,
     list: storageList,
-    getQuota: vi.fn().mockResolvedValue({ usedBytes: 0, rowCount: 0, limitBytes: 5e7, limitRows: 1e6 }),
   }),
-  useSharedStorage: () => ({
-    list: vi.fn().mockResolvedValue({ items: [] }),
-    get: vi.fn().mockResolvedValue(null),
-    report: vi.fn().mockResolvedValue(undefined),
-    getCount: vi.fn().mockResolvedValue(0),
-    getCounts: vi.fn().mockResolvedValue({}),
-    append: vi.fn().mockResolvedValue({ key: 'shared_1' }),
-    update: vi.fn().mockResolvedValue(undefined),
+  useBoardStore: () => ({
+    list: vi.fn().mockResolvedValue([]),
+    publish: vi.fn().mockResolvedValue({ key: 'shared_1' }),
     vote: vi.fn().mockResolvedValue(1),
     unvote: vi.fn().mockResolvedValue(0),
-    withdraw: vi.fn().mockResolvedValue({ ok: true, deleted: true }),
+    report: vi.fn().mockResolvedValue(undefined),
   }),
 }));
+
+/** A document-store refusal exactly as `@civitai/sdk` raises one: branch-on-`code`. */
+const refusal = (status: number, code: string, message: string) =>
+  new StorageError(status, code, message, { code, message, error: message });
 
 const { App } = await import('./App.js');
 const { HISTORY_PREFIX, historyKey } = await import('./history.js');
 
 const RECORD_KEY = historyKey(RECORD.createdAt, RECORD.batchId);
 
+/** A listed record as the private `kv` list returns it: the key AND its value. */
+const listed = (r: { key: string; value: unknown }) => ({ key: r.key, value: r.value, updatedAt: new Date() });
+
 /** Storage stocked with exactly one batch record. */
 function stockStorage(records: Array<{ key: string; value: unknown }> = [{ key: RECORD_KEY, value: RECORD }]) {
-  storageList.mockResolvedValue({
-    keys: records.map((r) => ({ key: r.key, updatedAt: new Date() })),
-  });
+  storageList.mockResolvedValue({ entries: records.map(listed) });
   storageGet.mockImplementation(async (key: string) => {
     if (key === 'formats:custom:v1') return null;
     return records.find((r) => r.key === key)?.value ?? null;
@@ -224,7 +231,7 @@ describe('history — a rejected storage scope', () => {
      * "grant this app storage access", which a generic error message does not
      * tell them, and an unhandled rejection tells them even less.
      */
-    storageList.mockRejectedValue(new Error('FORBIDDEN: missing scope apps:storage:read'));
+    storageList.mockRejectedValue(refusal(403, 'insufficient_scope', 'This app is not permitted to use storage here.'));
     const user = userEvent.setup();
     render(<App />);
     await openHistory(user);
@@ -574,7 +581,7 @@ describe('🔴 the record WRITTEN at submit time', () => {
       cost: { total: 209 },
       imageUrls: ['img-1'],
     });
-    storageSet.mockRejectedValue(new Error('FORBIDDEN: missing scope apps:storage:write'));
+    storageSet.mockRejectedValue(refusal(403, 'insufficient_scope', 'This app is not permitted to use storage here.'));
 
     const user = userEvent.setup();
     render(<App />);
@@ -710,7 +717,7 @@ describe('🔴 a run whose storage write FAILED is not deleted by a refresh', ()
      * written on that very path says "This run's images are above". They were not.
      */
     generateOnce();
-    storageSet.mockRejectedValue(new Error('not signed in'));
+    storageSet.mockRejectedValue(refusal(401, 'sign_in_required', 'Sign in to use this.'));
 
     const user = userEvent.setup();
     render(<App />);
@@ -741,7 +748,7 @@ describe('🔴 a run whose storage write FAILED is not deleted by a refresh', ()
      */
     generateOnce();
     state.workflows = [EXPIRED_WORKFLOW];
-    storageSet.mockRejectedValue(new Error('storage quota exceeded'));
+    storageSet.mockRejectedValue(refusal(413, 'quota_exceeded', 'storage quota exceeded'));
 
     const user = userEvent.setup();
     render(<App />);
@@ -778,8 +785,9 @@ describe('🔴 a run whose storage write FAILED is not deleted by a refresh', ()
      * unsaved map). The resolving read therefore overwrote that row and its images away
      * — the success path, with no banner and nothing to retry.
      *
-     * The `get()` for a second stored key is held open to put the read INSIDE that
-     * window; releasing it adds a row in every version, which is the sync point.
+     * The `list()` (which since 0.2.0 carries the values too) is held open to put the
+     * read INSIDE that window; releasing it adds a row in every version, which is the
+     * sync point.
      */
     const RECORD2_KEY = historyKey(Date.parse('2026-09-30T12:20:00.000Z'), 'b-2');
     const RECORD2 = { ...RECORD, batchId: 'b-2', createdAt: Date.parse('2026-09-30T12:20:00.000Z'), workflowIds: ['wf-done'] };
@@ -799,26 +807,23 @@ describe('🔴 a run whose storage write FAILED is not deleted by a refresh', ()
     await openHistory(user);
     await screen.findByTestId('yt-history-row');
 
-    // The reload will list TWO keys and hang on the second one's value.
+    // The reload will list TWO records, and hang until released.
     let release = () => {};
-    storageList.mockResolvedValue({
-      keys: [
-        { key: RECORD_KEY, updatedAt: new Date() },
-        { key: RECORD2_KEY, updatedAt: new Date() },
-      ],
-    });
-    storageGet.mockImplementation(async (key: string) => {
-      if (key === 'formats:custom:v1') return null;
-      if (key === RECORD_KEY) return RECORD;
-      return new Promise((resolve) => {
-        release = () => resolve(RECORD2);
-      });
-    });
+    const listsBefore = storageList.mock.calls.length;
+    storageList.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = () =>
+            resolve({
+              entries: [listed({ key: RECORD_KEY, value: RECORD }), listed({ key: RECORD2_KEY, value: RECORD2 })],
+            });
+        }),
+    );
 
     // Hide then Show: the Show starts the reload, which now hangs mid-read.
     await user.click(screen.getByTestId('yt-history-toggle'));
     await user.click(screen.getByTestId('yt-history-toggle'));
-    await waitFor(() => expect(storageGet).toHaveBeenCalledWith(RECORD2_KEY));
+    await waitFor(() => expect(storageList.mock.calls.length).toBeGreaterThan(listsBefore));
 
     // Generate DURING that read. Its write SUCCEEDS, which is the whole point: there
     // is nothing in the unsaved map to carry this row across.
@@ -990,31 +995,23 @@ describe('🔴 a run whose storage write FAILED is not deleted by a refresh', ()
     await openHistory(user);
     await waitFor(() => expect(srcs()).toContain(TWO_IMAGE));
 
-    // Viewer 2 starts a reload that HANGS inside `get`, holding the read open across
+    // Viewer 2 starts a reload that HANGS inside `list`, holding the read open across
     // the swap. That is the whole shape of the bug.
     let release = () => {};
-    storageList.mockResolvedValue({ keys: [{ key: V2.key, updatedAt: new Date() }] });
-    storageGet.mockImplementation(async (key: string) => {
-      if (key === 'formats:custom:v1') return null;
-      if (key === V2.key) return new Promise((resolve) => (release = () => resolve(V2.value)));
-      if (key === V7.key) return V7.value;
-      if (key === V7B.key) return V7B.value;
-      return null;
-    });
-    const v2GetsBefore = storageGet.mock.calls.filter((c) => c[0] === V2.key).length;
+    const listsBefore = storageList.mock.calls.length;
+    storageList.mockImplementation(
+      () => new Promise((resolve) => (release = () => resolve({ entries: [listed(V2)] }))),
+    );
     // Hide, then Show — the Show is the click that calls `loadHistory`, and it now hangs.
     await user.click(screen.getByTestId('yt-history-toggle'));
     await user.click(screen.getByTestId('yt-history-toggle'));
-    await waitFor(() =>
-      expect(storageGet.mock.calls.filter((c) => c[0] === V2.key).length).toBeGreaterThan(
-        v2GetsBefore,
-      ),
-    );
+    await waitFor(() => expect(storageList.mock.calls.length).toBeGreaterThan(listsBefore));
+    const hung = release;
 
     // A different person is now signed in, and storage answers with THEIR row. The
     // Hide/Show pair is just the render that picks the new id up (which runs the owner
     // effect, which runs the reload under viewer 7) plus the re-open to see it.
-    storageList.mockResolvedValue({ keys: [{ key: V7.key, updatedAt: new Date() }] });
+    storageList.mockResolvedValue({ entries: [listed(V7)] });
     state.viewer = { id: 7, username: 'someone-else' };
     await user.click(screen.getByTestId('yt-history-toggle'));
     await user.click(screen.getByTestId('yt-history-toggle'));
@@ -1022,8 +1019,8 @@ describe('🔴 a run whose storage write FAILED is not deleted by a refresh', ()
     expect(srcs()).not.toContain(TWO_IMAGE);
 
     // Now let viewer 2's read resolve, INTO viewer 7's surface.
-    release();
-    // 🔴 THE SYNC POINT, AND IT IS NOT A TIMER. Resolving that `get` queues only
+    hung();
+    // 🔴 THE SYNC POINT, AND IT IS NOT A TIMER. Resolving that `list` queues only
     // microtasks — `Promise.all`, then the merge — and `waitFor` yields a macrotask, so
     // everything the resolving read does has happened by the time this returns. The
     // CONTROL for that claim is the base measurement: at 0a2cc97d `VIEWER-TWO` is on

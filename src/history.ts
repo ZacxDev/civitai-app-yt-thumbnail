@@ -20,8 +20,9 @@
 //   generation internals of a queue it owns only by tag. So "what prompt was
 //   that?" is unanswerable from the live half, by design, forever.
 //
-//   `useAppStorage()` is the OURS half: a per-(app, viewer) KV we write at submit
-//   time, holding exactly the state a resume needs. It knows nothing about
+//   The private `kv` collection (`./kv-store.ts`) is the OURS half: a per-(app,
+//   viewer) document store we write at submit time, holding exactly the state a
+//   resume needs. It knows nothing about
 //   whether the workflow ran.
 //
 // The join key is `workflowId` — the one field that crosses.
@@ -54,9 +55,15 @@ export const HISTORY_PREFIX = 'gen:v1:';
 export const HISTORY_PAGE_SIZE = 20;
 
 /**
- * Per-value ceiling the host enforces (`useAppStorage.set` rejects over this).
- * Mirrored here so an over-large record is refused BEFORE the round trip, with a
- * message about what it was, rather than as an opaque PAYLOAD_TOO_LARGE.
+ * Per-document ceiling the document store enforces (a write over it is refused
+ * `too_large`). Mirrored here so an over-large record is refused BEFORE the round
+ * trip, with a message about what it was.
+ *
+ * ⚠️ APPROXIMATE AT THE EDGE: this measures `JSON.stringify(record)`, while the
+ * store measures the stored document `{ value: record }` as Postgres jsonb text,
+ * which is a little longer (the wrapper, and a space after every `:` and `,`). A
+ * record within a few KB of the cap can pass this check and still be refused
+ * `too_large` by the store, which the write's own failure path then reports.
  */
 export const STORAGE_VALUE_MAX_BYTES = 64 * 1024;
 
@@ -68,12 +75,11 @@ const TS_INVERT_BASE = 10 ** TS_DIGITS - 1;
 /**
  * Build the storage key for a batch created at `createdAtMs`.
  *
- * 🔴 THE TIMESTAMP IS INVERTED ON PURPOSE. `useAppStorage.list()` is a
- * keyset-paginated KEY listing — it returns keys and `updatedAt` and nothing
- * else, and its cursor is "an opaque, base64-encoded last key", i.e. it pages
- * forward through the key ORDER. There is no sort option. So the only way to get
- * "newest first, cheaply, one page at a time" is to make newest-first BE the key
- * order: store `TS_INVERT_BASE - createdAt`, zero-padded to a FIXED width so
+ * 🔴 THE TIMESTAMP IS INVERTED ON PURPOSE. The legacy KV list was a keyset-paginated
+ * KEY listing with no sort option, so newest-first had to BE the key order — and
+ * these keys are the legacy keys verbatim (the cutover copy carries them), so the
+ * scheme stays: `./kv-store.ts` lists the private collection in `key` order, and
+ * that is newest-first. The rule: store `TS_INVERT_BASE - createdAt`, zero-padded to a FIXED width so
  * lexicographic and numeric order agree.
  *
  * Without the fixed width this silently breaks wherever the inverted value

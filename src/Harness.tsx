@@ -8,6 +8,19 @@ import {
 
 import { DECLARED_SCOPES, mockBuzzBalance } from './mock-buzz.js';
 import { resetHarnessTransport } from './dev-transport.js';
+import { configureDocumentStorage } from './doc-storage.js';
+import { createAppFakeStorage } from './fake-doc-storage.js';
+
+/**
+ * The mock host answers the bridge only; the document store is REST. So the
+ * harness gets the SDK's in-memory `createFakeStorage` (committed manifest,
+ * signed-in `dev-viewer`) for the private `kv` and the shared `formats`.
+ * Session-only: gone on reload, like the mock host's storage was.
+ */
+export function installHarnessDocumentStorage(): void {
+  const fake = createAppFakeStorage();
+  configureDocumentStorage(async () => fake.storage);
+}
 
 /**
  * Local dev mock host for the YT Thumbnail PAGE app.
