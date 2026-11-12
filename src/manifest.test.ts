@@ -215,10 +215,10 @@ describe('block.manifest.json scopes', () => {
   const scopes = manifest.scopes as string[];
   const justifications = manifest.scopeJustifications as Record<string, string>;
 
-  // The full block-scope enum from @civitai/app-sdk's BLOCK_SCOPES. Written out
-  // rather than imported so this test fails on a scope the INSTALLED SDK would
-  // accept but the published schema's enum does not — the two are meant to be
-  // in lockstep and this is the place that notices when they are not.
+  // The canonical schema's scope enum (civitai origin/main
+  // public/schemas/app-block/v1.json, read 2026-10-19). Written out rather than
+  // imported: the installed @civitai/app-sdk's BLOCK_SCOPES predates the
+  // document-store scopes, so it cannot be the reference any more.
   const KNOWN_BLOCK_SCOPES = [
     'models:read:self',
     'user:read:self',
@@ -229,20 +229,39 @@ describe('block.manifest.json scopes', () => {
     'apps:storage:write',
     'apps:storage:shared:read',
     'apps:storage:shared:write',
+    'apps:storage',
+    'apps:storage:publish',
     'collections:read:self',
     'collections:write:self',
     'collections:read:private',
+    'posts:write:self',
+    'goods:read:self',
+    'goods:purchase:self',
+    'apps:store:items:write',
+    'social:react:self',
   ];
 
-  it('declares exactly the scopes the code uses — spend, private storage, shared storage', () => {
+  it('declares exactly the scopes the code uses — spend, the document store, publishing to it', () => {
     // Sorted so the assertion is about the SET, not about manifest key order.
-    expect([...scopes].sort()).toEqual([
-      'ai:write:budgeted',
-      'apps:storage:read',
-      'apps:storage:shared:read',
-      'apps:storage:shared:write',
-      'apps:storage:write',
-    ]);
+    expect([...scopes].sort()).toEqual(['ai:write:budgeted', 'apps:storage', 'apps:storage:publish']);
+  });
+
+  it('🔴 declares the document-store collections the code uses, and none of the legacy storage scopes', () => {
+    // The private `kv` is a contract with the cutover copy script (no indexes);
+    // the shared `formats` board is author-written with a `vote` mark.
+    expect((manifest as { storage?: unknown }).storage).toEqual({
+      collections: {
+        kv: { visibility: 'private' },
+        formats: { visibility: 'shared', write: 'own', marks: ['vote'] },
+      },
+    });
+    for (const legacy of ['apps:storage:read', 'apps:storage:write', 'apps:storage:shared:read', 'apps:storage:shared:write']) {
+      expect(scopes).not.toContain(legacy);
+    }
+  });
+
+  it('does not declare `iframe.src` — it is server-owned and `civitai app validate` refuses it', () => {
+    expect(manifest.iframe ?? {}).not.toHaveProperty('src');
   });
 
   it('every declared scope carries a justification, and there are no orphan justifications', () => {

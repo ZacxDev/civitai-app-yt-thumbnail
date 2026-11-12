@@ -152,7 +152,7 @@ export function hasSubmittablePrompt(
  * ABSENT means "this row still follows the prompt box"; an id present (even with
  * an empty string) means the viewer has taken the row over.
  *
- * Session state only. Deliberately NOT persisted to `useAppStorage`: an edit is
+ * Session state only. Deliberately NOT persisted to storage: an edit is
  * about the click you are about to make, and a prompt silently restored from a
  * previous visit is a string you would pay for without having written it now.
  */
