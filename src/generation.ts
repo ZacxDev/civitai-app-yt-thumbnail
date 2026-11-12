@@ -397,6 +397,65 @@ export function submitErrorReason(err: unknown, fallback = 'submit failed'): str
   return fallback;
 }
 
+/**
+ * The platform's refusal text for a checkpoint whose ECOSYSTEM (base-model family)
+ * is hidden or disabled for this viewer right now — an operator gate rule
+ * ("moderators only", a temporary outage) or the self-hosted toggle. It arrives as
+ * `Validation failed: ecosystem: Ecosystem is currently unavailable`, optionally
+ * followed by `. <the rule's own copy>`.
+ *
+ * 🔴 WHY A STRING AND NOT A CODE. The error carries no structured reason (the
+ * thrown tRPC error is a plain BAD_REQUEST), but this sentence IS the contract:
+ * civitai `shared/generation/gates.ts` exports it as the stable refusal text and
+ * documents that "API callers (App Blocks apps included) match on these, so a
+ * rule's copy is only ever APPENDED". So this keys on the platform's published
+ * constant, not on wording we guessed.
+ *
+ * 🔴 THE APP NEVER SENDS AN ECOSYSTEM. The body carries only `modelVersionId`; the
+ * server resolves the checkpoint's ecosystem itself. So this refusal is always a
+ * statement about the SELECTED MODEL, never about a format — every format of the
+ * click shares one checkpoint and would be refused identically.
+ */
+export const ECOSYSTEM_UNAVAILABLE_TEXT = 'Ecosystem is currently unavailable';
+
+/** Is this error the platform's gated-ecosystem refusal? Case-insensitive. */
+export function isEcosystemUnavailable(message: string | null | undefined): boolean {
+  if (!message) return false;
+  return message.toLowerCase().includes(ECOSYSTEM_UNAVAILABLE_TEXT.toLowerCase());
+}
+
+/**
+ * What the viewer is told when the selected model's ecosystem is refused — in place
+ * of the raw `Validation failed: ecosystem: …` string.
+ *
+ * It names the model the viewer chose, says that it is STILL selected (we never
+ * swap it for another one behind their back), and says what to do. Any copy the
+ * gating rule appended (e.g. "… while we restore GPU capacity") is carried through
+ * verbatim, because it is the only part that says WHY and for how long.
+ */
+export function modelUnavailableMessage(
+  checkpoint: { label: string; baseModel: string },
+  rawMessage: string | null | undefined,
+): string {
+  const family = checkpoint.baseModel ? ` (${checkpoint.baseModel})` : '';
+  let detail = '';
+  if (rawMessage) {
+    const at = rawMessage.toLowerCase().indexOf(ECOSYSTEM_UNAVAILABLE_TEXT.toLowerCase());
+    if (at >= 0) {
+      detail = rawMessage
+        .slice(at + ECOSYSTEM_UNAVAILABLE_TEXT.length)
+        .replace(/^[\s.:,-]+/, '')
+        .trim();
+    }
+  }
+  return (
+    `${checkpoint.label}${family} can't be used to generate right now — Civitai has made ` +
+    `this base model unavailable${detail ? `: ${detail}` : '.'} ` +
+    `It's still your selected model; choose a different one with Change model to generate now. ` +
+    `Nothing was charged.`
+  );
+}
+
 /** Format a Buzz cost for display, with thousands separators. `null` -> '—'. */
 export function formatCost(cost: number | null | undefined): string {
   if (cost == null || !Number.isFinite(cost)) return '—';

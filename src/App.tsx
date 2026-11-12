@@ -42,8 +42,10 @@ import {
   hasBudgetedScope,
   imageUrlsFrom,
   initRuns,
+  isEcosystemUnavailable,
   isSubmittingPhase,
   isPartialFailure,
+  modelUnavailableMessage,
   isPromptEdited,
   overallPhase,
   patchRun,
@@ -601,6 +603,21 @@ export function App() {
    * happened.
    */
   const [loraNote, setLoraNote] = useState<string | null>(null);
+
+  /**
+   * The platform refused the SELECTED checkpoint's ecosystem ("Ecosystem is
+   * currently unavailable" — see `isEcosystemUnavailable`). Keyed on the version id
+   * it was said about, so it can only ever be shown next to THAT model: picking a
+   * different checkpoint makes it stale at once, with no effect needed to clear it.
+   *
+   * 🔴 THE SELECTION IS NEVER CHANGED. The model stays selected and this note says
+   * why it cannot generate and what to do; swapping in a model the viewer did not
+   * choose would be a silent edit to what they are about to pay for.
+   */
+  const [modelUnavailable, setModelUnavailable] = useState<{
+    versionId: number;
+    message: string;
+  } | null>(null);
 
   // --- Editor state ---
   // The gallery image being edited (its URL) + the overlay spec. The overlay
@@ -1191,16 +1208,36 @@ export function App() {
     // A THROWN estimate is not fatal (the server re-prices at submit anyway), so
     // it leaves the run priceless but still viable. A RETURNED failure is
     // classified: it terminates that one run.
+    //
+    // 🔴 EXCEPT A GATED-ECOSYSTEM REFUSAL, returned OR thrown. The estimate runs the
+    // same server validation as submit, so "Ecosystem is currently unavailable" here
+    // is a certain answer about the submit, not a pricing hiccup — and it is about
+    // the CHECKPOINT, which every format shares. Swallowing it (as the 0.2.0 code
+    // did) sent N submits that were each refused with the raw validation string,
+    // shown once per format ("Clickbait: Validation failed: ecosystem: …").
     const estimates = await Promise.all(
       formats.map(async (fmt) => {
         try {
           const est = await estimate(bodyFor(fmt, account));
           if (est.status === 'failed' || est.error) {
-            return { fmt, cost: null, phase: phaseForError(est.error), error: est.error ?? null };
+            return {
+              fmt,
+              cost: null,
+              phase: phaseForError(est.error),
+              error: est.error ?? null,
+              ecosystemRefusal: isEcosystemUnavailable(est.error) ? (est.error ?? null) : null,
+            };
           }
-          return { fmt, cost: est.cost?.total ?? null, phase: null, error: null };
-        } catch {
-          return { fmt, cost: null, phase: null, error: null };
+          return { fmt, cost: est.cost?.total ?? null, phase: null, error: null, ecosystemRefusal: null };
+        } catch (err) {
+          const reason = submitErrorReason(err, '');
+          return {
+            fmt,
+            cost: null,
+            phase: null,
+            error: null,
+            ecosystemRefusal: isEcosystemUnavailable(reason) ? reason : null,
+          };
         }
       }),
     );
@@ -1213,7 +1250,21 @@ export function App() {
     // past this point money has been spent and the snapshots must still be collected.
     if (tok.cancelled || unmountedRef.current) return;
 
-    let priced = initRuns(formats).map((r) => ({ ...r, phase: 'estimating' as GenPhase }));
+    // A refused ECOSYSTEM is a property of the click's checkpoint, like a disallowed
+    // pool: stop before ANY submit, say so once next to the model, keep the model
+    // selected. Nothing has been submitted, so nothing was charged.
+    const ecosystemRefusal = estimates.find((e) => e.ecosystemRefusal != null)?.ecosystemRefusal;
+    if (ecosystemRefusal != null) {
+      setModelUnavailable({
+        versionId: checkpoint.versionId,
+        message: modelUnavailableMessage(checkpoint, ecosystemRefusal),
+      });
+      setRuns([]);
+      return;
+    }
+    setModelUnavailable(null);
+
+    let priced =initRuns(formats).map((r) => ({ ...r, phase: 'estimating' as GenPhase }));
     for (const e of estimates) {
       priced = patchRun(priced, e.fmt.id, {
         estimatedCost: e.cost,
@@ -1269,9 +1320,17 @@ export function App() {
         } catch (err) {
           // NOT `err.message` — under blocks-react ^0.44 that is a generic
           // template and the server's reason rides on `.snapshot.error`.
-          const msg = submitErrorReason(err);
-          const failPhase = phaseForError(msg);
+          const raw = submitErrorReason(err);
+          const failPhase = phaseForError(raw);
           if (tok.cancelled || unmountedRef.current) return null;
+          // The estimate pass normally catches a gated ecosystem first; this is the
+          // fallback for a gate that closed between estimate and submit. Never show
+          // the raw `Validation failed: ecosystem: …` string.
+          let msg = raw;
+          if (isEcosystemUnavailable(raw)) {
+            msg = modelUnavailableMessage(checkpoint, raw);
+            setModelUnavailable({ versionId: checkpoint.versionId, message: msg });
+          }
           setRuns((cur) => patchRun(cur, fmt.id, { phase: failPhase, error: msg }));
           if (failPhase === 'account-rejected') handleAccountRejected();
           return null;
@@ -1375,6 +1434,9 @@ export function App() {
     balance,
     selectedFormatIds,
     availableFormats,
+    // Only for the model-unavailable note's wording; the bodies still come from
+    // `formSnapshot`/`bodyFor` alone.
+    checkpoint,
     formSnapshot,
     bodyFor,
     estimate,
@@ -1574,8 +1636,8 @@ export function App() {
    * per render — any of the three in a dependency array turns this into a request
    * per render. The trigger is `priceSignature`; these are just the values it needs.
    */
-  const previewRef = useRef({ formats: selectedFormats, account, bodyFor, estimate });
-  previewRef.current = { formats: selectedFormats, account, bodyFor, estimate };
+  const previewRef = useRef({ formats: selectedFormats, account, bodyFor, estimate, checkpoint });
+  previewRef.current = { formats: selectedFormats, account, bodyFor, estimate, checkpoint };
 
   // WHAT COUNTS AS A PRICE CHANGE — one pure function, see `estimateSignature`.
   //
@@ -1609,7 +1671,13 @@ export function App() {
     setPreviewRuns(initRuns(previewRef.current.formats));
 
     const timer = setTimeout(() => {
-      const { formats, account: acct, bodyFor: body, estimate: price } = previewRef.current;
+      const {
+        formats,
+        account: acct,
+        bodyFor: body,
+        estimate: price,
+        checkpoint: model,
+      } = previewRef.current;
       if (formats.length === 0) return;
       void (async () => {
         // A throw and a returned failure are treated ALIKE here, and both leave the
@@ -1617,18 +1685,39 @@ export function App() {
         // even annotate a Generate click. The server re-prices at submit regardless,
         // and `runGeneration` does its own estimate pass — so the worst a broken
         // preview can do is show no number.
+        //
+        // 🔴 ONE THING IS READ OFF A FAILURE: a gated-ecosystem refusal. It is about
+        // the MODEL, not the click, so it is reported next to the model row BEFORE
+        // the viewer commits to anything — the model stays selected and the note
+        // says why it cannot generate. Any other failure still just leaves no price.
+        let refusal: string | null = null;
         const costs = await Promise.all(
           formats.map(async (fmt) => {
             try {
               const est = await price(body(fmt, acct));
-              if (est.status === 'failed' || est.error) return null;
+              if (est.status === 'failed' || est.error) {
+                if (isEcosystemUnavailable(est.error)) refusal = est.error ?? null;
+                return null;
+              }
               return est.cost?.total ?? null;
-            } catch {
+            } catch (err) {
+              const reason = submitErrorReason(err, '');
+              if (isEcosystemUnavailable(reason)) refusal = reason;
               return null;
             }
           }),
         );
         if (seq !== previewSeqRef.current) return;
+        if (refusal != null) {
+          setModelUnavailable({
+            versionId: model.versionId,
+            message: modelUnavailableMessage(model, refusal),
+          });
+        } else if (costs.some((c) => c != null)) {
+          // A priced estimate for this model is positive evidence the gate is open
+          // again — only then is an earlier note about THIS model withdrawn.
+          setModelUnavailable((cur) => (cur && cur.versionId === model.versionId ? null : cur));
+        }
         let next = initRuns(formats);
         formats.forEach((fmt, i) => {
           next = patchRun(next, fmt.id, { estimatedCost: costs[i] });
@@ -3067,6 +3156,17 @@ export function App() {
         >
           {modelRow}
         </Group>
+      )}
+      {/* Only ever shown for the model it was said about (keyed on versionId), so
+          picking another checkpoint retires it with no effect needed. */}
+      {modelUnavailable && modelUnavailable.versionId === checkpoint.versionId && (
+        <Alert
+          color="warning"
+          title="This model is unavailable right now"
+          data-testid="pm-model-unavailable"
+        >
+          {modelUnavailable.message}
+        </Alert>
       )}
     </div>
   );
