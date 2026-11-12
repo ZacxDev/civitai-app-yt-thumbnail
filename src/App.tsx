@@ -619,6 +619,26 @@ export function App() {
     message: string;
   } | null>(null);
 
+  /**
+   * Record that the platform refused `model`'s ecosystem. THE one place the note is
+   * SET — the preview, the estimate pass and the submit fallback all call this, so
+   * the keying (versionId) and the wording (`modelUnavailableMessage`) cannot drift
+   * between them. `nothingCharged` is the caller's claim; see that function.
+   */
+  const noteModelUnavailable = useCallback(
+    (
+      model: { versionId: number; label: string; baseModel: string },
+      raw: string | null | undefined,
+      opts: { nothingCharged?: boolean } = {},
+    ) => {
+      setModelUnavailable({
+        versionId: model.versionId,
+        message: modelUnavailableMessage(model, raw, opts),
+      });
+    },
+    [],
+  );
+
   // --- Editor state ---
   // The gallery image being edited (its URL) + the overlay spec. The overlay
   // persists across images so a tweak carries over; the loaded <img> element and
@@ -1255,10 +1275,7 @@ export function App() {
     // selected. Nothing has been submitted, so nothing was charged.
     const ecosystemRefusal = estimates.find((e) => e.ecosystemRefusal != null)?.ecosystemRefusal;
     if (ecosystemRefusal != null) {
-      setModelUnavailable({
-        versionId: checkpoint.versionId,
-        message: modelUnavailableMessage(checkpoint, ecosystemRefusal),
-      });
+      noteModelUnavailable(checkpoint, ecosystemRefusal);
       setRuns([]);
       return;
     }
@@ -1333,10 +1350,7 @@ export function App() {
           // carries the explanation once.
           let msg = raw;
           if (isEcosystemUnavailable(raw)) {
-            setModelUnavailable({
-              versionId: checkpoint.versionId,
-              message: modelUnavailableMessage(checkpoint, raw, { nothingCharged: false }),
-            });
+            noteModelUnavailable(checkpoint, raw, { nothingCharged: false });
             msg = 'This model is unavailable right now — see the note under Model.';
           }
           setRuns((cur) => patchRun(cur, fmt.id, { phase: failPhase, error: msg }));
@@ -1445,6 +1459,7 @@ export function App() {
     // Only for the model-unavailable note's wording; the bodies still come from
     // `formSnapshot`/`bodyFor` alone.
     checkpoint,
+    noteModelUnavailable,
     formSnapshot,
     bodyFor,
     estimate,
@@ -1717,10 +1732,7 @@ export function App() {
         );
         if (seq !== previewSeqRef.current) return;
         if (refusal != null) {
-          setModelUnavailable({
-            versionId: model.versionId,
-            message: modelUnavailableMessage(model, refusal),
-          });
+          noteModelUnavailable(model, refusal);
         } else if (costs.some((c) => c != null)) {
           // A priced estimate for this model is positive evidence the gate is open
           // again — only then is an earlier note about THIS model withdrawn.

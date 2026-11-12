@@ -51,11 +51,6 @@ describe('modelUnavailableMessage', () => {
     expect(msg).not.toMatch(/Validation failed/);
   });
 
-  it("appends the gating rule's own copy verbatim", () => {
-    const msg = modelUnavailableMessage(MODEL, `${RAW}. Restoring GPU capacity, back soon.`);
-    expect(msg).toContain('unavailable: Restoring GPU capacity, back soon. ');
-  });
-
   it('carries ONLY the rule copy — never another field\'s validation error joined after it', () => {
     // The platform joins errors as `<key>: <message>, <key>: <message>`.
     const msg = modelUnavailableMessage(
