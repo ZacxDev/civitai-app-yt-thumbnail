@@ -158,8 +158,12 @@ describe('a gated ecosystem on Generate', () => {
     await clickGenerate();
 
     await waitFor(() => expect(submitFn).toHaveBeenCalled());
-    expect(await screen.findByTestId('pm-model-unavailable')).toBeInTheDocument();
+    const note = await screen.findByTestId('pm-model-unavailable');
     expectNoRawError();
+    // 🔴 Submits run in parallel, so a sibling format may already have been charged:
+    // this path must not claim nothing was.
+    expect(note).not.toHaveTextContent(/Nothing was charged/i);
+    expect(document.body.textContent ?? '').not.toMatch(/Nothing was charged/i);
   });
 
   it("🔴 carries the gating rule's own copy through — the only part that says why", async () => {
@@ -187,6 +191,25 @@ describe('a gated ecosystem on Generate', () => {
 });
 
 describe('a gated ecosystem in the live price preview', () => {
+  it('🔴 withdraws the note once the SAME model prices again (the gate reopened)', async () => {
+    estimateFn.mockRejectedValue(refusal(RAW));
+    render(<App />);
+    await screen.findByTestId('pm-model-unavailable', undefined, {
+      timeout: ESTIMATE_DEBOUNCE_MS * 10,
+    });
+
+    // The operator reopens the family; any input change re-runs the preview for the
+    // same checkpoint, and it now prices.
+    estimateFn.mockResolvedValue(ok(287));
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('yt-format-cinematic'));
+    await waitFor(() => expect(screen.queryByTestId('pm-model-unavailable')).not.toBeInTheDocument(), {
+      timeout: ESTIMATE_DEBOUNCE_MS * 10,
+    });
+    // Same model all along — the note went because the gate did, not because the pick changed.
+    expect(screen.getByTestId('pm-model-label')).toHaveTextContent('ChatGPT Images (OpenAI)');
+  });
+
   it('🔴 warns next to the model BEFORE any click, keeps the model selected, and retires on a new pick', async () => {
     estimateFn.mockRejectedValue(refusal(RAW));
     render(<App />);

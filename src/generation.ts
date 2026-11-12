@@ -432,27 +432,41 @@ export function isEcosystemUnavailable(message: string | null | undefined): bool
  * swap it for another one behind their back), and says what to do. Any copy the
  * gating rule appended (e.g. "… while we restore GPU capacity") is carried through
  * verbatim, because it is the only part that says WHY and for how long.
+ *
+ * Only the rule's copy is carried, nothing else from the raw string. The platform
+ * appends that copy as `<base>. <copy>` (`gateRefusalText`), and joins any OTHER
+ * field's validation error after it as `, <field>: <message>` — so the detail is
+ * taken only when it follows a `.`, and is cut at the first `, <field>:` boundary.
+ *
+ * `nothingCharged` is the caller's claim, not this function's: it is true where no
+ * workflow of the click was submitted (the preview, and the estimate pass that
+ * stops before any submit). At SUBMIT another format of the same click may already
+ * have been accepted and charged, so that caller passes `false` and the sentence is
+ * left out rather than risk saying something untrue about money.
  */
 export function modelUnavailableMessage(
   checkpoint: { label: string; baseModel: string },
   rawMessage: string | null | undefined,
+  opts: { nothingCharged?: boolean } = {},
 ): string {
+  const nothingCharged = opts.nothingCharged ?? true;
   const family = checkpoint.baseModel ? ` (${checkpoint.baseModel})` : '';
   let detail = '';
   if (rawMessage) {
     const at = rawMessage.toLowerCase().indexOf(ECOSYSTEM_UNAVAILABLE_TEXT.toLowerCase());
     if (at >= 0) {
-      detail = rawMessage
-        .slice(at + ECOSYSTEM_UNAVAILABLE_TEXT.length)
-        .replace(/^[\s.:,-]+/, '')
-        .trim();
+      const rest = rawMessage.slice(at + ECOSYSTEM_UNAVAILABLE_TEXT.length);
+      if (rest.startsWith('.')) {
+        detail = rest.slice(1).split(/,\s*[A-Za-z_][\w.]*:\s/)[0]!.trim();
+      }
     }
   }
+  if (detail && !/[.!?]$/.test(detail)) detail += '.';
   return (
     `${checkpoint.label}${family} can't be used to generate right now — Civitai has made ` +
     `this base model unavailable${detail ? `: ${detail}` : '.'} ` +
-    `It's still your selected model; choose a different one with Change model to generate now. ` +
-    `Nothing was charged.`
+    `It's still your selected model; choose a different one with Change model to generate now.` +
+    (nothingCharged ? ' Nothing was charged.' : '')
   );
 }
 

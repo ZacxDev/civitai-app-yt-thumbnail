@@ -1264,7 +1264,7 @@ export function App() {
     }
     setModelUnavailable(null);
 
-    let priced =initRuns(formats).map((r) => ({ ...r, phase: 'estimating' as GenPhase }));
+    let priced = initRuns(formats).map((r) => ({ ...r, phase: 'estimating' as GenPhase }));
     for (const e of estimates) {
       priced = patchRun(priced, e.fmt.id, {
         estimatedCost: e.cost,
@@ -1326,10 +1326,18 @@ export function App() {
           // The estimate pass normally catches a gated ecosystem first; this is the
           // fallback for a gate that closed between estimate and submit. Never show
           // the raw `Validation failed: ecosystem: …` string.
+          //
+          // 🔴 NO "Nothing was charged." HERE: the submits run in parallel, so another
+          // format of this click may already have been accepted (and charged) when
+          // this one is refused. The row carries a short pointer; the model-row note
+          // carries the explanation once.
           let msg = raw;
           if (isEcosystemUnavailable(raw)) {
-            msg = modelUnavailableMessage(checkpoint, raw);
-            setModelUnavailable({ versionId: checkpoint.versionId, message: msg });
+            setModelUnavailable({
+              versionId: checkpoint.versionId,
+              message: modelUnavailableMessage(checkpoint, raw, { nothingCharged: false }),
+            });
+            msg = 'This model is unavailable right now — see the note under Model.';
           }
           setRuns((cur) => patchRun(cur, fmt.id, { phase: failPhase, error: msg }));
           if (failPhase === 'account-rejected') handleAccountRejected();

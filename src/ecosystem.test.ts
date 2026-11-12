@@ -56,6 +56,29 @@ describe('modelUnavailableMessage', () => {
     expect(msg).toContain('unavailable: Restoring GPU capacity, back soon. ');
   });
 
+  it('carries ONLY the rule copy — never another field\'s validation error joined after it', () => {
+    // The platform joins errors as `<key>: <message>, <key>: <message>`.
+    const msg = modelUnavailableMessage(
+      MODEL,
+      `${RAW}. Back within the hour, resources: Invalid input: expected object, received undefined`,
+    );
+    expect(msg).toContain('unavailable: Back within the hour. ');
+    expect(msg).not.toMatch(/resources|Invalid input/);
+    // No rule copy, but another error after it: nothing is carried.
+    const bare = modelUnavailableMessage(MODEL, `${RAW}, resources: Invalid input: expected object`);
+    expect(bare).toContain('made this base model unavailable. ');
+    expect(bare).not.toMatch(/resources|Invalid input/);
+  });
+
+  it('leaves out "Nothing was charged." when the caller cannot vouch for it', () => {
+    const msg = modelUnavailableMessage(MODEL, RAW, { nothingCharged: false });
+    expect(msg).toBe(
+      "Qwen Image 2.1 (Qwen) can't be used to generate right now — Civitai has made this base " +
+        "model unavailable. It's still your selected model; choose a different one with Change " +
+        'model to generate now.',
+    );
+  });
+
   it('omits the family parenthesis when the base model is unknown', () => {
     expect(modelUnavailableMessage({ label: 'Model #42', baseModel: '' }, RAW)).toMatch(
       /^Model #42 can't be used/,
